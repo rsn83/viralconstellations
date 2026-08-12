@@ -360,14 +360,14 @@ class CooccurrenceRegressionHead(nn.Module):
         Empirical co-occurrence[i,j] = fraction of sequences where
         both position i AND position j are mutated (non-zero).
         """
-        # Empirical co-occurrence from real sequences
+        # Empirical co-occurrence from real sequences — all on h.device
         bin_mat  = torch.tensor(
-            (mat_th > 0).astype(np.float32)
+            (mat_th > 0).astype(np.float32), device=h.device
         )                                                    # (n_seq, P)
         n        = len(bin_mat)
-        coo_full = (bin_mat.T @ bin_mat) / n                # (P, P)
+        coo_full = (bin_mat.T @ bin_mat) / n                # (P, P) on h.device
+        # iu_row/iu_col are registered buffers — already on h.device
         target   = coo_full[self.iu_row, self.iu_col]       # (n_pairs,)
-        target   = target.to(h.device)
 
         # Predicted
         pred = self.forward(h)                               # (B, n_pairs)
