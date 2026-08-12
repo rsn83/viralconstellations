@@ -59,7 +59,8 @@ from viralconstellations.model.trajectory import (
 from viralconstellations.frontier.frontier import (
     compute_occupied, compute_frontier,
     compute_new_constellations, frontier_coverage_benchmark,
-    LogisticFrontierScorer, extract_features, FEATURE_NAMES,
+    candidate_to_sequence, score_candidates_neural,
+    LogisticFrontierScorer, evaluate_ranking,
 )
 from viralconstellations.eval.metrics import all_metrics_categorical
 
@@ -216,7 +217,7 @@ def main():
 
                 if frontier and new_in_th:
                     ranked = scorer.score(mat_t, pred_pf_np, prev_pf, P)
-                    frontier_metrics = scorer.evaluate_predictions(ranked, new_in_th)
+                    frontier_metrics = evaluate_ranking(ranked, new_in_th)
 
             # D. Co-occurrence (generative model, subset for speed)
             gen_model  = generate_from_hidden(
