@@ -129,7 +129,9 @@ def main():
             cfg["model"]["dropout"], T, max_h).to(device)
         length_head = LengthToGoHead(d, max_h).to(device)
         freq_head   = FrequencyRegressionHead(d, P).to(device)
-        cooc_head   = CooccurrenceRegressionHead(d, P).to(device)
+        cooc_rank   = cfg.get("cooc_head", {}).get("cooc_rank", 16)
+        cooc_alpha  = cfg.get("cooc_head", {}).get("cooc_alpha", 5.0)
+        cooc_head   = CooccurrenceRegressionHead(d, P, rank=cooc_rank).to(device)
 
         modules    = [model, encoder, traj_enc, transition,
                       length_head, freq_head, cooc_head]
@@ -184,7 +186,7 @@ def main():
                                  if freq_losses else torch.tensor(0.0, device=device))
 
                     # ── Co-occurrence loss at final step ──────────────────
-                    cooc_loss = cooc_head.loss(h_final.unsqueeze(0), mat_th)
+                    cooc_loss = cooc_head.loss(h_final.unsqueeze(0), mat_th, alpha=cooc_alpha)
 
                     # ── Denoising loss ────────────────────────────────────
                     n   = len(mat_th)
@@ -286,6 +288,7 @@ def main():
                     freq_state=freq_head.state_dict(),
                     cooc_state=cooc_head.state_dict(),
                     n_positions=P,
+                    cooc_rank=cooc_rank,
                     train_months=train_months,
                     test_month=test_month,
                     model_cfg=cfg["model"],

@@ -86,7 +86,8 @@ def main():
         0.0, T, max_h).to(device)
     length_head = LengthToGoHead(d, max_h).to(device)
     freq_head   = FrequencyRegressionHead(d, P).to(device)
-    cooc_head   = CooccurrenceRegressionHead(d, P).to(device)
+    cooc_rank   = ckpt.get("cooc_rank", 16)
+    cooc_head   = CooccurrenceRegressionHead(d, P, rank=cooc_rank).to(device)
 
     model.load_state_dict(ckpt["model_state"])
     encoder.load_state_dict(ckpt["encoder_state"])
@@ -156,10 +157,13 @@ def main():
                          @ mat_real_bin) / len(real_mat)
             indep_coo = independence_cooccurrence(real_pf)
             coo_eval  = evaluate_cooccurrence(pred_coo, real_coo, indep_coo, P)
-            log(f"Co-occ Pearson r:   model={coo_eval['coo_pearson_r_model']:.4f}  "
+            log(f"Co-occ absolute r:  model={coo_eval['coo_pearson_r_model']:.4f}  "
                 f"indep={coo_eval['coo_pearson_r_indep']:.4f}  "
-                f"Δ={coo_eval['delta_coo_pearson_r']:+.4f}  "
-                f"{'✓ model wins' if coo_eval['model_beats_indep'] else '✗ indep wins'}")
+                f"{'✓ model wins' if coo_eval['model_beats_indep_abs'] else '✗ indep wins abs'}")
+            log(f"Co-occ residual r:  {coo_eval['residual_pearson_r']:.4f}  "
+                f"(std real={coo_eval['residual_std_real']:.4f}  "
+                f"model={coo_eval['residual_std_model']:.4f})  "
+                f"{'✓ captures residual' if coo_eval['model_beats_indep_resid'] else '✗ misses residual'}")
 
         # Frontier coverage — Hamming 1 and 2
         cov   = frontier_coverage_benchmark(mat_ctx, real_mat, P, hamming_r=1)

@@ -55,6 +55,8 @@ freq_head:
 
 cooc_head:
   cooc_weight:         0.5     # weight for co-occurrence loss
+  cooc_rank:           16      # low-rank factorization rank
+  cooc_alpha:          5.0     # deviation upweighting strength
 
 eval:
   n_generate:        1000

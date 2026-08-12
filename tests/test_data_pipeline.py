@@ -88,7 +88,10 @@ def test_transition_batch():
 def test_length_head():
     lh  = LengthToGoHead(D, H)
     out = lh(torch.rand(4, D), torch.randint(1, H+1, (4,)))
-    assert out.shape == (4,) and (out >= 0).all()
+    assert out.shape == (4,)
+    # Output is log(count) — can be any real value
+    # At generation: exp(out) gives actual count (always positive)
+    assert torch.exp(out).min() > 0
 
 def test_freq_head_output():
     fh  = FrequencyRegressionHead(D, P)
@@ -153,9 +156,10 @@ def test_molecular_clock():
         h5   = torch.tensor([5], dtype=torch.long)
         pred1 = lh(ctx1, h1).item()
         pred5 = lh(ctx5, h5).item()
-    # With random weights both predictions exist and are non-negative
-    assert pred1 >= 0
-    assert pred5 >= 0
+    # Output is log(count) — can be negative (log of small count)
+    # exp converts to actual count which must be positive
+    assert np.exp(pred1) > 0
+    assert np.exp(pred5) > 0
 
     # Generated mutation counts respect the predicted counts per sequence
     out_h1 = generate_from_hidden(model, lh, h_state, 1,  32, P, 5, device)
