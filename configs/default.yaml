@@ -1,0 +1,87 @@
+paths:
+  raw_dir:            data/raw
+  processed_dir:      data/processed
+  vocab_dir:          data/vocab
+  spike_fasta_dir:    data/processed/spike_fasta
+  monthly_sample_dir: data/processed/monthly_samples
+  matrix_dir:         data/processed/mutation_matrices
+
+# --- Spike extraction ---
+spike:
+  start_nt: 21563
+  end_nt:   25384
+  min_coverage: 0.90
+
+# --- Sampling ---
+sampling:
+  sequences_per_month: 10000
+  max_per_country:     1500
+  seed:                42
+  min_month_total:     500
+
+# --- Mutation calling ---
+mutations:
+  # Minimum fraction of sequences a position must vary at to enter vocabulary.
+  # Keeps the position vocabulary tractable (typically 100-400 positions).
+  min_position_prevalence: 0.002
+  max_mutations_per_seq:   80
+
+# --- Horizon ---
+horizon:
+  # Train on all h in {1, ..., max_h} month gaps simultaneously.
+  # At generation time, any h in this range can be requested.
+  max_h: 6
+  # Weights for the composite training loss:
+  #   total = denoising_weight * L_denoise + length_weight * L_length
+  denoising_weight: 1.0
+  length_weight:    0.5
+
+# --- Model ---
+model:
+  d_model:     128
+  n_heads:     4
+  n_layers:    3
+  dropout:     0.1
+  diffusion_T: 50
+  phi_hidden:  256           # DeepSets inner phi hidden dim
+  deepsets_batch_size: 512   # sequences per batch in encode_population()
+
+# --- Training ---
+train:
+  train_months:  []    # auto: all months except last 2
+  test_month:    ""    # auto: last month
+  batch_size:    256
+  n_epochs:      50
+  lr:            0.001
+  weight_decay:  0.0001
+  grad_clip:     1.0
+  save_every:    10
+  checkpoint_dir: checkpoints/
+
+# --- Evaluation ---
+eval:
+  n_generate:        2000
+  top_k_sites_pairs: 100
+  mmd_subsample:     500
+  horizons:          [1, 2, 3, 6]   # which horizons to evaluate at
+
+# --- Trajectory encoder ---
+trajectory:
+  # Number of past months to include in trajectory window (W).
+  # W=1: current + previous month (velocity signal).
+  # W=3: one quarter of history.
+  window_size: 3
+  # "gru"      : GRU over sequence of population embeddings (Option B, primary)
+  # "velocity" : concatenate posfreq_t and delta_posfreq (Option A, ablation)
+  mode: "gru"
+  # GRU hidden dim (only used when mode="gru")
+  gru_hidden: 128
+
+# --- Frequency regression head ---
+freq_head:
+  # Weight for frequency regression loss at each step (including intermediate)
+  freq_weight: 1.0
+  # Weight for intermediate step losses relative to final step.
+  # 1.0 = all steps weighted equally.
+  # 0.5 = intermediate steps weighted half as much as the final step.
+  intermediate_weight: 0.5

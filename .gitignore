@@ -1,0 +1,26 @@
+# Data — never commit raw or processed sequence data
+data/raw/
+data/processed/
+data/vocab/
+checkpoints/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+*.env
+
+# Output
+*.json
+evaluation_results*
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
