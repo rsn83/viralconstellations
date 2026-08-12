@@ -161,10 +161,13 @@ def main():
                 f"Δ={coo_eval['delta_coo_pearson_r']:+.4f}  "
                 f"{'✓ model wins' if coo_eval['model_beats_indep'] else '✗ indep wins'}")
 
-        # Frontier coverage
-        cov = frontier_coverage_benchmark(mat_ctx, real_mat, P)
-        log(f"Frontier coverage:  {cov['frontier_coverage']:.4f} "
+        # Frontier coverage — Hamming 1 and 2
+        cov   = frontier_coverage_benchmark(mat_ctx, real_mat, P, hamming_r=1)
+        cov2  = frontier_coverage_benchmark(mat_ctx, real_mat, P, hamming_r=2)
+        log(f"Frontier coverage H=1: {cov['frontier_coverage']:.4f} "
             f"({cov['n_in_frontier']}/{cov['n_new']} new in F(O_t))")
+        log(f"Frontier coverage H=2: {cov2['frontier_coverage']:.4f} "
+            f"({cov2['n_in_frontier']}/{cov2['n_new']} within 2 mutations)")
 
         # Neural frontier scorer
         occupied_t   = compute_occupied(mat_ctx, top_k=200)
@@ -198,10 +201,11 @@ def main():
             f"real={m_model.get('mean_mut_count_real',0):.1f}")
 
         results[f"h={h}"] = {
-            "target_month":       target,
-            "freq_pearson_r":     float(r_freq),
-            "cooccurrence":       coo_eval,
-            "frontier_coverage":  float(cov["frontier_coverage"]),
+            "target_month":         target,
+            "freq_pearson_r":       float(r_freq),
+            "cooccurrence":         coo_eval,
+            "frontier_coverage_H1": float(cov["frontier_coverage"]),
+            "frontier_coverage_H2": float(cov2["frontier_coverage"]),
             "frontier_neural":    neural_met,
             "generative_model":   m_model,
             "generative_baseline":m_bl,

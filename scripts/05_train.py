@@ -202,20 +202,21 @@ def main():
                         label_smoothing=0.05
                     )
 
-                    # ── Length loss ───────────────────────────────────────
-                    # Length loss (disabled if weight=0)
+                    # ── Length loss (Poisson NLL) ──────────────────────────
+                    # LengthToGoHead outputs log(count).
+                    # Poisson NLL stays stable for counts 5-55.
                     if lw > 0:
                         true_cnt = torch.tensor(
-                            [(mat_th>0).sum(1).mean()], dtype=torch.float32, device=device
-                        )
-                        pred_cnt = length_head(
+                            [(mat_th>0).sum(1).mean()], dtype=torch.float32,
+                            device=device
+                        ).clamp(min=1.0)
+                        log_pred = length_head(
                             h_final.unsqueeze(0),
                             torch.tensor([h_val], dtype=torch.long, device=device)
+                        )   # (1,) log(count)
+                        length_loss = F.poisson_nll_loss(
+                            log_pred, true_cnt, log_input=True, full=False
                         )
-                        # Normalize by mean count to keep loss ~O(1) not O(count^2)
-                        mean_count  = true_cnt.detach().clamp(min=1.0)
-                        length_loss = F.mse_loss(pred_cnt / mean_count,
-                                                true_cnt / mean_count)
                     else:
                         length_loss = torch.tensor(0.0, device=device)
 

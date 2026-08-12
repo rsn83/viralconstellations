@@ -99,7 +99,7 @@ def compute_new_constellations(
     min_freq: float = 0.001,
 ) -> Tuple[Set[Constellation], Set[Constellation]]:
     """
-    Returns (occupied_t, new_in_th) where new_in_th = O_t+h minus O_t.
+    Returns (occupied_t, new_in_th) where new_in_th = O_{t+h} minus O_t.
     These are the ground-truth targets for prediction.
     """
     occ_t  = set(compute_occupied(mat_t,  top_k=2000, min_freq=min_freq).keys())
@@ -110,28 +110,52 @@ def compute_new_constellations(
 # ── Frontier coverage benchmark ───────────────────────────────────────────────
 
 def frontier_coverage_benchmark(
-    mat_t:    np.ndarray,
-    mat_th:   np.ndarray,
-    P:        int,
-    min_freq: float = 0.001,
+    mat_t:     np.ndarray,
+    mat_th:    np.ndarray,
+    P:         int,
+    hamming_r: int   = 1,
+    min_freq:  float = 0.001,
 ) -> dict:
     """
-    What fraction of new constellations in month t+h are in F(O_t)?
-    This is a prerequisite validation — if < 0.5, the lattice framing is wrong.
+    What fraction of new constellations in month t+h are within
+    hamming_r mutations of some occupied constellation in O_t?
+
+    hamming_r=1: strict frontier (one mutation away) — original framing
+    hamming_r=2: two mutations away — tests whether new constellations
+                 arrive via two simultaneous mutations (recombination etc.)
+
+    Coverage < 0.5 at hamming_r=1 but > 0.8 at hamming_r=2 means new
+    constellations typically require two mutations, not one.
     """
     occupied_t, new_in_th = compute_new_constellations(mat_t, mat_th, min_freq)
     if not new_in_th:
         return {"frontier_coverage": 1.0, "n_new": 0,
-                "n_in_frontier": 0, "n_occupied_t": len(occupied_t), "n_frontier": 0}
-    frontier    = compute_frontier({c: 1.0 for c in occupied_t}, P)
-    frontier_set = set(frontier.keys())
-    n_covered   = sum(1 for c in new_in_th if c in frontier_set)
+                "n_in_frontier": 0, "n_occupied_t": len(occupied_t),
+                "n_frontier": 0, "hamming_r": hamming_r}
+
+    if hamming_r == 1:
+        frontier     = compute_frontier({c: 1.0 for c in occupied_t}, P)
+        frontier_set = set(frontier.keys())
+        n_covered    = sum(1 for c in new_in_th if c in frontier_set)
+    else:
+        # For hamming_r > 1: check symmetric difference size
+        occ_list  = list(occupied_t)
+        n_covered = 0
+        for c in new_in_th:
+            for occ in occ_list:
+                diff = len(c.symmetric_difference(occ))
+                if diff <= hamming_r:
+                    n_covered += 1
+                    break
+        frontier_set = set()  # not computed for hamming_r > 1
+
     return {
         "frontier_coverage": n_covered / len(new_in_th),
         "n_new":             len(new_in_th),
         "n_in_frontier":     n_covered,
         "n_occupied_t":      len(occupied_t),
         "n_frontier":        len(frontier_set),
+        "hamming_r":         hamming_r,
     }
 
 

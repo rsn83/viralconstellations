@@ -22,7 +22,7 @@ mutations:
 horizon:
   max_h:              6
   denoising_weight:   1.0
-  length_weight:      0.0
+  length_weight:      0.1    # Poisson NLL - now stable
 
 model:
   d_model:            128
@@ -43,7 +43,7 @@ train:
   test_month:    "2023-01"     # predict 2023-01 through 2023-06
   batch_size:    256
   n_epochs:      30
-  lr:            0.0003
+  lr:            0.001
   weight_decay:  0.0001
   grad_clip:     1.0
   save_every:    10

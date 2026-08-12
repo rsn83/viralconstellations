@@ -43,11 +43,11 @@ One diffusion process (not two):
 """
 
 import numpy as np
+from scipy.stats import pearsonr
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset
-from scipy.stats import pearsonr
 
 N_RESIDUES = 21   # 0=reference, 1-20=amino acids A..Y
 
@@ -249,9 +249,12 @@ class LengthToGoHead(nn.Module):
         self.h_proj    = nn.Sequential(
             nn.Linear(d_model, d_model), nn.SiLU(), nn.Linear(d_model, d_model)
         )
+        # Output is log(count) — no Softplus activation
+        # At inference: exp(output) = predicted mutation count
+        # Keeps values in log-scale (~3-4 for counts 20-60) for stable training
         self.net = nn.Sequential(
             nn.Linear(d_model * 2, d_model), nn.SiLU(),
-            nn.Linear(d_model, 1), nn.Softplus(),
+            nn.Linear(d_model, 1),
         )
 
     def _h_emb(self, h: torch.Tensor) -> torch.Tensor:
@@ -414,8 +417,14 @@ def evaluate_cooccurrence(
     real_vals  = real_coo[iu]
     indep_vals = indep_coo[iu]
 
-    r_model, _ = pearsonr(pred_vals,  real_vals)
-    r_indep, _ = pearsonr(indep_vals, real_vals)
+    try:
+        r_model, _ = pearsonr(pred_vals,  real_vals)
+    except Exception:
+        r_model = float('nan')
+    try:
+        r_indep, _ = pearsonr(indep_vals, real_vals)
+    except Exception:
+        r_indep = float('nan')
 
     return {
         "coo_pearson_r_model":   float(r_model),
@@ -542,8 +551,10 @@ def generate_from_hidden(model, length_head, h_state, horizon,
     h_t = torch.full((n_samples,), horizon, dtype=torch.long, device=device)
 
     # ── Step 1: Molecular clock — how many mutations? ─────────────────────
+    # LengthToGoHead outputs log(count) — exp to get actual count
     target_counts = (
         length_head(ctx, h_t)
+        .exp()
         .round()
         .clamp(min=1, max=P)
         .long()
