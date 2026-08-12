@@ -99,7 +99,7 @@ def compute_new_constellations(
     min_freq: float = 0.001,
 ) -> Tuple[Set[Constellation], Set[Constellation]]:
     """
-    Returns (occupied_t, new_in_th) where new_in_th = O_{t+h} \ O_t.
+    Returns (occupied_t, new_in_th) where new_in_th = O_t+h minus O_t.
     These are the ground-truth targets for prediction.
     """
     occ_t  = set(compute_occupied(mat_t,  top_k=2000, min_freq=min_freq).keys())

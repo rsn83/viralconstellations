@@ -47,6 +47,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset
+from scipy.stats import pearsonr
 
 N_RESIDUES = 21   # 0=reference, 1-20=amino acids A..Y
 
