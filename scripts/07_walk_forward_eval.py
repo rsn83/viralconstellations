@@ -98,7 +98,11 @@ def get_freq_prediction(freq_head, traj_enc, transition, encoder,
 
 
 def main():
-    cfg        = yaml.safe_load(open(ROOT / "configs/default.yaml"))
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="configs/default.yaml")
+    args   = parser.parse_args()
+    cfg    = yaml.safe_load(open(ROOT / args.config))
     matrix_dir = ROOT / cfg["paths"]["matrix_dir"]
     ckpt_dir   = ROOT / cfg["train"]["checkpoint_dir"]
     device     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
