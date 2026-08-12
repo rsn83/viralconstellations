@@ -22,7 +22,7 @@ mutations:
 horizon:
   max_h:              6
   denoising_weight:   1.0
-  length_weight:      0.1    # Poisson NLL - now stable
+  length_weight:      0.0
 
 model:
   d_model:            128
@@ -53,8 +53,15 @@ freq_head:
   freq_weight:         1.0
   intermediate_weight: 0.5
 
+# Constellation consistency loss
+# Forces the transformer to produce jointly consistent predictions
+# rather than learning each position marginally.
+consistency:
+  weight:  5.0    # high weight needed: MSE on co-occ values is small (~0.01)
+  alpha:   3.0    # upweight pairs deviating from independence
+
 cooc_head:
-  cooc_weight:         0.5     # weight for co-occurrence loss
+  cooc_weight:         0.0     # disabled — using consistency loss instead
   cooc_rank:           16      # low-rank factorization rank
   cooc_alpha:          5.0     # deviation upweighting strength
 

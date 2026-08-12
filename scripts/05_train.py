@@ -73,12 +73,15 @@ def main():
         lw     = cfg["horizon"]["length_weight"]
         fw     = cfg["freq_head"]["freq_weight"]
         iw     = cfg["freq_head"]["intermediate_weight"]
-        cw     = cfg["cooc_head"]["cooc_weight"]
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        cw          = cfg["cooc_head"]["cooc_weight"]
+        consist_w   = cfg.get("consistency", {}).get("weight", 0.0)
+        consist_alpha = cfg.get("consistency", {}).get("alpha", 3.0)
+        device      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         log(f"P={P}  d={d}  T={T}  mode={mode}  W={W}  max_h={max_h}")
         log(f"Device: {device}")
-        log(f"Losses: denoise×{dw}  freq×{fw}  length×{lw}  cooc×{cw}")
+        log(f"Losses: denoise×{dw}  freq×{fw}  length×{lw}  "
+            f"cooc×{cw}  consist×{consist_w}")
 
         # Available months
         all_avail = sorted(p.stem for p in matrix_dir.glob("*.npy")
@@ -154,14 +157,14 @@ def main():
 
         best_val = float("inf")
         log("\nTraining started...")
-        log(f"{'Epoch':>5} {'denoise':>9} {'freq':>9} {'cooc':>9} {'length':>9} {'val':>9} {'lr':>9}")
-        log("-"*65)
+        log(f"{'Epoch':>5} {'denoise':>9} {'freq':>9} {'consist':>9} {'val':>9} {'lr':>9}")
+        log("-"*57)
 
         for epoch in range(1, cfg["train"]["n_epochs"] + 1):
             cache.refresh()
             for m in modules: m.train()
 
-            ep = {k: 0.0 for k in ["denoise","freq","cooc","length","total"]}
+            ep = {k: 0.0 for k in ["denoise","freq","cooc","length","consist","total"]}
             n_tri = 0
 
             for mt, mat_th, h_val in triples:
@@ -204,6 +207,59 @@ def main():
                         label_smoothing=0.05
                     )
 
+                    # ── Constellation consistency loss ─────────────────────
+                    # Forces transformer to produce jointly consistent predictions.
+                    # The cross-entropy loss treats each position independently —
+                    # marginal frequencies alone can minimise it without any
+                    # cross-position attention. This loss explicitly penalises
+                    # inconsistent joint predictions.
+                    #
+                    # pred_coo[i,j] = mean over batch of P(mut_i) * P(mut_j)
+                    #               = predicted co-occurrence from model logits
+                    # real_coo[i,j] = observed co-occurrence in target month
+                    #
+                    # Gradient flows: consist_loss → pred_coo → p_mut →
+                    #   logits → attention weights → model learns cross-position
+                    #   dependencies rather than just marginals.
+                    #
+                    # Deviation-weighted: pairs deviating from independence get
+                    # higher weight so the model focuses on learning residual
+                    # structure, not the dominant-lineage co-occurrence that
+                    # independence already predicts for free.
+                    if consist_w > 0:
+                        # Real co-occurrence from target month (full matrix)
+                        bin_th   = torch.tensor(
+                            (mat_th > 0).astype(np.float32), device=device
+                        )                                           # (n_seq, P)
+                        real_coo = (bin_th.T @ bin_th) / len(bin_th)  # (P, P)
+
+                        # Predicted co-occurrence from model output probabilities
+                        probs    = F.softmax(logits, dim=-1)        # (B, P, 21)
+                        p_mut    = 1.0 - probs[:, :, 0]            # (B, P)
+                        pred_coo = torch.bmm(
+                            p_mut.unsqueeze(2),
+                            p_mut.unsqueeze(1)
+                        ).mean(0)                                    # (P, P)
+
+                        # Upper triangle only (avoid double-counting)
+                        iu_r = torch.triu_indices(Pv, Pv, offset=1, device=device)
+                        real_pairs = real_coo[iu_r[0], iu_r[1]]    # (n_pairs,)
+                        pred_pairs = pred_coo[iu_r[0], iu_r[1]]    # (n_pairs,)
+
+                        # Deviation-weighted: upweight pairs that deviate
+                        # from independence assumption
+                        freq_th   = bin_th.mean(0)
+                        indep_coo = torch.outer(freq_th, freq_th)
+                        deviation = (real_coo - indep_coo).abs()
+                        weights   = 1.0 + consist_alpha * deviation[iu_r[0], iu_r[1]]
+                        weights   = (weights / weights.mean()).detach()
+
+                        consist_loss = (
+                            weights * (pred_pairs - real_pairs) ** 2
+                        ).mean()
+                    else:
+                        consist_loss = torch.tensor(0.0, device=device)
+
                     # ── Length loss (Poisson NLL) ──────────────────────────
                     # LengthToGoHead outputs log(count).
                     # Poisson NLL stays stable for counts 5-55.
@@ -224,7 +280,8 @@ def main():
 
                     # ── Combined loss ─────────────────────────────────────
                     loss = (dw * denoise_loss + fw * freq_loss +
-                            cw * cooc_loss   + lw * length_loss)
+                            cw * cooc_loss   + lw * length_loss +
+                            consist_w * consist_loss)
 
                     optimizer.zero_grad()
                     loss.backward()
@@ -235,6 +292,7 @@ def main():
                     ep["freq"]    += freq_loss.item()
                     ep["cooc"]    += cooc_loss.item()
                     ep["length"]  += length_loss.item()
+                    ep["consist"] += consist_loss.item()
                     ep["total"]   += loss.item()
                     n_tri += 1
 
@@ -273,7 +331,7 @@ def main():
 
             # Print every epoch
             log(f"{epoch:>5d} {ep['denoise']/n:>9.4f} {ep['freq']/n:>9.4f} "
-                f"{ep['cooc']/n:>9.4f} {ep['length']/n:>9.4f} "
+                f"{ep['consist']/n:>9.6f} "
                 f"{val_loss:>9.4f} {scheduler.get_last_lr()[0]:>9.2e}")
 
             if val_loss > 0 and val_loss < best_val:
