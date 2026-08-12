@@ -308,6 +308,124 @@ class FrequencyRegressionHead(nn.Module):
         return -(target_posfreq * log_prob).sum(dim=-1).mean()
 
 
+# ── Co-occurrence regression head (explicit joint prediction) ─────────────────
+
+class CooccurrenceRegressionHead(nn.Module):
+    """
+    Maps h_{t+h} → predicted pairwise co-occurrence matrix.
+
+    Output: upper triangle of (P, P) matrix, ~P*(P-1)/2 values.
+    Entry [i,j] = P(position i AND position j are both mutated in month t+h).
+
+    This is the EXPLICIT answer to "does background structure predict
+    future co-occurrence beyond the independence assumption?"
+
+    Independence baseline predicts: P(i AND j) = freq_i × freq_j
+    This head predicts: P(i AND j) directly from the population trajectory.
+
+    If this head's predicted matrix correlates better with the real
+    co-occurrence matrix than the independence baseline does, then
+    the model has learned joint structure — the central scientific claim.
+
+    Training loss: binary cross-entropy against empirical co-occurrence.
+    (BCE is correct here: each pair is a probability in [0,1].)
+    """
+    def __init__(self, d_model: int, n_positions: int):
+        super().__init__()
+        self.P       = n_positions
+        n_pairs      = n_positions * (n_positions - 1) // 2
+        self.n_pairs = n_pairs
+        self.net = nn.Sequential(
+            nn.Linear(d_model, d_model * 2),
+            nn.SiLU(),
+            nn.Linear(d_model * 2, n_pairs),
+            nn.Sigmoid(),   # output is probability in [0,1]
+        )
+        # Upper triangle indices — computed once, registered as buffer
+        iu = torch.triu_indices(n_positions, n_positions, offset=1)
+        self.register_buffer("iu_row", iu[0])
+        self.register_buffer("iu_col", iu[1])
+
+    def forward(self, h: torch.Tensor) -> torch.Tensor:
+        """h: (B, d_model) → (B, n_pairs) predicted co-occurrence probs."""
+        return self.net(h)
+
+    def loss(self, h: torch.Tensor, mat_th: np.ndarray) -> torch.Tensor:
+        """
+        Compute BCE loss against empirical pairwise co-occurrence.
+
+        h:      (B, d_model) — hidden state, same for all seqs in this month
+        mat_th: (n_seq, P) int8 — real sequences from target month
+
+        Empirical co-occurrence[i,j] = fraction of sequences where
+        both position i AND position j are mutated (non-zero).
+        """
+        # Empirical co-occurrence from real sequences
+        bin_mat  = torch.tensor(
+            (mat_th > 0).astype(np.float32)
+        )                                                    # (n_seq, P)
+        n        = len(bin_mat)
+        coo_full = (bin_mat.T @ bin_mat) / n                # (P, P)
+        target   = coo_full[self.iu_row, self.iu_col]       # (n_pairs,)
+        target   = target.to(h.device)
+
+        # Predicted
+        pred = self.forward(h)                               # (B, n_pairs)
+        # Broadcast target to match batch
+        target = target.unsqueeze(0).expand(pred.shape[0], -1)
+
+        return F.binary_cross_entropy(pred, target)
+
+    def predict_matrix(self, h: torch.Tensor) -> np.ndarray:
+        """Return (P, P) predicted co-occurrence matrix."""
+        with torch.no_grad():
+            pairs = self.forward(h.unsqueeze(0)).squeeze(0).cpu().numpy()
+        mat = np.zeros((self.P, self.P), dtype=np.float32)
+        iu_r = self.iu_row.cpu().numpy()
+        iu_c = self.iu_col.cpu().numpy()
+        mat[iu_r, iu_c] = pairs
+        mat[iu_c, iu_r] = pairs   # symmetric
+        return mat
+
+
+def independence_cooccurrence(posfreq: np.ndarray) -> np.ndarray:
+    """
+    Independence baseline: P(i AND j) = freq_i × freq_j.
+    posfreq: (P, 21) — per-position residue frequencies.
+    Returns (P, P) predicted co-occurrence under independence assumption.
+    """
+    mut_rates = 1.0 - posfreq[:, 0]    # P(any mutation at position j)
+    return np.outer(mut_rates, mut_rates).astype(np.float32)
+
+
+def evaluate_cooccurrence(
+    pred_coo:  np.ndarray,   # (P, P) model prediction
+    real_coo:  np.ndarray,   # (P, P) empirical from real sequences
+    indep_coo: np.ndarray,   # (P, P) independence baseline
+    P:         int,
+) -> dict:
+    """
+    Compare model co-occurrence prediction against real and independence baseline.
+    Key metric: does model Pearson r > independence Pearson r?
+    """
+    iu         = np.triu_indices(P, 1)
+    pred_vals  = pred_coo[iu]
+    real_vals  = real_coo[iu]
+    indep_vals = indep_coo[iu]
+
+    r_model, _ = pearsonr(pred_vals,  real_vals)
+    r_indep, _ = pearsonr(indep_vals, real_vals)
+
+    return {
+        "coo_pearson_r_model":   float(r_model),
+        "coo_pearson_r_indep":   float(r_indep),
+        "coo_mse_model":         float(np.mean((pred_vals  - real_vals)**2)),
+        "coo_mse_indep":         float(np.mean((indep_vals - real_vals)**2)),
+        "model_beats_indep":     bool(r_model > r_indep),
+        "delta_coo_pearson_r":   float(r_model - r_indep),
+    }
+
+
 # ── Constellation transformer (DILM-M reverse process) ───────────────────────
 
 class ConstellationTransformer(nn.Module):

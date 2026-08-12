@@ -1,0 +1,62 @@
+# Test config — uses only 2020 data, small model, few epochs
+# Run with: python scripts/test_pipeline.py
+# Should complete in 5-10 min on CPU laptop
+
+paths:
+  raw_dir:            data/raw
+  processed_dir:      data/processed
+  vocab_dir:          data/vocab
+  spike_fasta_dir:    data/processed/spike_fasta
+  monthly_sample_dir: data/processed/monthly_samples
+  matrix_dir:         data/processed/mutation_matrices
+
+sampling:
+  sequences_per_month: 10000
+  max_per_country:     1500
+  seed:                42
+  min_month_total:     100
+
+mutations:
+  min_position_prevalence: 0.002
+  max_mutations_per_seq:   80
+
+horizon:
+  max_h:              2      # only 1 and 2 month horizons
+  denoising_weight:   1.0
+  length_weight:      0.5
+
+model:
+  d_model:            64     # smaller model for speed
+  n_heads:            2
+  n_layers:           2
+  dropout:            0.1
+  diffusion_T:        20     # fewer diffusion steps
+  phi_hidden:         128
+  deepsets_batch_size: 256
+
+trajectory:
+  window_size:        2
+  mode:               "gru"
+  gru_hidden:         64
+
+train:
+  train_months:  ['2020-02','2020-03','2020-04','2020-05',
+                  '2020-06','2020-07','2020-08','2020-09']
+  test_month:    "2020-10"
+  batch_size:    64
+  n_epochs:      15
+  lr:            0.001
+  weight_decay:  0.0001
+  grad_clip:     1.0
+  save_every:    5
+  checkpoint_dir: checkpoints/test/
+
+freq_head:
+  freq_weight:         1.0
+  intermediate_weight: 0.5
+
+eval:
+  n_generate:        200
+  top_k_sites_pairs: 30
+  mmd_subsample:     100
+  horizons:          [1, 2]

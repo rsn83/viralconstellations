@@ -1,0 +1,63 @@
+# Colab test config: train 2020-2022, predict 2023
+# Run: python scripts/05_train.py --config configs/colab_2022_test.yaml
+
+paths:
+  raw_dir:            data/raw
+  processed_dir:      data/processed
+  vocab_dir:          data/vocab
+  spike_fasta_dir:    data/processed/spike_fasta
+  monthly_sample_dir: data/processed/monthly_samples
+  matrix_dir:         data/processed/mutation_matrices
+
+sampling:
+  sequences_per_month: 10000
+  max_per_country:     1500
+  seed:                42
+  min_month_total:     100
+
+mutations:
+  min_position_prevalence: 0.002
+  max_mutations_per_seq:   80
+
+horizon:
+  max_h:              6
+  denoising_weight:   1.0
+  length_weight:      0.5
+
+model:
+  d_model:            128
+  n_heads:            4
+  n_layers:           3
+  dropout:            0.1
+  diffusion_T:        50
+  phi_hidden:         256
+  deepsets_batch_size: 512
+
+trajectory:
+  window_size:        3
+  mode:               "gru"
+  gru_hidden:         128
+
+train:
+  train_months:  []            # auto: all months before test_month
+  test_month:    "2023-01"     # predict 2023-01 through 2023-06
+  batch_size:    256
+  n_epochs:      30
+  lr:            0.001
+  weight_decay:  0.0001
+  grad_clip:     1.0
+  save_every:    10
+  checkpoint_dir: checkpoints/colab_2022/
+
+freq_head:
+  freq_weight:         1.0
+  intermediate_weight: 0.5
+
+cooc_head:
+  cooc_weight:         0.5     # weight for co-occurrence loss
+
+eval:
+  n_generate:        1000
+  top_k_sites_pairs: 50
+  mmd_subsample:     300
+  horizons:          [1, 2, 3, 6]

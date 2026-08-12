@@ -49,7 +49,7 @@ model:
 # --- Training ---
 train:
   train_months:  []    # auto: all months except last 2
-  test_month:    ""    # auto: last month
+  test_month:    "2023-01"    # auto: last month
   batch_size:    256
   n_epochs:      50
   lr:            0.001
