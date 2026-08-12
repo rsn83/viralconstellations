@@ -618,8 +618,9 @@ def generate_from_hidden(model, length_head, h_state, horizon,
         .clamp(min=1, max=P)
         .long()
     )                                                       # (N,)
-    print(f"    Predicted mean mutations at h={horizon}: "
-          f"{target_counts.float().mean().item():.1f}")
+    mean_pred = target_counts.float().mean().item()
+    if mean_pred < 2.0 or mean_pred > 100.0:
+        print(f"    WARNING: unusual predicted mut count at h={horizon}: {mean_pred:.1f}")
 
     # ── Step 2: Denoising — which residue at each position? ───────────────
     # Start from all-reference (all zeros = no mutations)

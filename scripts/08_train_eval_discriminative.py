@@ -298,7 +298,10 @@ def main():
     all_windows = []
     min_train   = 6
 
-    for ctx_month in all_months[min_train:-max(eval_horizons)]:
+    cutoffs = all_months[min_train:-max(eval_horizons)]
+    for c_idx, ctx_month in enumerate(cutoffs):
+        if c_idx % 10 == 0:
+            log(f"  Processing window {c_idx+1}/{len(cutoffs)}  ctx={ctx_month}")
         mat_ctx = all_mats[ctx_month]
         pf_ctx  = all_freqs[ctx_month]
         prev_m  = mminus(ctx_month)
