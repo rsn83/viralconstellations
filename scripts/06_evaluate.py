@@ -231,13 +231,17 @@ def main():
     log("="*60)
     for hk, r in results.items():
         log(f"\n{hk}:")
-        log(f"  Freq Pearson r:       {r['freq_pearson_r']:.4f}")
-        log(f"  Co-occ model beats indep: {r['cooccurrence'].get('model_beats_indep_abs', False)}"
-            f"  (Δ={r['cooccurrence']['delta_coo_pearson_r']:+.4f})")
-        log(f"  Frontier coverage:    {r['frontier_coverage']:.4f}")
-        if r["frontier_neural"]:
-            log(f"  Neural frontier AP:   {r['frontier_neural'].get('AP',0):.4f}")
-        log(f"  Generative Δ co-occ:  {r['delta_pairwise_coo']:+.4f}")
+        log(f"  Freq Pearson r:         {r['freq_pearson_r']:.4f}")
+        coo = r.get('cooccurrence', {})
+        log(f"  Co-occ absolute r:      model={coo.get('coo_pearson_r_model',float('nan')):.4f}  "
+            f"indep={coo.get('coo_pearson_r_indep',float('nan')):.4f}")
+        log(f"  Co-occ residual r:      {coo.get('residual_pearson_r',float('nan')):.4f}")
+        log(f"  Frontier coverage H=1:  {r.get('frontier_coverage_H1', float('nan')):.4f}")
+        log(f"  Frontier coverage H=2:  {r.get('frontier_coverage_H2', float('nan')):.4f}")
+        fn = r.get('frontier_neural', {})
+        if fn:
+            log(f"  Neural frontier AP:     {fn.get('AP',0):.4f}")
+        log(f"  Generative Δ co-occ:    {r.get('delta_pairwise_coo', float('nan')):.4f}")
 
 
 if __name__ == "__main__":
