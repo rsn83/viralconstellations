@@ -210,7 +210,10 @@ def main():
                         h_final.unsqueeze(0),
                         torch.tensor([h_val], dtype=torch.long, device=device)
                     )
-                    length_loss = F.mse_loss(pred_cnt, true_cnt)
+                    # Normalize by mean count to keep loss ~O(1) not O(count^2)
+                    mean_count  = true_cnt.detach().clamp(min=1.0)
+                    length_loss = F.mse_loss(pred_cnt / mean_count,
+                                             true_cnt / mean_count)
 
                     # ── Combined loss ─────────────────────────────────────
                     loss = (dw * denoise_loss + fw * freq_loss +
