@@ -1,57 +1,40 @@
 """
-Step 7: Walk-forward evaluation with frontier scoring.
+Step 7: Walk-forward evaluation across all available windows.
 
-Evaluation design (monthly walk-forward):
-  For each cutoff month c from month MIN_TRAIN+1 to last available:
-    1. Training data:  all months up to c
-    2. Context month:  c (last training month)
-    3. Target months:  c+1, c+2, c+3, c+6
+For each context month c (every available month with enough history):
+  - Frequency prediction: Pearson r between predicted and real posfreq
+  - Frontier coverage: fraction of new constellations in F(O_c)
+  - Frontier scoring: precision@k and AP for three scorers:
+      random baseline, logistic regression, neural model
 
-  For each (c, h) pair where target exists:
-    A. Frequency prediction:
-       Use FrequencyRegressionHead → compare to real posfreq at c+h
-       Metric: Pearson r between predicted and real mutation rates
+Generation is skipped by default (n_gen=0) since the length head
+is untrained and would produce degenerate 1-mutation sequences.
+Set n_gen > 0 only after the length head is properly trained.
 
-    B. Frontier coverage benchmark:
-       Compute F(O_c) → check what fraction of new constellations
-       at c+h are in the frontier
-       Metric: frontier_coverage (should be >0.8 if framing is valid)
-
-    C. Frontier scoring:
-       Train logistic regression on historical windows before c
-       Score F(O_c) candidates → evaluate against new_in_th
-       Metric: precision@10, precision@50, average_precision vs random baseline
-
-    D. Co-occurrence prediction (generative model):
-       Generate 500 sequences from h_{c+h} → compare to real
-       Metric: pairwise co-occurrence Pearson r vs independence baseline
-
-Results averaged across all windows, reported per horizon h.
-
-Note: we use the SINGLE pre-trained model for all windows.
-This is slightly optimistic for early windows (model saw later data)
-but practical — full walk-forward retraining would require 70+ training runs.
-For a proper paper, train on first half, evaluate on second half only.
+Usage:
+  python scripts/07_walk_forward_eval.py --config configs/colab_2022_test.yaml
 """
 
-import sys, json
+import sys, json, argparse, traceback
 from pathlib import Path
 from collections import defaultdict
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-import yaml
-import numpy as np
-import torch
-import torch.nn.functional as F
+parser = argparse.ArgumentParser()
+parser.add_argument("--config", default="configs/default.yaml")
+parser.add_argument("--n_gen", type=int, default=0,
+                    help="Sequences to generate per window (0 = skip generation)")
+args = parser.parse_args()
+
+import yaml, numpy as np, torch
 from scipy.stats import pearsonr
 
 from viralconstellations.model.model import (
     ConstellationTransformer, PopulationEncoder,
-    LengthToGoHead, FrequencyRegressionHead,
+    LengthToGoHead, FrequencyRegressionHead, CooccurrenceRegressionHead,
     TrajectoryEmbeddingCache,
-    independence_baseline_generate, generate_from_hidden, N_RESIDUES,
 )
 from viralconstellations.model.trajectory import (
     build_trajectory_encoder, TransitionModel,
@@ -59,281 +42,286 @@ from viralconstellations.model.trajectory import (
 from viralconstellations.frontier.frontier import (
     compute_occupied, compute_frontier,
     compute_new_constellations, frontier_coverage_benchmark,
-    candidate_to_sequence, score_candidates_neural,
-    LogisticFrontierScorer, evaluate_ranking,
+    score_candidates_neural, LogisticFrontierScorer, evaluate_ranking,
 )
-from viralconstellations.eval.metrics import all_metrics_categorical
 
+
+def log(msg): print(msg, flush=True)
 
 def load_mat(d, m):
     p = d / f"{m}.npy"; return np.load(p) if p.exists() else None
-def load_posfreq(d, m):
+def load_pf(d, m):
     p = d / f"{m}_posfreq.npy"; return np.load(p) if p.exists() else None
-def month_plus(s, h):
-    y, mo = int(s[:4]), int(s[5:7])
-    mo += h; y += (mo-1)//12; mo = (mo-1)%12+1
+def mplus(s, h):
+    y,mo=int(s[:4]),int(s[5:7]); mo+=h; y+=(mo-1)//12; mo=(mo-1)%12+1
     return f"{y:04d}-{mo:02d}"
-def month_minus(s, k):
-    y, mo = int(s[:4]), int(s[5:7])
-    mo -= k
-    while mo <= 0: mo += 12; y -= 1
+def mminus(s, k=1):
+    y,mo=int(s[:4]),int(s[5:7]); mo-=k
+    while mo<=0: mo+=12; y-=1
     return f"{y:04d}-{mo:02d}"
 
 
 @torch.no_grad()
-def get_freq_prediction(freq_head, traj_enc, transition, encoder,
-                        cache, context_month, h, mode, W, device):
-    """Run filter → transition → freq head → return (P, 21) predicted posfreq."""
+def get_state_and_freq(freq_head, traj_enc, transition, cache,
+                       ctx_month, h, mode, W, device):
     if mode == "gru":
-        window  = cache.get_window(context_month, W)
-        h_t     = traj_enc(window)
+        window = cache.get_window(ctx_month, W)
+        h_t    = traj_enc(window)
         _, states = transition(h_t, h)
         h_state = states[min(h, len(states)-1)]
     else:
-        pf_t    = cache.get_posfreq(context_month)
-        pf_prev = cache.get_posfreq_prev(context_month)
-        h_state = traj_enc(pf_t, pf_prev)
-
-    pred_pf = freq_head(h_state.unsqueeze(0)).squeeze(0)   # (P, 21)
-    return pred_pf.cpu().numpy(), h_state
+        h_state = traj_enc(
+            cache.get_posfreq(ctx_month),
+            cache.get_posfreq_prev(ctx_month)
+        )
+    pred_pf = freq_head(h_state.unsqueeze(0)).squeeze(0).cpu().numpy()
+    return h_state, pred_pf
 
 
 def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/default.yaml")
-    args   = parser.parse_args()
-    cfg    = yaml.safe_load(open(ROOT / args.config))
+    cfg        = yaml.safe_load(open(ROOT / args.config))
     matrix_dir = ROOT / cfg["paths"]["matrix_dir"]
     ckpt_dir   = ROOT / cfg["train"]["checkpoint_dir"]
     device     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    n_gen      = args.n_gen
 
-    ckpt     = torch.load(ckpt_dir / "best_model.pt", map_location=device)
-    P        = ckpt["n_positions"]
-    max_h    = ckpt["max_h"]
-    T        = cfg["model"]["diffusion_T"]
-    mode     = ckpt["traj_cfg"]["mode"]
-    W        = ckpt["traj_cfg"]["window_size"]
-    d        = ckpt["model_cfg"]["d_model"]
+    log("="*60)
+    log(f"Walk-forward evaluation | config: {args.config}")
+    log(f"Device: {device}  n_gen={n_gen}")
+    log("="*60)
 
-    # Walk-forward config
+    ckpt  = torch.load(ckpt_dir / "best_model.pt", map_location=device)
+    P     = ckpt["n_positions"]
+    max_h = ckpt["max_h"]
+    T     = cfg["model"]["diffusion_T"]
+    mode  = ckpt["traj_cfg"]["mode"]
+    W     = ckpt["traj_cfg"]["window_size"]
+    d     = ckpt["model_cfg"]["d_model"]
     eval_horizons = [h for h in cfg["eval"]["horizons"] if h <= max_h]
-    step_months   = 1        # walk forward 1 month at a time
-    min_train     = 6        # minimum months of training before first evaluation
-    n_gen         = 500      # fewer sequences for speed (2000 too slow × 70 windows)
+    min_train     = 6
 
-    print(f"Walk-forward evaluation")
-    print(f"P={P}  mode={mode}  W={W}  horizons={eval_horizons}")
-    print(f"Device: {device}")
+    log(f"P={P}  mode={mode}  W={W}  horizons={eval_horizons}")
 
     # Rebuild models
-    encoder = PopulationEncoder(P, d, ckpt["model_cfg"]["phi_hidden"]).to(device)
-    traj_enc = build_trajectory_encoder(
-        mode, d, ckpt["traj_cfg"]["gru_hidden"], W, P
-    ).to(device)
-    transition = (TransitionModel(d).to(device)
-                  if mode == "gru" and "transition_state" in ckpt else None)
-    model = ConstellationTransformer(
+    encoder     = PopulationEncoder(P, d, ckpt["model_cfg"]["phi_hidden"]).to(device)
+    traj_enc    = build_trajectory_encoder(
+        mode, d, ckpt["traj_cfg"]["gru_hidden"], W, P).to(device)
+    transition  = TransitionModel(d).to(device)
+    model       = ConstellationTransformer(
         P, d, ckpt["model_cfg"]["n_heads"], ckpt["model_cfg"]["n_layers"],
-        0.0, T, max_h
-    ).to(device)
+        0.0, T, max_h).to(device)
     length_head = LengthToGoHead(d, max_h).to(device)
     freq_head   = FrequencyRegressionHead(d, P).to(device)
+    cooc_rank   = ckpt.get("cooc_rank", 16)
+    cooc_head   = CooccurrenceRegressionHead(d, P, rank=cooc_rank).to(device)
 
     model.load_state_dict(ckpt["model_state"])
     encoder.load_state_dict(ckpt["encoder_state"])
     traj_enc.load_state_dict(ckpt["traj_state"])
+    transition.load_state_dict(ckpt["transition_state"])
     length_head.load_state_dict(ckpt["length_state"])
     freq_head.load_state_dict(ckpt["freq_state"])
-    if transition and "transition_state" in ckpt:
-        transition.load_state_dict(ckpt["transition_state"])
-    for m in [model, encoder, traj_enc, length_head, freq_head]:
+    if "cooc_state" in ckpt:
+        cooc_head.load_state_dict(ckpt["cooc_state"])
+
+    for m in [model, encoder, traj_enc, transition,
+              length_head, freq_head, cooc_head]:
         m.eval()
-    if transition: transition.eval()
 
-    # All available months
+    # Load all months
     all_months = sorted(
-        p.stem for p in matrix_dir.glob("*.npy") if "_posfreq" not in p.stem
+        p.stem for p in matrix_dir.glob("*.npy")
+        if "_posfreq" not in p.stem
     )
-    print(f"Available months: {len(all_months)}  ({all_months[0]} → {all_months[-1]})")
+    log(f"Available months: {len(all_months)}  "
+        f"({all_months[0]} → {all_months[-1]})")
 
-    # Build full cache
-    all_mats   = {m: load_mat(matrix_dir, m)     for m in all_months}
-    all_freqs  = {m: load_posfreq(matrix_dir, m) for m in all_months}
+    all_mats  = {m: load_mat(matrix_dir, m)  for m in all_months}
+    all_freqs = {m: load_pf(matrix_dir, m)   for m in all_months}
+
     cache = TrajectoryEmbeddingCache(
         encoder, all_mats, all_freqs, device,
-        cfg["model"]["deepsets_batch_size"],
+        cfg["model"]["deepsets_batch_size"]
     )
     cache.refresh()
 
-    # ── Walk-forward loop ─────────────────────────────────────────────────
-    # Collect results per horizon
+    # Progressive logistic regression scorer
+    lr_scorer = LogisticFrontierScorer()
+    lr_X, lr_y = [], []
+
     results_by_h = defaultdict(list)
+    cutoffs = all_months[min_train : -max(eval_horizons)]
+    log(f"Evaluating {len(cutoffs)} windows...")
 
-    # Frontier scorer: train progressively
-    scorer = LogisticFrontierScorer()
-    scorer_X, scorer_y = [], []
+    for c_idx, ctx_month in enumerate(cutoffs):
+        mat_ctx = all_mats[ctx_month]
+        pf_ctx  = all_freqs[ctx_month]
+        prev_m  = mminus(ctx_month, 1)
+        pf_prev = all_freqs.get(prev_m, pf_ctx) or pf_ctx
 
-    cutoff_months = all_months[min_train:-max(eval_horizons)]
-
-    print(f"\nEvaluating {len(cutoff_months)} windows...")
-
-    for c_idx, context_month in enumerate(cutoff_months):
-
-        # ── Compute frontier coverage (no model needed) ───────────────────
         for h in eval_horizons:
-            target_month = month_plus(context_month, h)
-            if target_month not in all_mats or all_mats[target_month] is None:
+            target  = mplus(ctx_month, h)
+            if target not in all_mats or all_mats[target] is None:
+                continue
+            mat_th  = all_mats[target]
+            real_pf = all_freqs[target]
+            if real_pf is None:
                 continue
 
-            mat_t  = all_mats[context_month]
-            mat_th = all_mats[target_month]
+            try:
+                # Frequency prediction
+                h_state, pred_pf = get_state_and_freq(
+                    freq_head, traj_enc, transition, cache,
+                    ctx_month, h, mode, W, device
+                )
+                r_freq, _ = pearsonr(1-pred_pf[:,0], 1-real_pf[:,0])
 
-            # A. Frontier coverage benchmark
-            coverage = frontier_coverage_benchmark(mat_t, mat_th, P)
+                # Frontier coverage H=1 and H=2
+                cov1 = frontier_coverage_benchmark(mat_ctx, mat_th, P, hamming_r=1)
+                cov2 = frontier_coverage_benchmark(mat_ctx, mat_th, P, hamming_r=2)
 
-            # B. Frequency prediction
-            prev_month = month_minus(context_month, 1)
-            prev_pf    = all_freqs.get(prev_month, all_freqs[context_month])
-            if prev_pf is None:
-                prev_pf = all_freqs[context_month]
+                # Three scorers
+                occupied_t   = compute_occupied(mat_ctx, top_k=200)
+                frontier     = compute_frontier(occupied_t, P)
+                _, new_in_th = compute_new_constellations(mat_ctx, mat_th)
 
-            pred_pf_np, h_state = get_freq_prediction(
-                freq_head, traj_enc, transition, encoder,
-                cache, context_month, h, mode, W, device
-            )
-
-            real_pf    = all_freqs[target_month]
-            pred_rate  = 1.0 - pred_pf_np[:, 0]
-            real_rate  = 1.0 - real_pf[:, 0]
-            r_freq, _  = pearsonr(pred_rate, real_rate)
-
-            # C. Frontier scoring (only if scorer is fitted)
-            frontier_metrics = {}
-            if scorer.fitted:
-                occupied_t  = compute_occupied(mat_t, top_k=200)
-                frontier    = compute_frontier(occupied_t, P)
-                _, new_in_th = compute_new_constellations(mat_t, mat_th)
+                neural_met = random_met = lr_met = {}
 
                 if frontier and new_in_th:
-                    ranked = scorer.score(mat_t, pred_pf_np, prev_pf, P)
-                    frontier_metrics = evaluate_ranking(ranked, new_in_th)
+                    candidates = list(frontier.keys())
 
-            # D. Co-occurrence (generative model, subset for speed)
-            gen_model  = generate_from_hidden(
-                model, length_head, h_state, h, n_gen, P, T, device
-            )
-            gen_bl     = independence_baseline_generate(
-                all_freqs[context_month], n_gen
-            )
-            mk = dict(top_k=50, mmd_n_sub=200)
-            m_model = all_metrics_categorical(gen_model,  mat_th, **mk)
-            m_bl    = all_metrics_categorical(gen_bl,     mat_th, **mk)
+                    # Random baseline
+                    import random as rnd
+                    shuffled = candidates.copy()
+                    rnd.shuffle(shuffled)
+                    random_met = evaluate_ranking(
+                        [(c, 0.0) for c in shuffled], new_in_th
+                    )
 
-            results_by_h[h].append({
-                "context_month":      context_month,
-                "target_month":       target_month,
-                "freq_pearson_r":     float(r_freq),
-                "frontier_coverage":  coverage["frontier_coverage"],
-                "n_new":              coverage["n_new"],
-                "n_in_frontier":      coverage["n_in_frontier"],
-                "pairwise_coo_model": m_model.get("pairwise_coo_r", 0.0),
-                "pairwise_coo_bl":    m_bl.get("pairwise_coo_r", 0.0),
-                "delta_coo":          m_model.get("pairwise_coo_r",0) - m_bl.get("pairwise_coo_r",0),
-                "frontier_scoring":   frontier_metrics,
-            })
+                    # Neural scorer
+                    neural_scores = score_candidates_neural(
+                        model, candidates, pred_pf, h_state, h, P, device
+                    )
+                    neural_ranked = sorted(
+                        zip(candidates, neural_scores), key=lambda x: -x[1]
+                    )
+                    neural_met = evaluate_ranking(neural_ranked, new_in_th)
 
-            # Collect training examples for frontier scorer
-            # (train on windows before current, evaluate on current)
-            if h == 1:   # collect for h=1 to train scorer
-                pf_prev_np = prev_pf if isinstance(prev_pf, np.ndarray) else all_freqs[context_month]
-                X, y = scorer.collect(
-                    mat_t, mat_th, pred_pf_np, pf_prev_np, P
-                )
-                if len(X) > 0:
-                    scorer_X.append(X)
-                    scorer_y.append(y)
+                    # Logistic regression
+                    if lr_scorer.fitted:
+                        lr_ranked = lr_scorer.score(
+                            mat_ctx, pred_pf, pf_prev, P
+                        )
+                        if lr_ranked:
+                            lr_met = evaluate_ranking(lr_ranked, new_in_th)
 
-        # Refit scorer every 6 months with all data so far
-        if c_idx > 0 and c_idx % 6 == 0 and scorer_X:
-            X_all = np.concatenate(scorer_X)
-            y_all = np.concatenate(scorer_y)
-            print(f"\n  Refitting frontier scorer at {context_month}...")
-            scorer.fit(X_all, y_all)
+                results_by_h[h].append({
+                    "context":              ctx_month,
+                    "target":               target,
+                    "freq_pearson_r":       float(r_freq),
+                    "frontier_coverage_H1": float(cov1["frontier_coverage"]),
+                    "frontier_coverage_H2": float(cov2["frontier_coverage"]),
+                    "n_new":                cov1["n_new"],
+                    "n_frontier":           cov1["n_frontier"],
+                    "neural_AP":            float(neural_met.get("AP", 0)),
+                    "neural_p10":           float(neural_met.get("precision@10", 0)),
+                    "lr_AP":                float(lr_met.get("AP", 0)),
+                    "random_AP":            float(random_met.get("random_baseline_P", 0)),
+                })
+
+                # Collect logistic regression training data (h=1)
+                if h == 1:
+                    X, y = lr_scorer.collect(
+                        mat_ctx, mat_th, pred_pf, pf_prev, P
+                    )
+                    if len(X) > 0:
+                        lr_X.append(X); lr_y.append(y)
+
+            except Exception as e:
+                log(f"  Error at {ctx_month} h={h}: {e}")
+                traceback.print_exc()
+                continue
+
+        # Refit logistic scorer every 6 windows
+        if c_idx > 0 and c_idx % 6 == 0 and lr_X:
+            X_all = np.concatenate(lr_X)
+            y_all = np.concatenate(lr_y)
+            if y_all.sum() > 0:
+                lr_scorer.fit(X_all, y_all)
 
         if c_idx % 10 == 0:
-            print(f"  Window {c_idx+1}/{len(cutoff_months)}  context={context_month}")
+            log(f"  Window {c_idx+1}/{len(cutoffs)}  ctx={ctx_month}")
 
-    # ── Aggregate results ─────────────────────────────────────────────────
-    print("\n" + "="*70)
-    print("WALK-FORWARD EVALUATION SUMMARY")
-    print("="*70)
+    # Summary
+    log("\n" + "="*70)
+    log("WALK-FORWARD RESULTS")
+    log("="*70)
 
     summary = {}
     for h in eval_horizons:
         rows = results_by_h[h]
-        if not rows:
-            continue
+        if not rows: continue
 
-        freq_rs      = [r["freq_pearson_r"]     for r in rows]
-        coverages    = [r["frontier_coverage"]   for r in rows]
-        delta_coos   = [r["delta_coo"]           for r in rows]
-        coo_models   = [r["pairwise_coo_model"]  for r in rows]
+        freq_rs = [r["freq_pearson_r"]       for r in rows]
+        cov1s   = [r["frontier_coverage_H1"] for r in rows]
+        cov2s   = [r["frontier_coverage_H2"] for r in rows]
+        n_ap    = [r["neural_AP"]            for r in rows if r["neural_AP"] > 0]
+        l_ap    = [r["lr_AP"]               for r in rows if r["lr_AP"] > 0]
+        r_ap    = [r["random_AP"]            for r in rows if r["random_AP"] > 0]
+        n_p10   = [r["neural_p10"]           for r in rows if r["neural_p10"] > 0]
 
-        # Frontier scoring metrics (only where scorer was fitted)
-        ap_scores = [r["frontier_scoring"].get("average_precision", None)
-                     for r in rows if r["frontier_scoring"]]
-        ap_scores = [x for x in ap_scores if x is not None]
-
-        p10_scores = [r["frontier_scoring"].get("precision@10", None)
-                      for r in rows if r["frontier_scoring"]]
-        p10_scores = [x for x in p10_scores if x is not None]
-
-        random_bl  = [r["frontier_scoring"].get("random_baseline_precision", None)
-                      for r in rows if r["frontier_scoring"]]
-        random_bl  = [x for x in random_bl if x is not None]
-
-        print(f"\nHorizon h={h} ({len(rows)} windows):")
-        print(f"  Freq Pearson r:          {np.mean(freq_rs):.4f} ± {np.std(freq_rs):.4f}")
-        print(f"  Frontier coverage:        {np.mean(coverages):.4f} ± {np.std(coverages):.4f}")
-        print(f"  Pairwise co-occ (model):  {np.mean(coo_models):.4f}")
-        print(f"  Δ co-occ (model-baseline):{np.mean(delta_coos):+.4f} ± {np.std(delta_coos):.4f}")
-        if ap_scores:
-            print(f"  Frontier AP:              {np.mean(ap_scores):.4f} ± {np.std(ap_scores):.4f}")
-            print(f"  Frontier precision@10:    {np.mean(p10_scores):.4f} ± {np.std(p10_scores):.4f}")
-            if random_bl:
-                print(f"  Random baseline prec:     {np.mean(random_bl):.4f}")
+        log(f"\nHorizon h={h}  ({len(rows)} windows):")
+        log(f"  Freq Pearson r:         "
+            f"{np.mean(freq_rs):.4f} ± {np.std(freq_rs):.4f}")
+        log(f"  Frontier coverage H=1:  "
+            f"{np.mean(cov1s):.4f} ± {np.std(cov1s):.4f}")
+        log(f"  Frontier coverage H=2:  "
+            f"{np.mean(cov2s):.4f} ± {np.std(cov2s):.4f}")
+        log(f"  --- Frontier scoring ---")
+        if r_ap:
+            log(f"  Random baseline AP:     {np.mean(r_ap):.4f}")
+        if l_ap:
+            log(f"  Logistic regression AP: {np.mean(l_ap):.4f} ± {np.std(l_ap):.4f}")
+        if n_ap:
+            log(f"  Neural model AP:        {np.mean(n_ap):.4f} ± {np.std(n_ap):.4f}")
+        if n_p10:
+            log(f"  Neural precision@10:    {np.mean(n_p10):.4f}")
 
         summary[f"h={h}"] = {
-            "n_windows":             len(rows),
-            "freq_pearson_r_mean":   float(np.mean(freq_rs)),
-            "freq_pearson_r_std":    float(np.std(freq_rs)),
-            "frontier_coverage_mean":float(np.mean(coverages)),
-            "frontier_coverage_std": float(np.std(coverages)),
-            "delta_coo_mean":        float(np.mean(delta_coos)),
-            "delta_coo_std":         float(np.std(delta_coos)),
-            "frontier_ap_mean":      float(np.mean(ap_scores)) if ap_scores else None,
-            "frontier_p10_mean":     float(np.mean(p10_scores)) if p10_scores else None,
-            "random_baseline_mean":  float(np.mean(random_bl)) if random_bl else None,
-            "per_window":            rows,
+            "n_windows":          len(rows),
+            "freq_pearson_r":     {"mean": float(np.mean(freq_rs)),
+                                   "std":  float(np.std(freq_rs))},
+            "frontier_H1":        {"mean": float(np.mean(cov1s)),
+                                   "std":  float(np.std(cov1s))},
+            "frontier_H2":        {"mean": float(np.mean(cov2s)),
+                                   "std":  float(np.std(cov2s))},
+            "neural_AP":          {"mean": float(np.mean(n_ap))}  if n_ap else None,
+            "logistic_AP":        {"mean": float(np.mean(l_ap))}  if l_ap else None,
+            "random_AP":          {"mean": float(np.mean(r_ap))}  if r_ap else None,
         }
 
-    # Final frontier scorer feature importances
-    if scorer.fitted:
-        print("\nFrontier Scorer Feature Importances:")
-        for name, coef in zip(FEATURE_NAMES, scorer.model.coef_[0]):
-            print(f"  {name:<30} {coef:+.4f}")
+    # Logistic regression feature importances
+    if lr_scorer.fitted:
+        imps = lr_scorer.feature_importances()
+        log("\nLogistic Regression Feature Importances:")
+        for name, coef in sorted(imps.items(), key=lambda x: -abs(x[1])):
+            log(f"  {name:<30} {coef:+.4f}")
+        summary["lr_feature_importances"] = imps
 
-    out = {
-        "n_total_windows":   len(cutoff_months),
-        "eval_horizons":     eval_horizons,
-        "n_generated_per_window": n_gen,
-        "results_by_horizon": summary,
-    }
     out_path = ROOT / "walk_forward_results.json"
-    out_path.write_text(json.dumps(out, indent=2, default=str))
-    print(f"\nWrote: {out_path}")
+    out_path.write_text(json.dumps({
+        "n_windows":      len(cutoffs),
+        "eval_horizons":  eval_horizons,
+        "n_gen":          n_gen,
+        "results":        summary,
+    }, indent=2, default=str))
+    log(f"\nWrote: {out_path}")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        log(f"\nFATAL ERROR: {e}")
+        traceback.print_exc()
+        sys.exit(1)
