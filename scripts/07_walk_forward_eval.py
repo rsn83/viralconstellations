@@ -246,7 +246,7 @@ def main():
             # (train on windows before current, evaluate on current)
             if h == 1:   # collect for h=1 to train scorer
                 pf_prev_np = prev_pf if isinstance(prev_pf, np.ndarray) else all_freqs[context_month]
-                X, y = scorer.collect_training_examples(
+                X, y = scorer.collect(
                     mat_t, mat_th, pred_pf_np, pf_prev_np, P
                 )
                 if len(X) > 0:
