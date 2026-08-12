@@ -302,7 +302,9 @@ def main():
         mat_ctx = all_mats[ctx_month]
         pf_ctx  = all_freqs[ctx_month]
         prev_m  = mminus(ctx_month)
-        pf_prev = all_freqs.get(prev_m, None) or pf_ctx
+        pf_prev = all_freqs.get(prev_m, None)
+        if pf_prev is None:
+            pf_prev = pf_ctx
 
         for h in eval_horizons:
             target  = mplus(ctx_month, h)
