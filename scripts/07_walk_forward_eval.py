@@ -59,7 +59,7 @@ from viralconstellations.model.trajectory import (
 from viralconstellations.frontier.frontier import (
     compute_occupied, compute_frontier,
     compute_new_constellations, frontier_coverage_benchmark,
-    FrontierScorer, extract_features, FEATURE_NAMES,
+    LogisticFrontierScorer, extract_features, FEATURE_NAMES,
 )
 from viralconstellations.eval.metrics import all_metrics_categorical
 
@@ -166,7 +166,7 @@ def main():
     results_by_h = defaultdict(list)
 
     # Frontier scorer: train progressively
-    scorer = FrontierScorer()
+    scorer = LogisticFrontierScorer()
     scorer_X, scorer_y = [], []
 
     cutoff_months = all_months[min_train:-max(eval_horizons)]
