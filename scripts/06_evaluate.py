@@ -232,7 +232,7 @@ def main():
     for hk, r in results.items():
         log(f"\n{hk}:")
         log(f"  Freq Pearson r:       {r['freq_pearson_r']:.4f}")
-        log(f"  Co-occ model beats indep: {r['cooccurrence']['model_beats_indep']}"
+        log(f"  Co-occ model beats indep: {r['cooccurrence'].get('model_beats_indep_abs', False)}"
             f"  (Δ={r['cooccurrence']['delta_coo_pearson_r']:+.4f})")
         log(f"  Frontier coverage:    {r['frontier_coverage']:.4f}")
         if r["frontier_neural"]:
