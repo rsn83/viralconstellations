@@ -25,3 +25,4 @@ evaluation_results*
 # OS
 .DS_Store
 processed_data.zip
+outputs/
