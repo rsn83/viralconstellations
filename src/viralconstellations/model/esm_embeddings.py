@@ -26,10 +26,8 @@ class ESMEmbeddingCache:
     def __init__(self, cache_path: Path):
         with open(cache_path, "rb") as fh:
             data = pickle.load(fh)
-        self.constellation_list: list[frozenset] = data["constellation_list"]
-        self.embeddings: dict[int, dict[int, np.ndarray]] = data["embeddings"]
+        self.embeddings: dict[frozenset, dict[int, np.ndarray]] = data["embeddings"]
         self.esm_dim: int = data["esm_dim"]
-        self.constellation_to_id = {c: i for i, c in enumerate(self.constellation_list)}
         self._miss_count = 0
         self._hit_count = 0
 
@@ -44,15 +42,14 @@ class ESMEmbeddingCache:
 
         for constellation, count in occ.items():
             key = frozenset(constellation)
-            cid = self.constellation_to_id.get(key)
-            if cid is None:
+            node_embs = self.embeddings.get(key)
+            if node_embs is None:
                 self._miss_count += 1
-                continue  # constellation wasn't in the global cache (e.g. below
-                          # --min_count filter when the cache was built) -- skip,
+                continue  # constellation wasn't in the cache (e.g. below
+                          # --min_count when the cache was built) -- skip,
                           # its nodes fall back to whatever other carriers they have
             self._hit_count += 1
             w = float(count) if isinstance(count, (int, float)) else 1.0
-            node_embs = self.embeddings.get(cid, {})
             for node_idx, emb in node_embs.items():
                 if node_idx < N:
                     sums[node_idx] += w * emb
