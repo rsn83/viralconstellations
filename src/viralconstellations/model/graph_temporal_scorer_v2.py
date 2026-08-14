@@ -77,39 +77,95 @@ class RelationalGraphConv(nn.Module):
         return F.relu(out)
 
 
+class ESMNodeAdapter(nn.Module):
+    """
+    Takes a PRECOMPUTED, FROZEN ESM2 embedding per node (built once,
+    offline, in scripts/17_extract_esm_embeddings.py -- see that file
+    for how per-node embeddings are derived from real reconstructed
+    sequences) and projects it down through a small trainable adapter.
+
+    Why this instead of training an encoder from scratch on your own
+    co-occurrence data: your edges (cooc, profile_sim,
+    background_overlap) are ALREADY derived from occupied/g_t -- the
+    same source a from-scratch node encoder would be limited to. ESM
+    contributes information from outside that closed loop: structural
+    and evolutionary regularities learned across millions of real
+    proteins. The adapter (trained) lets the model reshape that fixed
+    embedding for this task; the embedding itself (frozen) is not
+    retrained, so there's no risk of overfitting a large pretrained
+    representation to a few thousand constellations.
+    """
+    def __init__(self, esm_dim: int, hidden_dim: int):
+        super().__init__()
+        self.adapter = nn.Sequential(
+            nn.Linear(esm_dim, hidden_dim), nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+    def forward(self, esm_node_embeddings: torch.Tensor) -> torch.Tensor:
+        """esm_node_embeddings: (n_nodes, esm_dim) -> (n_nodes, hidden_dim)"""
+        return self.adapter(esm_node_embeddings)
+
+
 class NodeTemporalEncoder(nn.Module):
     """
     use_gnn=False: skip graph conv entirely, feed raw node features
                    straight into the GRU (ablation: does graph structure matter).
     use_rnn=False: skip the GRU, use only the LAST month's conv output
                    (ablation: does temporal memory matter).
+    use_esm_context=True: concatenate an adapted, frozen-ESM-derived
+                   embedding (see ESMNodeAdapter above) onto the raw
+                   scalar node features (freq, freq_trend, degree)
+                   before the conv/proj + GRU pipeline below. Set False
+                   to ablate this pathway, same pattern as the other
+                   ablation flags -- confirm it's actually earning its
+                   keep before trusting it.
     """
     def __init__(self, node_feat_dim: int, hidden_dim: int, relation_names: list[str],
-                 n_conv_layers: int = 2, use_gnn: bool = True, use_rnn: bool = True):
+                 n_conv_layers: int = 2, use_gnn: bool = True, use_rnn: bool = True,
+                 use_esm_context: bool = True, esm_dim: int = 640, esm_adapter_dim: int = 32):
         super().__init__()
         self.use_gnn = use_gnn
         self.use_rnn = use_rnn
+        self.use_esm_context = use_esm_context
         self.hidden_dim = hidden_dim
+
+        if use_esm_context:
+            self.esm_adapter = ESMNodeAdapter(esm_dim, esm_adapter_dim)
+            total_in_dim = node_feat_dim + esm_adapter_dim
+        else:
+            total_in_dim = node_feat_dim
 
         if use_gnn:
             self.convs = nn.ModuleList([
                 RelationalGraphConv(
-                    node_feat_dim if l == 0 else hidden_dim, hidden_dim, relation_names
+                    total_in_dim if l == 0 else hidden_dim, hidden_dim, relation_names
                 ) for l in range(n_conv_layers)
             ])
         else:
-            self.proj = nn.Linear(node_feat_dim, hidden_dim)
+            self.proj = nn.Linear(total_in_dim, hidden_dim)
 
         if use_rnn:
             self.gru = nn.GRUCell(hidden_dim, hidden_dim)
 
     def forward(self, node_feats_seq: list[torch.Tensor],
-                adj_seq: list[dict[str, torch.Tensor]]) -> torch.Tensor:
+                adj_seq: list[dict[str, torch.Tensor]],
+                esm_seq: list[torch.Tensor] | None = None) -> torch.Tensor:
         P = node_feats_seq[0].shape[0]
         h = torch.zeros(P, self.hidden_dim, device=node_feats_seq[0].device)
 
-        months = zip(node_feats_seq, adj_seq) if self.use_rnn else [(node_feats_seq[-1], adj_seq[-1])]
-        for x_t, adj_t in months:
+        if self.use_esm_context:
+            assert esm_seq is not None, "use_esm_context=True requires esm_seq"
+            months_data = list(zip(node_feats_seq, adj_seq, esm_seq))
+        else:
+            months_data = list(zip(node_feats_seq, adj_seq, [None] * len(node_feats_seq)))
+
+        months = months_data if self.use_rnn else [months_data[-1]]
+        for x_t, adj_t, esm_t in months:
+            if self.use_esm_context:
+                esm_emb = self.esm_adapter(esm_t)      # (N, esm_adapter_dim), cheap -- ESM itself not run here
+                x_t = torch.cat([x_t, esm_emb], dim=-1)
+
             if self.use_gnn:
                 z = x_t
                 for conv in self.convs:
@@ -137,12 +193,15 @@ class GraphTemporalScorer(nn.Module):
     def __init__(self, node_feat_dim: int, hidden_dim: int, relation_names: list[str],
                  edge_history_window: int, n_conv_layers: int = 2,
                  use_gnn: bool = True, use_rnn: bool = True, use_edge_history: bool = True,
-                 use_horizon_embed: bool = True, max_horizon: int = 12):
+                 use_horizon_embed: bool = True, max_horizon: int = 12,
+                 use_esm_context: bool = True, esm_dim: int = 640, esm_adapter_dim: int = 32):
         super().__init__()
         self.use_edge_history = use_edge_history
         self.use_horizon_embed = use_horizon_embed
+        self.use_esm_context = use_esm_context
         self.node_encoder = NodeTemporalEncoder(
-            node_feat_dim, hidden_dim, relation_names, n_conv_layers, use_gnn, use_rnn
+            node_feat_dim, hidden_dim, relation_names, n_conv_layers, use_gnn, use_rnn,
+            use_esm_context=use_esm_context, esm_dim=esm_dim, esm_adapter_dim=esm_adapter_dim,
         )
         decoder_in = hidden_dim * 2
         if use_edge_history:
@@ -159,8 +218,8 @@ class GraphTemporalScorer(nn.Module):
         )
 
     def forward(self, node_feats_seq, adj_seq, pair_i, pair_j, edge_history=None,
-                horizon_ids=None) -> torch.Tensor:
-        node_h = self.node_encoder(node_feats_seq, adj_seq)
+                horizon_ids=None, esm_seq=None) -> torch.Tensor:
+        node_h = self.node_encoder(node_feats_seq, adj_seq, esm_seq)
         h_i, h_j = node_h[pair_i], node_h[pair_j]
 
         parts = [h_i, h_j]

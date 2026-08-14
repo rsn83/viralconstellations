@@ -40,6 +40,9 @@ parser.add_argument("--lr", type=float, default=1e-3)
 parser.add_argument("--n_neg_per_pos", type=int, default=50)
 parser.add_argument("--eval_pair_batch", type=int, default=50000,
                     help="batch size for scoring the full N*(N-1)/2 pair space at eval time")
+parser.add_argument("--esm_cache_path", type=str, default="outputs/esm_cache.pkl",
+                     help="output of scripts/17_extract_esm_embeddings.py")
+parser.add_argument("--esm_adapter_dim", type=int, default=32)
 args = parser.parse_args()
 
 import numpy as np
@@ -54,6 +57,7 @@ from viralconstellations.model.graph_temporal_scorer_v2 import (
     compute_context_profile, profile_similarity_matrix,
     compute_distinct_constellation_stats, background_overlap_matrix,
 )
+from viralconstellations.model.esm_embeddings import ESMEmbeddingCache
 
 
 def log(msg): print(msg, flush=True)
@@ -143,10 +147,12 @@ def build_edge_history(pairs, g_t_history, window):
 
 
 @torch.no_grad()
-def score_full_pairspace(model, node_feats_seq, adj_seq, g_t_history, iu, ju, batch_size, device, horizon):
+def score_full_pairspace(model, node_feats_seq, adj_seq, g_t_history, iu, ju, batch_size, device,
+                          horizon, esm_seq=None):
     model.eval()
     scores = np.zeros(len(iu), dtype=np.float32)
-    node_h = model.node_encoder(node_feats_seq, adj_seq)
+    node_h = model.node_encoder(node_feats_seq, adj_seq,
+                                 esm_seq if model.use_esm_context else None)
     for start in range(0, len(iu), batch_size):
         end = min(start + batch_size, len(iu))
         pi = torch.tensor(iu[start:end], dtype=torch.long, device=device)
@@ -186,6 +192,10 @@ def main():
     iu, ju = all_pairs(N)
     log(f"Full pair space: {len(iu):,} pairs")
 
+    esm_cache = ESMEmbeddingCache(ROOT / args.esm_cache_path)
+    log(f"Loaded ESM cache: {len(esm_cache.constellation_list)} constellations, "
+        f"esm_dim={esm_cache.esm_dim}")
+
     month_cache = {}
     def get_month(idx):
         if idx not in month_cache:
@@ -193,14 +203,16 @@ def main():
             g_t_np, f_t_np, occ, n_seq = load_month(graphs_dir, m)
             prev_f = month_cache[idx - 1][2] if (idx - 1) in month_cache else None
             nf, adj, freq, g_t = build_month_tensors(g_t_np, f_t_np, occ, n_seq, N, prev_f)
-            month_cache[idx] = (nf, adj, freq, g_t, occ, g_t_np)
+            esm_emb = esm_cache.build_month_node_embeddings(occ, N)  # (N, esm_dim), cheap
+            month_cache[idx] = (nf, adj, freq, g_t, occ, g_t_np, esm_emb)
         return month_cache[idx]
 
     configs = {
-        "full_model":       dict(use_gnn=True,  use_rnn=True,  use_edge_history=True),
-        "no_gnn":           dict(use_gnn=False, use_rnn=True,  use_edge_history=True),
-        "no_rnn":           dict(use_gnn=True,  use_rnn=False, use_edge_history=True),
-        "no_edge_history":  dict(use_gnn=True,  use_rnn=True,  use_edge_history=False),
+        "full_model":       dict(use_gnn=True,  use_rnn=True,  use_edge_history=True,  use_esm_context=True),
+        "no_gnn":           dict(use_gnn=False, use_rnn=True,  use_edge_history=True,  use_esm_context=True),
+        "no_rnn":           dict(use_gnn=True,  use_rnn=False, use_edge_history=True,  use_esm_context=True),
+        "no_edge_history":  dict(use_gnn=True,  use_rnn=True,  use_edge_history=False, use_esm_context=True),
+        "no_esm_context":   dict(use_gnn=True,  use_rnn=True,  use_edge_history=True,  use_esm_context=False),
     }
 
     results = {name: {h: [] for h in args.horizons} for name in configs}
@@ -215,20 +227,21 @@ def main():
     models = {name: GraphTemporalScorer(
         node_feat_dim=3, hidden_dim=args.hidden_dim,
         relation_names=["cooc", "struct", "profile_sim", "background_overlap"],
-        edge_history_window=W, **cfg,
+        edge_history_window=W, esm_dim=esm_cache.esm_dim, esm_adapter_dim=args.esm_adapter_dim, **cfg,
     ).to(device) for name, cfg in configs.items()}
     optimizers = {name: torch.optim.Adam(m.parameters(), lr=args.lr) for name, m in models.items()}
 
     for w_idx, t_idx in enumerate(cutoffs):
         window_idxs = list(range(t_idx - W, t_idx))
-        node_feats_seq, adj_seq, g_t_history = [], [], []
+        node_feats_seq, adj_seq, g_t_history, esm_seq = [], [], [], []
         for idx in window_idxs:
-            nf, adj, freq, g_t, occ, g_t_np = get_month(idx)
+            nf, adj, freq, g_t, occ, g_t_np, esm_emb = get_month(idx)
             node_feats_seq.append(nf.to(device))
             adj_seq.append({k: v.to(device) for k, v in adj.items()})
             g_t_history.append(g_t_np)
+            esm_seq.append(esm_emb.to(device))
 
-        _, _, freq_t, g_t_t, occ_t, _ = get_month(t_idx - 1)
+        _, _, freq_t, g_t_t, occ_t, _, _ = get_month(t_idx - 1)
         edges_t = occupied_edge_set(occ_t)
 
         # MULTI-HORIZON TRAINING FIX: build one combined batch across ALL
@@ -243,7 +256,7 @@ def main():
             target_idx_h = t_idx - 1 + h
             if target_idx_h >= len(months):
                 continue
-            _, _, _, _, occ_th_h, _ = get_month(target_idx_h)
+            _, _, _, _, occ_th_h, _, _ = get_month(target_idx_h)
             edges_th_h = occupied_edge_set(occ_th_h)
             pairs_h, labels_h = sample_training_pairs(edges_t, edges_th_h, N, args.n_neg_per_pos, rng)
             combined_pairs.extend(pairs_h)
@@ -265,7 +278,8 @@ def main():
                 opt.zero_grad()
                 logits = model(node_feats_seq, adj_seq, pair_i, pair_j,
                                 edge_hist if model.use_edge_history else None,
-                                horizon_ids_t if model.use_horizon_embed else None)
+                                horizon_ids_t if model.use_horizon_embed else None,
+                                esm_seq=esm_seq if model.use_esm_context else None)
                 loss = F.binary_cross_entropy_with_logits(logits, labels_t)
                 loss.backward()
                 opt.step()
@@ -275,14 +289,15 @@ def main():
             target_idx = t_idx - 1 + h
             if target_idx >= len(months):
                 continue
-            _, _, _, _, occ_th, _ = get_month(target_idx)
+            _, _, _, _, occ_th, _, _ = get_month(target_idx)
             edges_th = occupied_edge_set(occ_th)
 
             ctx_month = months[t_idx - 1]
 
             for name, model in models.items():
                 scores = score_full_pairspace(model, node_feats_seq, adj_seq, g_t_history,
-                                               iu, ju, args.eval_pair_batch, device, horizon=h)
+                                               iu, ju, args.eval_pair_batch, device, horizon=h,
+                                               esm_seq=esm_seq)
                 ap = full_pairspace_ap(scores, edges_th, iu, ju)
                 if not np.isnan(ap):
                     results[name][h].append((ctx_month, ap))
@@ -304,6 +319,8 @@ def main():
 
         if w_idx % 5 == 0:
             log(f"  window {w_idx+1}/{len(cutoffs)}  ctx_month={months[t_idx-1]}  loss={loss.item():.4f}")
+
+    esm_cache.report_coverage()
 
     def era_of(month_str: str) -> str:
         year = int(month_str[:4])
