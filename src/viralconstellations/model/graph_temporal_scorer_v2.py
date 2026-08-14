@@ -136,33 +136,40 @@ class EdgeHistoryEncoder(nn.Module):
 class GraphTemporalScorer(nn.Module):
     def __init__(self, node_feat_dim: int, hidden_dim: int, relation_names: list[str],
                  edge_history_window: int, n_conv_layers: int = 2,
-                 use_gnn: bool = True, use_rnn: bool = True, use_edge_history: bool = True):
+                 use_gnn: bool = True, use_rnn: bool = True, use_edge_history: bool = True,
+                 use_horizon_embed: bool = True, max_horizon: int = 12):
         super().__init__()
         self.use_edge_history = use_edge_history
+        self.use_horizon_embed = use_horizon_embed
         self.node_encoder = NodeTemporalEncoder(
             node_feat_dim, hidden_dim, relation_names, n_conv_layers, use_gnn, use_rnn
         )
+        decoder_in = hidden_dim * 2
         if use_edge_history:
             self.edge_history_encoder = EdgeHistoryEncoder(edge_history_window, hidden_dim)
-            decoder_in = hidden_dim * 3
-        else:
-            decoder_in = hidden_dim * 2
+            decoder_in += hidden_dim
+        if use_horizon_embed:
+            # +1 horizon so index 'h' can be used directly (horizon 1..max_horizon)
+            self.horizon_embed = nn.Embedding(max_horizon + 1, hidden_dim)
+            decoder_in += hidden_dim
 
         self.decoder = nn.Sequential(
             nn.Linear(decoder_in, hidden_dim), nn.ReLU(),
             nn.Linear(hidden_dim, 1),
         )
 
-    def forward(self, node_feats_seq, adj_seq, pair_i, pair_j, edge_history=None) -> torch.Tensor:
+    def forward(self, node_feats_seq, adj_seq, pair_i, pair_j, edge_history=None,
+                horizon_ids=None) -> torch.Tensor:
         node_h = self.node_encoder(node_feats_seq, adj_seq)
         h_i, h_j = node_h[pair_i], node_h[pair_j]
 
+        parts = [h_i, h_j]
         if self.use_edge_history:
-            edge_h = self.edge_history_encoder(edge_history)
-            combined = torch.cat([h_i, h_j, edge_h], dim=-1)
-        else:
-            combined = torch.cat([h_i, h_j], dim=-1)
+            parts.append(self.edge_history_encoder(edge_history))
+        if self.use_horizon_embed:
+            parts.append(self.horizon_embed(horizon_ids))
 
+        combined = torch.cat(parts, dim=-1)
         return self.decoder(combined).squeeze(-1)
 
 

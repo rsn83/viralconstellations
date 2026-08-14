@@ -144,23 +144,24 @@ def build_edge_history(pairs, g_t_history, window):
 
 
 @torch.no_grad()
-def score_full_pairspace(model, node_feats_seq, adj_seq, g_t_history, iu, ju, batch_size, device):
-    """Score every (i,j) pair in batches -- N=1180 -> ~695k pairs, fits fine in batches."""
+def score_full_pairspace(model, node_feats_seq, adj_seq, g_t_history, iu, ju, batch_size, device, horizon):
     model.eval()
     scores = np.zeros(len(iu), dtype=np.float32)
-    node_h = model.node_encoder(node_feats_seq, adj_seq)  # compute once, reuse for all pairs
+    node_h = model.node_encoder(node_feats_seq, adj_seq)
     for start in range(0, len(iu), batch_size):
         end = min(start + batch_size, len(iu))
         pi = torch.tensor(iu[start:end], dtype=torch.long, device=device)
         pj = torch.tensor(ju[start:end], dtype=torch.long, device=device)
         h_i, h_j = node_h[pi], node_h[pj]
+        parts = [h_i, h_j]
         if model.use_edge_history:
             eh = build_edge_history(list(zip(iu[start:end], ju[start:end])), g_t_history,
                                      len(g_t_history)).to(device)
-            edge_h = model.edge_history_encoder(eh)
-            combined = torch.cat([h_i, h_j, edge_h], dim=-1)
-        else:
-            combined = torch.cat([h_i, h_j], dim=-1)
+            parts.append(model.edge_history_encoder(eh))
+        if model.use_horizon_embed:
+            hz = torch.full((end - start,), horizon, dtype=torch.long, device=device)
+            parts.append(model.horizon_embed(hz))
+        combined = torch.cat(parts, dim=-1)
         logits = model.decoder(combined).squeeze(-1)
         scores[start:end] = torch.sigmoid(logits).cpu().numpy()
     return scores
@@ -231,21 +232,32 @@ def main():
         _, _, freq_t, g_t_t, occ_t, _ = get_month(t_idx - 1)
         edges_t = occupied_edge_set(occ_t)
 
-        # train on nearest horizon's labels (h=1) -- standard practice,
-        # the model still gets EVALUATED separately at h=1/3/6
-        target_idx_train = t_idx - 1 + min(args.horizons)
-        if target_idx_train >= len(months):
-            continue
-        _, _, _, _, occ_th_train, _ = get_month(target_idx_train)
-        edges_th_train = occupied_edge_set(occ_th_train)
+        # MULTI-HORIZON TRAINING FIX: build one combined batch across ALL
+        # requested horizons, weighted loss sum (Benechehab et al. 2024,
+        # "A Multi-step Loss Function for Robust Learning of the Dynamics
+        # in Model-Based RL": L = sum_h alpha_h * L_h). Each horizon's
+        # pairs get a horizon_id so the shared decoder learns
+        # horizon-dependent behavior, instead of training only on h=1 and
+        # reusing those weights unchanged for h=3/h=6 (the earlier bug).
+        combined_pairs, combined_labels, combined_horizon_ids = [], [], []
+        for h in args.horizons:
+            target_idx_h = t_idx - 1 + h
+            if target_idx_h >= len(months):
+                continue
+            _, _, _, _, occ_th_h, _ = get_month(target_idx_h)
+            edges_th_h = occupied_edge_set(occ_th_h)
+            pairs_h, labels_h = sample_training_pairs(edges_t, edges_th_h, N, args.n_neg_per_pos, rng)
+            combined_pairs.extend(pairs_h)
+            combined_labels.extend(labels_h)
+            combined_horizon_ids.extend([h] * len(pairs_h))
 
-        pairs, labels = sample_training_pairs(edges_t, edges_th_train, N, args.n_neg_per_pos, rng)
-        if not pairs:
+        if not combined_pairs:
             continue
-        edge_hist = build_edge_history(pairs, g_t_history, W).to(device)
-        pair_i = torch.tensor([p[0] for p in pairs], dtype=torch.long).to(device)
-        pair_j = torch.tensor([p[1] for p in pairs], dtype=torch.long).to(device)
-        labels_t = torch.tensor(labels, dtype=torch.float32).to(device)
+        edge_hist = build_edge_history(combined_pairs, g_t_history, W).to(device)
+        pair_i = torch.tensor([p[0] for p in combined_pairs], dtype=torch.long).to(device)
+        pair_j = torch.tensor([p[1] for p in combined_pairs], dtype=torch.long).to(device)
+        labels_t = torch.tensor(combined_labels, dtype=torch.float32).to(device)
+        horizon_ids_t = torch.tensor(combined_horizon_ids, dtype=torch.long).to(device)
 
         for name, model in models.items():
             model.train()
@@ -253,7 +265,8 @@ def main():
             for _ in range(args.epochs):
                 opt.zero_grad()
                 logits = model(node_feats_seq, adj_seq, pair_i, pair_j,
-                                edge_hist if model.use_edge_history else None)
+                                edge_hist if model.use_edge_history else None,
+                                horizon_ids_t if model.use_horizon_embed else None)
                 loss = F.binary_cross_entropy_with_logits(logits, labels_t)
                 loss.backward()
                 opt.step()
@@ -268,7 +281,7 @@ def main():
 
             for name, model in models.items():
                 scores = score_full_pairspace(model, node_feats_seq, adj_seq, g_t_history,
-                                               iu, ju, args.eval_pair_batch, device)
+                                               iu, ju, args.eval_pair_batch, device, horizon=h)
                 ap = full_pairspace_ap(scores, edges_th, iu, ju)
                 if not np.isnan(ap):
                     results[name][h].append(ap)
