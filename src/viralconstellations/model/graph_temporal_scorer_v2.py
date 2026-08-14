@@ -56,13 +56,14 @@ def background_overlap_matrix(G_distinct: torch.Tensor, F_distinct: torch.Tensor
 
 
 class RelationalGraphConv(nn.Module):
-    def __init__(self, in_dim: int, out_dim: int, relation_names: list[str]):
+    def __init__(self, in_dim: int, out_dim: int, relation_names: list[str], dropout: float = 0.0):
         super().__init__()
         self.relation_names = relation_names
         self.weights = nn.ModuleDict({
             rel: nn.Linear(in_dim, out_dim, bias=False) for rel in relation_names
         })
         self.self_loop = nn.Linear(in_dim, out_dim, bias=True)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, node_feats: torch.Tensor, adj_by_relation: dict[str, torch.Tensor]) -> torch.Tensor:
         out = self.self_loop(node_feats)
@@ -74,7 +75,7 @@ class RelationalGraphConv(nn.Module):
             A_norm = A / deg
             message = A_norm @ node_feats
             out = out + self.weights[rel](message)
-        return F.relu(out)
+        return self.dropout(F.relu(out))
 
 
 class ESMNodeAdapter(nn.Module):
@@ -95,10 +96,10 @@ class ESMNodeAdapter(nn.Module):
     retrained, so there's no risk of overfitting a large pretrained
     representation to a few thousand constellations.
     """
-    def __init__(self, esm_dim: int, hidden_dim: int):
+    def __init__(self, esm_dim: int, hidden_dim: int, dropout: float = 0.0):
         super().__init__()
         self.adapter = nn.Sequential(
-            nn.Linear(esm_dim, hidden_dim), nn.ReLU(),
+            nn.Linear(esm_dim, hidden_dim), nn.ReLU(), nn.Dropout(dropout),
             nn.Linear(hidden_dim, hidden_dim),
         )
 
@@ -123,7 +124,8 @@ class NodeTemporalEncoder(nn.Module):
     """
     def __init__(self, node_feat_dim: int, hidden_dim: int, relation_names: list[str],
                  n_conv_layers: int = 2, use_gnn: bool = True, use_rnn: bool = True,
-                 use_esm_context: bool = True, esm_dim: int = 640, esm_adapter_dim: int = 32):
+                 use_esm_context: bool = True, esm_dim: int = 640, esm_adapter_dim: int = 32,
+                 dropout: float = 0.0):
         super().__init__()
         self.use_gnn = use_gnn
         self.use_rnn = use_rnn
@@ -131,7 +133,7 @@ class NodeTemporalEncoder(nn.Module):
         self.hidden_dim = hidden_dim
 
         if use_esm_context:
-            self.esm_adapter = ESMNodeAdapter(esm_dim, esm_adapter_dim)
+            self.esm_adapter = ESMNodeAdapter(esm_dim, esm_adapter_dim, dropout=dropout)
             total_in_dim = node_feat_dim + esm_adapter_dim
         else:
             total_in_dim = node_feat_dim
@@ -139,14 +141,16 @@ class NodeTemporalEncoder(nn.Module):
         if use_gnn:
             self.convs = nn.ModuleList([
                 RelationalGraphConv(
-                    total_in_dim if l == 0 else hidden_dim, hidden_dim, relation_names
+                    total_in_dim if l == 0 else hidden_dim, hidden_dim, relation_names, dropout=dropout
                 ) for l in range(n_conv_layers)
             ])
         else:
             self.proj = nn.Linear(total_in_dim, hidden_dim)
+            self.proj_dropout = nn.Dropout(dropout)
 
         if use_rnn:
             self.gru = nn.GRUCell(hidden_dim, hidden_dim)
+            self.gru_dropout = nn.Dropout(dropout)
 
     def forward(self, node_feats_seq: list[torch.Tensor],
                 adj_seq: list[dict[str, torch.Tensor]],
@@ -171,17 +175,17 @@ class NodeTemporalEncoder(nn.Module):
                 for conv in self.convs:
                     z = conv(z, adj_t)
             else:
-                z = F.relu(self.proj(x_t))
+                z = self.proj_dropout(F.relu(self.proj(x_t)))
 
-            h = self.gru(z, h) if self.use_rnn else z
+            h = self.gru_dropout(self.gru(z, h)) if self.use_rnn else z
         return h
 
 
 class EdgeHistoryEncoder(nn.Module):
-    def __init__(self, window: int, hidden_dim: int):
+    def __init__(self, window: int, hidden_dim: int, dropout: float = 0.0):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(window, hidden_dim), nn.ReLU(),
+            nn.Linear(window, hidden_dim), nn.ReLU(), nn.Dropout(dropout),
             nn.Linear(hidden_dim, hidden_dim),
         )
 
@@ -194,7 +198,8 @@ class GraphTemporalScorer(nn.Module):
                  edge_history_window: int, n_conv_layers: int = 2,
                  use_gnn: bool = True, use_rnn: bool = True, use_edge_history: bool = True,
                  use_horizon_embed: bool = True, max_horizon: int = 12,
-                 use_esm_context: bool = True, esm_dim: int = 640, esm_adapter_dim: int = 32):
+                 use_esm_context: bool = True, esm_dim: int = 640, esm_adapter_dim: int = 32,
+                 dropout: float = 0.0):
         super().__init__()
         self.use_edge_history = use_edge_history
         self.use_horizon_embed = use_horizon_embed
@@ -202,10 +207,11 @@ class GraphTemporalScorer(nn.Module):
         self.node_encoder = NodeTemporalEncoder(
             node_feat_dim, hidden_dim, relation_names, n_conv_layers, use_gnn, use_rnn,
             use_esm_context=use_esm_context, esm_dim=esm_dim, esm_adapter_dim=esm_adapter_dim,
+            dropout=dropout,
         )
         decoder_in = hidden_dim * 2
         if use_edge_history:
-            self.edge_history_encoder = EdgeHistoryEncoder(edge_history_window, hidden_dim)
+            self.edge_history_encoder = EdgeHistoryEncoder(edge_history_window, hidden_dim, dropout=dropout)
             decoder_in += hidden_dim
         if use_horizon_embed:
             # +1 horizon so index 'h' can be used directly (horizon 1..max_horizon)
@@ -213,7 +219,7 @@ class GraphTemporalScorer(nn.Module):
             decoder_in += hidden_dim
 
         self.decoder = nn.Sequential(
-            nn.Linear(decoder_in, hidden_dim), nn.ReLU(),
+            nn.Linear(decoder_in, hidden_dim), nn.ReLU(), nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
         )
 

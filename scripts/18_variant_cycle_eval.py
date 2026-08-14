@@ -67,6 +67,11 @@ parser.add_argument("--n_neg_per_pos", type=int, default=50)
 parser.add_argument("--eval_pair_batch", type=int, default=50000)
 parser.add_argument("--esm_cache_path", type=str, default="outputs/esm_cache.pkl")
 parser.add_argument("--esm_adapter_dim", type=int, default=32)
+parser.add_argument("--dropout", type=float, default=0.2,
+                     help="dropout throughout the model -- helps in low-data cycles "
+                          "(e.g. early variants with few training windows). 0.0 to disable.")
+parser.add_argument("--weight_decay", type=float, default=1e-4,
+                     help="L2 weight decay (Adam). Same rationale as --dropout.")
 parser.add_argument("--target_type", type=str, default="regression", choices=["binary", "regression"])
 parser.add_argument("--variant_windows", type=str, nargs="+", default=None,
                      help="override DEFAULT_VARIANT_WINDOWS. Format name:start_month:width, "
@@ -303,6 +308,7 @@ def main():
         "no_edge_history":  dict(use_gnn=True,  use_rnn=True,  use_edge_history=False, use_esm_context=True),
         "no_esm_context":   dict(use_gnn=True,  use_rnn=True,  use_edge_history=True,  use_esm_context=False),
     }
+    log(f"\nTraining {len(configs)} models per window every cycle: {list(configs.keys())}")
 
     def fresh_models():
         """Brand new, randomly-initialized models + optimizers. Called
@@ -316,9 +322,11 @@ def main():
         m = {name: GraphTemporalScorer(
             node_feat_dim=3, hidden_dim=args.hidden_dim,
             relation_names=["cooc", "struct", "profile_sim", "background_overlap"],
-            edge_history_window=W, esm_dim=esm_cache.esm_dim, esm_adapter_dim=args.esm_adapter_dim, **cfg,
+            edge_history_window=W, esm_dim=esm_cache.esm_dim, esm_adapter_dim=args.esm_adapter_dim,
+            dropout=args.dropout, **cfg,
         ).to(device) for name, cfg in configs.items()}
-        o = {name: torch.optim.Adam(mm.parameters(), lr=args.lr) for name, mm in m.items()}
+        o = {name: torch.optim.Adam(mm.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+             for name, mm in m.items()}
         return m, o
 
     def bulk_train_range(models, optimizers, end_idx_exclusive: int):
@@ -331,7 +339,10 @@ def main():
         """
         candidates = [t for t in range(W, end_idx_exclusive)
                       if t - 1 + max_h < end_idx_exclusive]
-        for t_idx in candidates:
+        log(f"    (bulk-training {len(candidates)} windows x {len(models)} models each...)")
+        for c_idx, t_idx in enumerate(candidates):
+            if c_idx % 5 == 0 or c_idx == len(candidates) - 1:
+                log(f"      window {c_idx+1}/{len(candidates)}  (ctx_month={months[t_idx-1]})")
             window_idxs = list(range(t_idx - W, t_idx))
             node_feats_seq, adj_seq, g_t_history, esm_seq = [], [], [], []
             for idx in window_idxs:
