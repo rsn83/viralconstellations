@@ -119,6 +119,45 @@ def run_check_A(df: pd.DataFrame, freq_cols: list[str]) -> None:
         print()
 
 
+def run_check_A_alt_encodings(df: pd.DataFrame, freq_cols: list[str],
+                               base_col: str = "raw_g_t_cooc_new_edges_mean") -> pd.DataFrame:
+    """
+    Test whether the raw stratification effect (large, consistent across
+    bins) that the linear AP test missed is a functional-form problem:
+    most candidates likely have base_col == 0 (the new position has never
+    co-occurred with the parent at all), with a long tail of nonzero
+    values. A linear model on the raw magnitude underfits a threshold
+    effect. This tests two alternate encodings of the SAME underlying
+    data against the same held-out AP comparison.
+    """
+    df = df.copy()
+
+    n_zero = (df[base_col] == 0).sum()
+    print(f"Zero-inflation check: {n_zero:,} / {len(df):,} rows "
+          f"({100*n_zero/len(df):.1f}%) have {base_col} == 0\n")
+
+    df["cooc_any_prior"] = (df[base_col] > 0).astype(float)
+    df["cooc_log1p"] = np.log1p(df[base_col])
+
+    for col in ["cooc_any_prior", "cooc_log1p"]:
+        print("=" * 70); print(f"CHECK A (alt encoding): {col}"); print("=" * 70)
+
+        print("\n1. Correlation / VIF"); print("-" * 40)
+        correlation_and_vif(df, freq_cols + [col])
+
+        print("\n2. Held-out AP comparison"); print("-" * 40)
+        held_out_ap_comparison(df, freq_cols, col)
+
+        print("\n3. Residualized"); print("-" * 40)
+        held_out_ap_with_residual(df, freq_cols, col)
+
+        print("\n4. Frequency-matched stratification"); print("-" * 40)
+        frequency_matched_stratification(df, freq_cols[0], col)
+        print()
+
+    return df
+
+
 # ---------------------------------------------------------------------------
 # Check C: temporal persistence of the co-occurrence graph
 # ---------------------------------------------------------------------------

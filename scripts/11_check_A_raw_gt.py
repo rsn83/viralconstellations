@@ -31,7 +31,7 @@ from viralconstellations.frontier.frontier import (
     compute_occupied, compute_frontier, compute_new_constellations,
     extract_features, FEATURE_NAMES,
 )
-from checkA_and_C_graph_tests import build_cooccurrence_graph, add_raw_cooccurrence_feature, run_check_A
+from checkA_and_C_graph_tests import build_cooccurrence_graph, add_raw_cooccurrence_feature, run_check_A, run_check_A_alt_encodings
 
 FREQ_FEATURE_NAMES = ["max_parent_freq", "pred_freq_new_pos"]
 
@@ -147,6 +147,11 @@ def main():
     df = add_raw_cooccurrence_feature(df, candidate_list, frontier_info_list, g_t_by_window, window_col="window")
 
     run_check_A(df, freq_cols=FREQ_FEATURE_NAMES)
+
+    log("\n\nStratification showed a large effect the linear AP test didn't -- "
+        "testing alternate (threshold / log) encodings of the same feature ...\n")
+    df = run_check_A_alt_encodings(df, freq_cols=FREQ_FEATURE_NAMES,
+                                    base_col="raw_g_t_cooc_new_edges_mean")
 
     out_dir = ROOT / "outputs" / "checks"
     out_dir.mkdir(parents=True, exist_ok=True)
