@@ -186,6 +186,7 @@ def regression_metrics(scores: np.ndarray, g_th_np: np.ndarray, iu: np.ndarray, 
     """scores: raw model output, trained to approximate log1p(count).
     Compared directly against the true log1p(count) over the full pair
     space -- same evaluation scope as full_pairspace_ap."""
+    scores = np.asarray(scores, dtype=np.float64)  # guard against torch tensors sneaking in
     true_log = np.log1p(g_th_np[iu, ju])
     mse = float(np.mean((scores - true_log) ** 2))
     rho, _ = spearmanr(scores, true_log)
@@ -384,7 +385,7 @@ def main():
                 rm = regression_metrics(rand_scores, g_th_np, iu, ju)
                 baseline_results_reg["random"][h].append((ctx_month, rm["mse_log1p"], rm["spearman"]))
 
-            persist_scores = g_t_t[iu, ju]
+            persist_scores = g_t_t[iu, ju].cpu().numpy()
             ap_p = full_pairspace_ap(persist_scores, edges_th, iu, ju)
             if not np.isnan(ap_p):
                 baseline_results["naive_persistence"][h].append((ctx_month, ap_p))
