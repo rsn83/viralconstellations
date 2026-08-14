@@ -74,6 +74,13 @@ parser.add_argument("--n_neg_per_pos", type=int, default=10,
                      help="fewer than script 18's default -- hyperedge negative sampling "
                           "is more expensive per candidate (variable-size, attention), and "
                           "the candidate pool is already much smaller than full pair space")
+parser.add_argument("--n_neg_fixed", type=int, default=0,
+                     help="if > 0, use this ABSOLUTE negative candidate count every window, "
+                          "instead of scaling with real positive count (--n_neg_per_pos). "
+                          "Makes candidate-pool difficulty comparable across cycles, since "
+                          "real positive count varies a lot with how much viral diversity "
+                          "existed that month. Recommended for cross-cycle comparison, e.g. "
+                          "--n_neg_fixed 2000.")
 parser.add_argument("--eval_batch", type=int, default=2000)
 parser.add_argument("--esm_cache_path", type=str, default="outputs/esm_cache.pkl")
 parser.add_argument("--struct_prior_path", type=str, default="outputs/structural_prior.pt",
@@ -144,7 +151,8 @@ def constellations_of(occ: dict) -> dict:
 
 
 def sample_hyperedge_candidates(constellations_t: dict, constellations_th: dict,
-                                 N: int, n_neg_per_pos: int, rng, max_set_size: int):
+                                 N: int, n_neg_per_pos: int, rng, max_set_size: int,
+                                 n_neg_fixed: int = 0):
     """
     Positives: union of constellations present at context OR target
     month (covers appearance, growth, decline, extinction -- same
@@ -153,6 +161,17 @@ def sample_hyperedge_candidates(constellations_t: dict, constellations_th: dict,
     (0 if it existed at context but vanished by target -- extinction).
     Negatives: randomly sampled node sets of similar size, not
     matching any real positive.
+
+    n_neg_fixed: if > 0, use this ABSOLUTE negative count instead of
+    scaling with the number of real positives (n_pos * n_neg_per_pos).
+    This matters for cross-cycle comparability: real positive count
+    varies a lot with how much viral diversity existed that month
+    (much higher in 2023-2025 than 2020), so scaling negatives with it
+    means candidate-pool difficulty -- and therefore what "AP" even
+    means -- silently varies across cycles too. A fixed negative count
+    makes task difficulty comparable by construction, so AP
+    differences across cycles reflect the model, not the candidate
+    pool's shifting positive rate.
     """
     positive_sets = set(constellations_t.keys()) | set(constellations_th.keys())
     positive_sets = {c for c in positive_sets if 2 <= len(c) <= max_set_size}
@@ -162,7 +181,10 @@ def sample_hyperedge_candidates(constellations_t: dict, constellations_th: dict,
     labels = [float(constellations_th.get(c, 0.0)) for c in positive_sets]
     sizes = [len(c) for c in positive_sets]
 
-    n_neg = min(len(positive_sets) * n_neg_per_pos, 5000)
+    if n_neg_fixed > 0:
+        n_neg = n_neg_fixed
+    else:
+        n_neg = min(len(positive_sets) * n_neg_per_pos, 5000)
     neg_candidates, attempts = [], 0
     while len(neg_candidates) < n_neg and attempts < n_neg * 20:
         k = int(rng.choice(sizes))
@@ -344,7 +366,8 @@ def main():
                 target_idx_h = t_idx - 1 + h
                 _, _, _, occ_th_h, _, constellations_th = get_month(target_idx_h)
                 cands, labs = sample_hyperedge_candidates(
-                    constellations_t, constellations_th, N, args.n_neg_per_pos, rng, args.max_set_size)
+                    constellations_t, constellations_th, N, args.n_neg_per_pos, rng,
+                    args.max_set_size, n_neg_fixed=args.n_neg_fixed)
                 all_candidates.extend(cands)
                 all_labels.extend(labs)
                 all_horizon_ids.extend([h] * len(cands))
@@ -418,7 +441,8 @@ def main():
                 _, _, _, occ_th, _, constellations_th = get_month(target_idx)
 
                 candidates, labels = sample_hyperedge_candidates(
-                    constellations_t, constellations_th, N, args.n_neg_per_pos, rng, args.max_set_size)
+                    constellations_t, constellations_th, N, args.n_neg_per_pos, rng,
+                    args.max_set_size, n_neg_fixed=args.n_neg_fixed)
                 if not candidates:
                     continue
                 member_indices, member_mask = pad_candidates(candidates, device, args.max_set_size)
@@ -476,6 +500,10 @@ def main():
             evaluate_range(models, name, start_idx, end_idx)
             log(f"[{name}] evaluated months {months[start_idx]} to {months[end_idx]}")
             log(f"[{name}] results by target month:")
+            random_rows_by_h = {}
+            for h in args.horizons:
+                rh = [r for r in baseline_results["random"] if r[0] == name and r[1] == h]
+                random_rows_by_h[h] = float(np.mean([r[-1] for r in rh])) if rh else float("nan")
             for cfg_name in ["frequency", "full_model"]:
                 src = baseline_results if cfg_name == "frequency" else results
                 rows = [r for r in src[cfg_name] if r[0] == name]
@@ -485,7 +513,11 @@ def main():
                 log(f"  [{cfg_name}]")
                 for target_month in sorted(by_target):
                     preds = sorted(by_target[target_month], key=lambda p: p[0])
-                    pred_str = ", ".join(f"h={h}(from {ctx})={ap:.4f}" for h, ctx, ap in preds)
+                    pred_str = ", ".join(
+                        f"h={h}(from {ctx})={ap:.4f}(lift={ap/random_rows_by_h[h]:.2f}x)"
+                        if random_rows_by_h.get(h) else f"h={h}(from {ctx})={ap:.4f}"
+                        for h, ctx, ap in preds
+                    )
                     flag = "  <-- predicted MORE THAN ONCE" if len(preds) > 1 else ""
                     log(f"    {target_month}: {pred_str}{flag}")
 
@@ -497,22 +529,29 @@ def main():
 
     log("\n" + "=" * 70)
     log("RESULTS BY VARIANT WINDOW (candidate-pool AP -- NOT directly comparable")
-    log("to script 18's full-pairspace AP, see module docstring)")
+    log("to script 18's full-pairspace AP, see module docstring. 'lift' = AP / random's")
+    log("AP for the SAME cell -- use this, not raw AP, to compare strength across cycles,")
+    log("since candidate-pool difficulty (positive rate) varies a lot by how much real")
+    log("viral diversity existed that month -- see --n_neg_fixed to control this directly.)")
     log("=" * 70)
     for vname, _, _ in variant_windows:
         log(f"\n--- {vname} ---")
         for h in args.horizons:
             log(f"  h={h}")
+            random_rows = [r for r in baseline_results["random"] if r[0] == vname and r[1] == h]
+            random_mean, _, _ = summarize(random_rows)
             for name in ["random", "naive_persistence", "frequency"]:
                 rows = [r for r in baseline_results[name] if r[0] == vname and r[1] == h]
                 m, s, n = summarize(rows)
                 if n:
-                    log(f"    {name:<20} AP = {m:.4f} +/- {s:.4f}  (n={n})")
+                    lift = m / random_mean if random_mean and not np.isnan(random_mean) else float("nan")
+                    log(f"    {name:<20} AP = {m:.4f} +/- {s:.4f}  lift={lift:.2f}x  (n={n})")
             for name in configs:
                 rows = [r for r in results[name] if r[0] == vname and r[1] == h]
                 m, s, n = summarize(rows)
                 if n:
-                    log(f"    {name:<20} AP = {m:.4f} +/- {s:.4f}  (n={n})")
+                    lift = m / random_mean if random_mean and not np.isnan(random_mean) else float("nan")
+                    log(f"    {name:<20} AP = {m:.4f} +/- {s:.4f}  lift={lift:.2f}x  (n={n})")
 
     log("\n" + "=" * 70)
     log("REGRESSION METRICS BY VARIANT WINDOW")
