@@ -59,6 +59,11 @@ parser.add_argument("--save_every", type=int, default=50,
                      help="save cache to disk every N batches (resume safety)")
 parser.add_argument("--position_col", type=str, default="position")
 parser.add_argument("--residue_col", type=str, default="residue")
+parser.add_argument("--reference_path", type=str, default="data/raw/spike_reference.fasta",
+                     help="path (relative to repo root) to the spike PROTEIN reference "
+                          "FASTA -- NOT the nucleotide genome. aa_pos in your vocab is "
+                          "protein-residue numbering (~1273 aa), so this must be a "
+                          "translated protein sequence, e.g. NCBI YP_009724390.1.")
 args = parser.parse_args()
 
 import numpy as np
@@ -113,9 +118,16 @@ def main():
     vocab_df = pd.read_csv(graphs_dir / "posres_vocab.tsv", sep="\t")
     N = len(vocab_df)
 
-    ref_path = ROOT / "data" / "raw" / "reference_txt"
+    ref_path = ROOT / args.reference_path
     reference_seq = load_reference_sequence(ref_path)
     log(f"Reference length: {len(reference_seq)}, N nodes: {N}")
+
+    max_pos = int(vocab_df[args.position_col].max())
+    if len(reference_seq) < max_pos:
+        log(f"WARNING: reference length ({len(reference_seq)}) is shorter than the max "
+            f"{args.position_col} in your vocab ({max_pos}). This usually means the wrong "
+            f"reference file was loaded (e.g. nucleotide genome instead of translated "
+            f"spike protein) -- double check {ref_path} before proceeding.")
 
     log("Building union of distinct constellations across all months...")
     global_counts = load_all_occupied(graphs_dir, months)
