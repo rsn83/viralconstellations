@@ -30,7 +30,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "scripts"))
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--window", type=int, default=6)
@@ -50,7 +49,7 @@ import torch.nn.functional as F
 from sklearn.metrics import average_precision_score
 from sklearn.linear_model import LogisticRegression
 
-from graph_temporal_scorer_v2 import (
+from viralconstellations.model.graph_temporal_scorer_v2 import (
     GraphTemporalScorer, NaivePersistenceBaseline,
     compute_context_profile, profile_similarity_matrix,
     compute_distinct_constellation_stats, background_overlap_matrix,
