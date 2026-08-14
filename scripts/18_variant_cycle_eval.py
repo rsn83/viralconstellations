@@ -303,20 +303,35 @@ def main():
         "no_edge_history":  dict(use_gnn=True,  use_rnn=True,  use_edge_history=False, use_esm_context=True),
         "no_esm_context":   dict(use_gnn=True,  use_rnn=True,  use_edge_history=True,  use_esm_context=False),
     }
-    models = {name: GraphTemporalScorer(
-        node_feat_dim=3, hidden_dim=args.hidden_dim,
-        relation_names=["cooc", "struct", "profile_sim", "background_overlap"],
-        edge_history_window=W, esm_dim=esm_cache.esm_dim, esm_adapter_dim=args.esm_adapter_dim, **cfg,
-    ).to(device) for name, cfg in configs.items()}
-    optimizers = {name: torch.optim.Adam(m.parameters(), lr=args.lr) for name, m in models.items()}
 
-    def bulk_train_range(start_idx: int, end_idx_exclusive: int):
-        """Combined multi-horizon training over every valid window whose
-        input AND all horizon targets fall within [start_idx, end_idx_exclusive).
-        Safe by construction: this range is never evaluated."""
-        cutoffs = [t for t in range(max(W, start_idx), end_idx_exclusive)
-                   if t - 1 + max_h < end_idx_exclusive]
-        for t_idx in cutoffs:
+    def fresh_models():
+        """Brand new, randomly-initialized models + optimizers. Called
+        once per variant cycle -- each cycle is now fully independent,
+        no state carried over from a previous cycle. Simpler and safer
+        than persistent cross-cycle weights (no bookkeeping of which
+        windows were already trained, no risk of a subtle ordering bug
+        between cycles), at the cost of retraining early history from
+        scratch every cycle rather than only once total.
+        """
+        m = {name: GraphTemporalScorer(
+            node_feat_dim=3, hidden_dim=args.hidden_dim,
+            relation_names=["cooc", "struct", "profile_sim", "background_overlap"],
+            edge_history_window=W, esm_dim=esm_cache.esm_dim, esm_adapter_dim=args.esm_adapter_dim, **cfg,
+        ).to(device) for name, cfg in configs.items()}
+        o = {name: torch.optim.Adam(mm.parameters(), lr=args.lr) for name, mm in m.items()}
+        return m, o
+
+    def bulk_train_range(models, optimizers, end_idx_exclusive: int):
+        """Combined multi-horizon training, FROM SCRATCH, over every
+        valid window from the start of the dataset whose input AND all
+        horizon targets fall strictly before end_idx_exclusive. Safe by
+        construction: this range is never evaluated by this cycle, and
+        each cycle gets a fresh model, so there's no cross-cycle state
+        to reason about at all.
+        """
+        candidates = [t for t in range(W, end_idx_exclusive)
+                      if t - 1 + max_h < end_idx_exclusive]
+        for t_idx in candidates:
             window_idxs = list(range(t_idx - W, t_idx))
             node_feats_seq, adj_seq, g_t_history, esm_seq = [], [], [], []
             for idx in window_idxs:
@@ -367,14 +382,14 @@ def main():
                         loss = F.binary_cross_entropy_with_logits(raw_out, labels_t)
                     loss.backward()
                     opt.step()
-        return len(cutoffs)
+        return len(candidates)
 
     results = {name: [] for name in configs}          # list of (variant, h, target_month, ap)
     results_reg = {name: [] for name in configs}       # list of (variant, h, target_month, mse, spearman)
     baseline_results = {"random": [], "naive_persistence": [], "frequency": []}
     baseline_results_reg = {"random": [], "naive_persistence": [], "frequency": []}
 
-    def evaluate_range(variant_name: str, start_idx: int, end_idx: int):
+    def evaluate_range(models, variant_name: str, start_idx: int, end_idx: int):
         """FROZEN evaluation (no training) -- score every window whose
         context anchor falls in [start_idx, end_idx], at every horizon."""
         for ctx_idx in range(start_idx, end_idx + 1):
@@ -405,71 +420,87 @@ def main():
                                                         iu, ju, args.eval_pair_batch, device, h, esm_seq)
                     ap = full_pairspace_ap(scores, edges_th, iu, ju)
                     if not np.isnan(ap):
-                        results[name].append((variant_name, h, target_month, ap))
+                        results[name].append((variant_name, h, ctx_month, target_month, ap))
                     if args.target_type == "regression":
                         rm = regression_metrics(scores, g_th_np, iu, ju)
-                        results_reg[name].append((variant_name, h, target_month, rm["mse_log1p"], rm["spearman"]))
+                        results_reg[name].append((variant_name, h, ctx_month, target_month, rm["mse_log1p"], rm["spearman"]))
 
                 rand_scores = rng.random(len(iu))
                 ap_r = full_pairspace_ap(rand_scores, edges_th, iu, ju)
                 if not np.isnan(ap_r):
-                    baseline_results["random"].append((variant_name, h, target_month, ap_r))
+                    baseline_results["random"].append((variant_name, h, ctx_month, target_month, ap_r))
                 if args.target_type == "regression":
                     rm = regression_metrics(rand_scores, g_th_np, iu, ju)
-                    baseline_results_reg["random"].append((variant_name, h, target_month, rm["mse_log1p"], rm["spearman"]))
+                    baseline_results_reg["random"].append((variant_name, h, ctx_month, target_month, rm["mse_log1p"], rm["spearman"]))
 
                 persist_scores = g_t_t[iu, ju].cpu().numpy()
                 ap_p = full_pairspace_ap(persist_scores, edges_th, iu, ju)
                 if not np.isnan(ap_p):
-                    baseline_results["naive_persistence"].append((variant_name, h, target_month, ap_p))
+                    baseline_results["naive_persistence"].append((variant_name, h, ctx_month, target_month, ap_p))
                 if args.target_type == "regression":
                     rm = regression_metrics(np.log1p(persist_scores), g_th_np, iu, ju)
-                    baseline_results_reg["naive_persistence"].append((variant_name, h, target_month, rm["mse_log1p"], rm["spearman"]))
+                    baseline_results_reg["naive_persistence"].append((variant_name, h, ctx_month, target_month, rm["mse_log1p"], rm["spearman"]))
 
                 freq_scores = frequency_baseline_scores(freq_t, iu, ju)
                 ap_f = full_pairspace_ap(freq_scores, edges_th, iu, ju)
                 if not np.isnan(ap_f):
-                    baseline_results["frequency"].append((variant_name, h, target_month, ap_f))
+                    baseline_results["frequency"].append((variant_name, h, ctx_month, target_month, ap_f))
                 if args.target_type == "regression":
                     rm = regression_metrics(freq_scores, g_th_np, iu, ju)
-                    baseline_results_reg["frequency"].append((variant_name, h, target_month, rm["mse_log1p"], rm["spearman"]))
+                    baseline_results_reg["frequency"].append((variant_name, h, ctx_month, target_month, rm["mse_log1p"], rm["spearman"]))
 
     # ------------------------------------------------------------------
     # THE CYCLE: bulk-train up to each variant window, freeze + evaluate
     # that window, bulk-train through to the next (now including this
     # window as legitimate history), repeat.
     #
-    # GUARD: W + max_h months of runway are required before ANY variant
-    # window can produce even one valid training window (needs W months
-    # of input AND the h=max_h target to land before the cutoff). Early
-    # variants (e.g. Beta, Alpha, Gamma in the first year of data) may
-    # not have that much history available yet. Evaluating with a
-    # 0-window-trained (i.e. randomly initialized) model would produce
-    # meaningless numbers silently -- skip evaluation in that case
-    # instead, with a clear warning. Training still advances prev_train_end
-    # regardless, so this window's real data still counts as legitimate
-    # history for LATER cycles even if it couldn't be evaluated itself.
+    # Each cycle now gets a completely FRESH, randomly-initialized model
+    # and bulk-trains it from scratch on every valid window up to that
+    # variant's start month. Cycles are fully independent -- no state
+    # carried over, no cross-cycle bookkeeping, no risk of the ordering
+    # bugs a persistent-weights version is prone to. Costs more total
+    # compute (early history gets retrained for every later cycle
+    # rather than once total), traded for a much simpler, easier to
+    # verify design.
     # ------------------------------------------------------------------
     MIN_TRAIN_WINDOWS_TO_EVAL = 3
     MIN_TRAIN_WINDOWS_WARN = 10
-    prev_train_end = 0
     for name, start_idx, end_idx in variant_windows:
-        n_trained = bulk_train_range(prev_train_end, start_idx)
-        log(f"\n[{name}] bulk-trained on {n_trained} windows (months {months[prev_train_end] if prev_train_end < len(months) else '?'} "
-            f"to {months[start_idx - 1] if start_idx > 0 else '?'})")
+        models, optimizers = fresh_models()
+        n_trained = bulk_train_range(models, optimizers, start_idx)
+        log(f"\n[{name}] bulk-trained FROM SCRATCH on {n_trained} windows "
+            f"(all months before {months[start_idx]})")
         if n_trained < MIN_TRAIN_WINDOWS_TO_EVAL:
             log(f"[{name}] SKIPPED: only {n_trained} training windows available "
                 f"(need W={W}+max_h={max_h}={W+max_h} months of runway before this "
                 f"variant's start month; not enough history exists yet). Evaluating "
-                f"an untrained model here would be meaningless. This variant's own "
-                f"months still count as history for later cycles.")
+                f"an untrained model here would be meaningless.")
         else:
             if n_trained < MIN_TRAIN_WINDOWS_WARN:
-                log(f"[{name}] WARNING: only {n_trained} training windows -- results "
-                    f"for this variant are low-confidence, treat with caution")
-            evaluate_range(name, start_idx, end_idx)
+                log(f"[{name}] WARNING: only {n_trained} training windows -- "
+                    f"results for this variant are low-confidence, treat with caution")
+            evaluate_range(models, name, start_idx, end_idx)
             log(f"[{name}] evaluated months {months[start_idx]} to {months[end_idx]}")
-        prev_train_end = end_idx + 1
+            # Display grouped BY TARGET MONTH, not by horizon. A single
+            # target month can be predicted more than once (e.g. h=1
+            # from one context month AND h=2 from an earlier context
+            # month land on the SAME real target month) -- grouping by
+            # horizon would split those apart into different sections.
+            # This groups them together so you can see every prediction
+            # that hit a given month side by side.
+            log(f"[{name}] results by target month:")
+            for cfg_name in ["frequency", "full_model"]:
+                src = baseline_results if cfg_name == "frequency" else results
+                rows = [r for r in src[cfg_name] if r[0] == name]  # (variant, h, ctx_month, target_month, ap)
+                by_target = {}
+                for _, h, ctx_month, target_month, ap in rows:
+                    by_target.setdefault(target_month, []).append((h, ctx_month, ap))
+                log(f"  [{cfg_name}]")
+                for target_month in sorted(by_target):
+                    preds = sorted(by_target[target_month], key=lambda p: p[0])  # sort by horizon
+                    pred_str = ", ".join(f"h={h}(from {ctx})={ap:.4f}" for h, ctx, ap in preds)
+                    flag = "  <-- predicted MORE THAN ONCE" if len(preds) > 1 else ""
+                    log(f"    {target_month}: {pred_str}{flag}")
 
     # ------------------------------------------------------------------
     # REPORTING: grouped by variant window, not by calendar era (that
@@ -510,14 +541,14 @@ def main():
                 for name in ["random", "naive_persistence", "frequency"]:
                     rows = [r for r in baseline_results_reg[name] if r[0] == vname and r[1] == h]
                     if rows:
-                        mse = np.mean([r[3] for r in rows])
-                        rho = np.mean([r[4] for r in rows if not np.isnan(r[4])])
+                        mse = np.mean([r[4] for r in rows])
+                        rho = np.mean([r[5] for r in rows if not np.isnan(r[5])])
                         log(f"    {name:<20} MSE={mse:.4f}  spearman={rho:.4f}  (n={len(rows)})")
                 for name in configs:
                     rows = [r for r in results_reg[name] if r[0] == vname and r[1] == h]
                     if rows:
-                        mse = np.mean([r[3] for r in rows])
-                        rho = np.mean([r[4] for r in rows if not np.isnan(r[4])])
+                        mse = np.mean([r[4] for r in rows])
+                        rho = np.mean([r[5] for r in rows if not np.isnan(r[5])])
                         log(f"    {name:<20} MSE={mse:.4f}  spearman={rho:.4f}  (n={len(rows)})")
 
     out_dir = ROOT / "outputs"
@@ -525,15 +556,16 @@ def main():
     csv_path = out_dir / "18_variant_cycle_results.csv"
     with open(csv_path, "w", newline="") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["source", "model", "variant", "horizon", "target_month", "ap", "mse_log1p", "spearman"])
+        writer.writerow(["source", "model", "variant", "horizon", "ctx_month", "target_month",
+                          "ap", "mse_log1p", "spearman"])
         for source, res_dict, res_reg_dict in [("baseline", baseline_results, baseline_results_reg),
                                                  ("model", results, results_reg)]:
             for name in res_dict:
-                reg_lookup = {(v, h, m): (mse, rho) for v, h, m, mse, rho in res_reg_dict[name]} \
+                reg_lookup = {(v, h, cm, tm): (mse, rho) for v, h, cm, tm, mse, rho in res_reg_dict[name]} \
                     if args.target_type == "regression" else {}
-                for v, h, m, ap in res_dict[name]:
-                    mse, rho = reg_lookup.get((v, h, m), ("", ""))
-                    writer.writerow([source, name, v, h, m, ap, mse, rho])
+                for v, h, cm, tm, ap in res_dict[name]:
+                    mse, rho = reg_lookup.get((v, h, cm, tm), ("", ""))
+                    writer.writerow([source, name, v, h, cm, tm, ap, mse, rho])
     log(f"\nWrote {csv_path}")
 
 
