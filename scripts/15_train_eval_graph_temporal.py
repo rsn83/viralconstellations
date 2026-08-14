@@ -55,6 +55,12 @@ parser.add_argument("--esm_adapter_dim", type=int, default=32)
 parser.add_argument("--target_type", type=str, default="regression", choices=["binary", "regression"],
                      help="binary: predict appearance only (0/1). regression: predict "
                           "log1p(count) -- appearance AND magnitude in one target.")
+parser.add_argument("--pretrain_months", type=int, default=12,
+                     help="number of initial months used ONLY for a warm-up training pass "
+                          "(combined multi-horizon, no evaluation -- safe since nothing in "
+                          "this period is ever graded). Live walk-forward evaluation/training "
+                          "begins strictly after this, so no month used as a pretrain label "
+                          "is ever later evaluated.")
 args = parser.parse_args()
 
 import numpy as np
@@ -285,8 +291,22 @@ def main():
                              "frequency": {h: [] for h in args.horizons}}
 
     max_h = max(args.horizons)
-    cutoffs = list(range(W, len(months) - max_h))
-    log(f"Walk-forward: {len(cutoffs)} windows")
+
+    # Pretrain cutoffs: windows whose input AND all target months stay
+    # strictly within months[0:pretrain_months]. Safe to use ordinary
+    # combined multi-horizon training here -- nothing in this range is
+    # ever evaluated, so there is no future eval target to leak into.
+    pretrain_cutoffs = [t for t in range(W, args.pretrain_months - max_h + 1) if t > 0]
+
+    # Live cutoffs: start strictly at pretrain_months, so the first live
+    # evaluation target is a month that was NEVER used as a pretrain
+    # training label. Inputs may still reach back into the pretrain
+    # period (that's fine -- past real data as features is not the
+    # thing that needs guarding, only training LABELS).
+    live_start = max(W, args.pretrain_months)
+    cutoffs = list(range(live_start, len(months) - max_h))
+    log(f"Pretrain windows: {len(pretrain_cutoffs)} (months 0-{args.pretrain_months-1}, train-only, no eval)")
+    log(f"Live walk-forward windows: {len(cutoffs)}")
 
     models = {name: GraphTemporalScorer(
         node_feat_dim=3, hidden_dim=args.hidden_dim,
@@ -295,7 +315,15 @@ def main():
     ).to(device) for name, cfg in configs.items()}
     optimizers = {name: torch.optim.Adam(m.parameters(), lr=args.lr) for name, m in models.items()}
 
-    for w_idx, t_idx in enumerate(cutoffs):
+    # ------------------------------------------------------------------
+    # PRETRAIN PHASE: ordinary combined multi-horizon training (the
+    # original, pre-fix approach), scoped ONLY to months that will never
+    # be evaluated. This solves the cold-start problem -- without it,
+    # the live phase's first ~6 windows would be undertrained by
+    # necessity (nothing yet in the retroactive buffer to learn from).
+    # Purely a warm-up: no results are recorded here.
+    # ------------------------------------------------------------------
+    for p_idx, t_idx in enumerate(pretrain_cutoffs):
         window_idxs = list(range(t_idx - W, t_idx))
         node_feats_seq, adj_seq, g_t_history, esm_seq = [], [], [], []
         for idx in window_idxs:
@@ -308,13 +336,6 @@ def main():
         _, _, freq_t, g_t_t, occ_t, _, _ = get_month(t_idx - 1)
         edges_t = occupied_edge_set(occ_t)
 
-        # MULTI-HORIZON TRAINING FIX: build one combined batch across ALL
-        # requested horizons, weighted loss sum (Benechehab et al. 2024,
-        # "A Multi-step Loss Function for Robust Learning of the Dynamics
-        # in Model-Based RL": L = sum_h alpha_h * L_h). Each horizon's
-        # pairs get a horizon_id so the shared decoder learns
-        # horizon-dependent behavior, instead of training only on h=1 and
-        # reusing those weights unchanged for h=3/h=6 (the earlier bug).
         combined_pairs, combined_labels, combined_horizon_ids = [], [], []
         for h in args.horizons:
             target_idx_h = t_idx - 1 + h
@@ -356,15 +377,58 @@ def main():
                 loss.backward()
                 opt.step()
 
-        # evaluate at EACH horizon, full pair space, same encoding
+        if p_idx % 5 == 0:
+            log(f"  pretrain {p_idx+1}/{len(pretrain_cutoffs)}  ctx_month={months[t_idx-1]}  loss={loss.item():.4f}")
+
+    log("Pretrain phase complete. Starting live walk-forward (evaluate-then-retroactively-train)...")
+
+    # ------------------------------------------------------------------
+    # LIVE PHASE -- how training and evaluation work now, in plain terms:
+    #
+    # At each window, we first EVALUATE the model's forecasts for
+    # t+1/t+3/t+6 using ONLY weights that have never been trained on
+    # ANY of those specific future months, under ANY horizon, from ANY
+    # window (see proof in the comment below `retroactive train`).
+    # Only AFTER recording that evaluation do we let the model learn
+    # anything new.
+    #
+    # What it learns is NOT this window's own future guesses (that was
+    # the leak). Instead: the month that JUST completed (today) was
+    # exactly what some earlier window -- 1, 3, or 6 months back --
+    # was trying to forecast at the time. Now that we actually know
+    # what happened, we go back, re-run THAT earlier window's original
+    # inputs through the CURRENT model, and grade/train it against
+    # today's real outcome. A small rolling buffer keeps the last few
+    # windows' input tensors around so this retroactive grading is
+    # possible. This preserves training on all three horizons (so the
+    # model still learns horizon-specific behavior) while guaranteeing
+    # nothing is ever trained on before it has genuinely happened.
+    # ------------------------------------------------------------------
+    window_buffer = {}  # w_idx -> dict(node_feats_seq, adj_seq, esm_seq, g_t_history, edges_t)
+
+    for w_idx, t_idx in enumerate(cutoffs):
+        window_idxs = list(range(t_idx - W, t_idx))
+        node_feats_seq, adj_seq, g_t_history, esm_seq = [], [], [], []
+        for idx in window_idxs:
+            nf, adj, freq, g_t, occ, g_t_np, esm_emb = get_month(idx)
+            node_feats_seq.append(nf.to(device))
+            adj_seq.append({k: v.to(device) for k, v in adj.items()})
+            g_t_history.append(g_t_np)
+            esm_seq.append(esm_emb.to(device))
+
+        # "Today" = the last input month = this window's context anchor.
+        # This IS the real outcome that has just become known.
+        _, _, freq_t, g_t_t, occ_t, g_t_now_np, _ = get_month(t_idx - 1)
+        edges_now = occupied_edge_set(occ_t)
+        ctx_month = months[t_idx - 1]
+
+        # ---- 1. EVALUATE FIRST, using weights not yet updated on today ----
         for h in args.horizons:
             target_idx = t_idx - 1 + h
             if target_idx >= len(months):
                 continue
             _, _, _, _, occ_th, g_th_np, _ = get_month(target_idx)
             edges_th = occupied_edge_set(occ_th)
-
-            ctx_month = months[t_idx - 1]
 
             for name, model in models.items():
                 scores = score_full_pairspace(model, node_feats_seq, adj_seq, g_t_history,
@@ -390,7 +454,6 @@ def main():
             if not np.isnan(ap_p):
                 baseline_results["naive_persistence"][h].append((ctx_month, ap_p))
             if args.target_type == "regression":
-                # naive persistence predicts raw counts, so compare on log1p scale directly
                 rm = regression_metrics(np.log1p(persist_scores), g_th_np, iu, ju)
                 baseline_results_reg["naive_persistence"][h].append((ctx_month, rm["mse_log1p"], rm["spearman"]))
 
@@ -402,8 +465,67 @@ def main():
                 rm = regression_metrics(freq_scores, g_th_np, iu, ju)
                 baseline_results_reg["frequency"][h].append((ctx_month, rm["mse_log1p"], rm["spearman"]))
 
+        # ---- 2. Store this window's inputs for future retroactive training ----
+        window_buffer[w_idx] = dict(
+            node_feats_seq=node_feats_seq, adj_seq=adj_seq,
+            esm_seq=esm_seq, g_t_history=g_t_history, edges_t=edges_now,
+        )
+        for old_key in [k for k in window_buffer if k < w_idx - max_h]:
+            del window_buffer[old_key]  # bound buffer memory -- never looked at again
+
+        # ---- 3. RETROACTIVE TRAIN: grade windows w_idx-1, w_idx-3, w_idx-6 ----
+        # (whichever exist) against TODAY's now-known real outcome.
+        # PROOF this cannot leak: at window w_idx-h, the model was only
+        # ever asked to encode inputs -- no training happened using
+        # today's month yet. The label used here (edges_now / g_t_now_np)
+        # is attached to the CURRENT window's context month, which by
+        # construction is exactly window (w_idx-h)'s h-step-ahead
+        # target month. This is the FIRST time that label is used for
+        # training, and it happens only after every window that could
+        # possibly evaluate on this exact month has already done so
+        # (any such window has window index <= w_idx, and all evaluation
+        # above happens strictly before this step).
+        last_loss = None
+        for h in args.horizons:
+            src_idx = w_idx - h
+            if src_idx not in window_buffer:
+                continue
+            src = window_buffer[src_idx]
+            if args.target_type == "regression":
+                pairs, labels = sample_regression_pairs(
+                    src["edges_t"], edges_now, g_t_now_np, N, args.n_neg_per_pos, rng)
+            else:
+                pairs, labels = sample_training_pairs(
+                    src["edges_t"], edges_now, N, args.n_neg_per_pos, rng)
+            if not pairs:
+                continue
+
+            edge_hist = build_edge_history(pairs, src["g_t_history"], W).to(device)
+            pair_i = torch.tensor([p[0] for p in pairs], dtype=torch.long).to(device)
+            pair_j = torch.tensor([p[1] for p in pairs], dtype=torch.long).to(device)
+            labels_t = torch.tensor(labels, dtype=torch.float32).to(device)
+            horizon_ids_t = torch.full((len(pairs),), h, dtype=torch.long).to(device)
+
+            for name, model in models.items():
+                model.train()
+                opt = optimizers[name]
+                for _ in range(args.epochs):
+                    opt.zero_grad()
+                    raw_out = model(src["node_feats_seq"], src["adj_seq"], pair_i, pair_j,
+                                    edge_hist if model.use_edge_history else None,
+                                    horizon_ids_t if model.use_horizon_embed else None,
+                                    esm_seq=src["esm_seq"] if model.use_esm_context else None)
+                    if args.target_type == "regression":
+                        loss = F.mse_loss(raw_out, torch.log1p(labels_t))
+                    else:
+                        loss = F.binary_cross_entropy_with_logits(raw_out, labels_t)
+                    loss.backward()
+                    opt.step()
+                last_loss = loss
+
         if w_idx % 5 == 0:
-            log(f"  window {w_idx+1}/{len(cutoffs)}  ctx_month={months[t_idx-1]}  loss={loss.item():.4f}")
+            loss_str = f"{last_loss.item():.4f}" if last_loss is not None else "n/a (buffer warming up)"
+            log(f"  window {w_idx+1}/{len(cutoffs)}  ctx_month={ctx_month}  loss={loss_str}")
 
     esm_cache.report_coverage()
 
