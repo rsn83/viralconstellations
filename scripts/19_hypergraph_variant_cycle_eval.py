@@ -80,6 +80,14 @@ parser.add_argument("--struct_prior_path", type=str, default="outputs/structural
                      help="output of scripts/20_build_structural_prior.py -- real PDB-derived "
                           "structural proximity, static every month")
 parser.add_argument("--esm_adapter_dim", type=int, default=32)
+parser.add_argument("--use_attention_esm_pool", action="store_true", default=False,
+                     help="use learnable attention pooling (Ilse et al. 2018) over raw "
+                          "per-constellation ESM embeddings instead of a fixed "
+                          "count-weighted mean -- see AttentionPoolESMAdapter. NOT YET "
+                          "VALIDATED to help -- test A/B before trusting.")
+parser.add_argument("--esm_pool_k", type=int, default=8,
+                     help="max carrier constellations sampled per node per month for "
+                          "attention pooling (only used if --use_attention_esm_pool)")
 parser.add_argument("--dropout", type=float, default=0.2)
 parser.add_argument("--weight_decay", type=float, default=1e-4)
 parser.add_argument("--max_set_size", type=int, default=30,
@@ -272,10 +280,19 @@ def main():
             prev_f = month_cache[idx - 1][1] if (idx - 1) in month_cache else None
             nf, freq = build_month_tensors(g_t_np, f_t_np, occ, n_seq, N, prev_f)
             incidence = build_incidence(occ, N, device)  # None if degenerate (0 constellations)
-            esm_emb = esm_cache.build_month_node_embeddings(occ, N)
+            if args.use_attention_esm_pool:
+                esm_emb = esm_cache.build_month_node_raw_embeddings(occ, N, K=args.esm_pool_k)
+            else:
+                esm_emb = esm_cache.build_month_node_embeddings(occ, N)
             constellations = constellations_of(occ)
             month_cache[idx] = (nf, freq, incidence, occ, esm_emb, constellations)
         return month_cache[idx]
+
+    def esm_to_device(esm_emb):
+        if args.use_attention_esm_pool:
+            raw, mask = esm_emb
+            return raw.to(device), mask.to(device)
+        return esm_emb.to(device)
 
     variant_windows = parse_variant_windows(args.variant_windows, months)
     log(f"\nVariant cycles ({len(variant_windows)}):")
@@ -299,7 +316,7 @@ def main():
         m = {name: HypergraphTemporalScorer(
             node_feat_dim=3, hidden_dim=args.hidden_dim,
             esm_dim=esm_cache.esm_dim, esm_adapter_dim=args.esm_adapter_dim,
-            dropout=args.dropout, **cfg,
+            dropout=args.dropout, use_attention_esm_pool=args.use_attention_esm_pool, **cfg,
         ).to(device) for name, cfg in configs.items()}
         o = {name: torch.optim.Adam(mm.parameters(), lr=args.lr, weight_decay=args.weight_decay)
              for name, mm in m.items()}
@@ -318,7 +335,7 @@ def main():
                 nf, freq, incidence, occ, esm_emb, constellations = get_month(idx)
                 node_feats_seq.append(nf.to(device))
                 incidence_seq.append(incidence)  # already on device from build_incidence
-                esm_seq.append(esm_emb.to(device))
+                esm_seq.append(esm_to_device(esm_emb))
 
             _, freq_t, _, occ_t, _, constellations_t = get_month(t_idx - 1)
 
@@ -389,7 +406,7 @@ def main():
                 nf, freq, incidence, occ, esm_emb, constellations = get_month(idx)
                 node_feats_seq.append(nf.to(device))
                 incidence_seq.append(incidence)
-                esm_seq.append(esm_emb.to(device))
+                esm_seq.append(esm_to_device(esm_emb))
             _, freq_t, _, occ_t, _, constellations_t = get_month(t_idx - 1)
             ctx_month = months[t_idx - 1]
 

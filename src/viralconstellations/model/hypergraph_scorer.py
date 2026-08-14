@@ -60,7 +60,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from viralconstellations.model.graph_temporal_scorer_v2 import ESMNodeAdapter
+from viralconstellations.model.graph_temporal_scorer_v2 import ESMNodeAdapter, AttentionPoolESMAdapter
 
 
 class HypergraphConv(nn.Module):
@@ -205,16 +205,20 @@ class HypergraphNodeTemporalEncoder(nn.Module):
     def __init__(self, node_feat_dim: int, hidden_dim: int, n_conv_layers: int = 2,
                  use_gnn: bool = True, use_rnn: bool = True, use_esm_context: bool = True,
                  use_struct: bool = True, esm_dim: int = 640, esm_adapter_dim: int = 32,
-                 dropout: float = 0.0):
+                 dropout: float = 0.0, use_attention_esm_pool: bool = False):
         super().__init__()
         self.use_gnn = use_gnn
         self.use_rnn = use_rnn
         self.use_esm_context = use_esm_context
         self.use_struct = use_struct
+        self.use_attention_esm_pool = use_attention_esm_pool
         self.hidden_dim = hidden_dim
 
         if use_esm_context:
-            self.esm_adapter = ESMNodeAdapter(esm_dim, esm_adapter_dim, dropout=dropout)
+            if use_attention_esm_pool:
+                self.esm_adapter = AttentionPoolESMAdapter(esm_dim, esm_adapter_dim, dropout=dropout)
+            else:
+                self.esm_adapter = ESMNodeAdapter(esm_dim, esm_adapter_dim, dropout=dropout)
             total_in_dim = node_feat_dim + esm_adapter_dim
         else:
             total_in_dim = node_feat_dim
@@ -242,13 +246,16 @@ class HypergraphNodeTemporalEncoder(nn.Module):
 
     def forward(self, node_feats_seq: list[torch.Tensor], incidence_seq: list,
                 struct_adj: torch.Tensor | None = None,
-                esm_seq: list[torch.Tensor] | None = None) -> torch.Tensor:
+                esm_seq=None) -> torch.Tensor:
         """
         incidence_seq: list of (H_sparse, W_diag, ones_diag, D_e_inv,
                        D_v_inv_sqrt_w, D_v_inv_sqrt_u) tuples, or None
                        for a degenerate month -- one entry per month.
         struct_adj: (N, N) static structural prior, SAME every month
                     (only needed if use_struct=True).
+        esm_seq: list of (N, esm_dim) tensors (mean-pool mode), or list
+                 of (raw, mask) tuples (attention-pool mode) -- must
+                 match use_attention_esm_pool.
         """
         P = node_feats_seq[0].shape[0]
         h = torch.zeros(P, self.hidden_dim, device=node_feats_seq[0].device)
@@ -262,7 +269,11 @@ class HypergraphNodeTemporalEncoder(nn.Module):
         months = months_data if self.use_rnn else [months_data[-1]]
         for x_t, inc_t, esm_t in months:
             if self.use_esm_context:
-                esm_emb = self.esm_adapter(esm_t)
+                if self.use_attention_esm_pool:
+                    raw, mask = esm_t
+                    esm_emb = self.esm_adapter(raw, mask)
+                else:
+                    esm_emb = self.esm_adapter(esm_t)
                 x_t = torch.cat([x_t, esm_emb], dim=-1)
 
             if self.use_gnn and inc_t is not None:
@@ -383,13 +394,14 @@ class HypergraphTemporalScorer(nn.Module):
                  use_esm_context: bool = True, use_struct: bool = True,
                  esm_dim: int = 640, esm_adapter_dim: int = 32,
                  dropout: float = 0.0, use_horizon_embed: bool = True, max_horizon: int = 12,
-                 n_attn_heads: int = 4):
+                 n_attn_heads: int = 4, use_attention_esm_pool: bool = False):
         super().__init__()
         self.use_horizon_embed = use_horizon_embed
         self.node_encoder = HypergraphNodeTemporalEncoder(
             node_feat_dim, hidden_dim, n_conv_layers, use_gnn, use_rnn,
             use_esm_context=use_esm_context, use_struct=use_struct,
             esm_dim=esm_dim, esm_adapter_dim=esm_adapter_dim, dropout=dropout,
+            use_attention_esm_pool=use_attention_esm_pool,
         )
         if use_horizon_embed:
             self.horizon_embed = nn.Embedding(max_horizon + 1, hidden_dim)
