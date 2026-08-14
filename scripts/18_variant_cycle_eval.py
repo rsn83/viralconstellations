@@ -438,14 +438,37 @@ def main():
     # THE CYCLE: bulk-train up to each variant window, freeze + evaluate
     # that window, bulk-train through to the next (now including this
     # window as legitimate history), repeat.
+    #
+    # GUARD: W + max_h months of runway are required before ANY variant
+    # window can produce even one valid training window (needs W months
+    # of input AND the h=max_h target to land before the cutoff). Early
+    # variants (e.g. Beta, Alpha, Gamma in the first year of data) may
+    # not have that much history available yet. Evaluating with a
+    # 0-window-trained (i.e. randomly initialized) model would produce
+    # meaningless numbers silently -- skip evaluation in that case
+    # instead, with a clear warning. Training still advances prev_train_end
+    # regardless, so this window's real data still counts as legitimate
+    # history for LATER cycles even if it couldn't be evaluated itself.
     # ------------------------------------------------------------------
+    MIN_TRAIN_WINDOWS_TO_EVAL = 3
+    MIN_TRAIN_WINDOWS_WARN = 10
     prev_train_end = 0
     for name, start_idx, end_idx in variant_windows:
         n_trained = bulk_train_range(prev_train_end, start_idx)
         log(f"\n[{name}] bulk-trained on {n_trained} windows (months {months[prev_train_end] if prev_train_end < len(months) else '?'} "
             f"to {months[start_idx - 1] if start_idx > 0 else '?'})")
-        evaluate_range(name, start_idx, end_idx)
-        log(f"[{name}] evaluated months {months[start_idx]} to {months[end_idx]}")
+        if n_trained < MIN_TRAIN_WINDOWS_TO_EVAL:
+            log(f"[{name}] SKIPPED: only {n_trained} training windows available "
+                f"(need W={W}+max_h={max_h}={W+max_h} months of runway before this "
+                f"variant's start month; not enough history exists yet). Evaluating "
+                f"an untrained model here would be meaningless. This variant's own "
+                f"months still count as history for later cycles.")
+        else:
+            if n_trained < MIN_TRAIN_WINDOWS_WARN:
+                log(f"[{name}] WARNING: only {n_trained} training windows -- results "
+                    f"for this variant are low-confidence, treat with caution")
+            evaluate_range(name, start_idx, end_idx)
+            log(f"[{name}] evaluated months {months[start_idx]} to {months[end_idx]}")
         prev_train_end = end_idx + 1
 
     # ------------------------------------------------------------------
