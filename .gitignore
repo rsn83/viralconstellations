@@ -26,3 +26,4 @@ evaluation_results*
 .DS_Store
 processed_data.zip
 outputs/
+data/processed/full_data_graphs_posres/
