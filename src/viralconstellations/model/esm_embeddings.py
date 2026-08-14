@@ -60,6 +60,52 @@ class ESMEmbeddingCache:
         out[nonzero] = (sums[nonzero] / weight_totals[nonzero, None]).astype(np.float32)
         return torch.tensor(out, dtype=torch.float32)
 
+    def build_month_node_raw_embeddings(self, occ: dict, N: int, K: int = 8):
+        """
+        Alternative to build_month_node_embeddings: instead of collapsing
+        each node's per-constellation ESM embeddings into one fixed
+        weighted-mean vector, returns the raw (up to K) individual
+        embeddings themselves, so a LEARNABLE attention pool (see
+        AttentionPoolESMAdapter in graph_temporal_scorer_v2.py) can
+        decide which contexts matter, instead of a fixed count-weighted
+        average baked in before the model ever sees the data.
+
+        Selection: top-K carrier constellations by real sequence count
+        (deterministic, not random -- reproducible across runs). If a
+        node has fewer than K real carriers, remaining slots are masked
+        out (zero-padded, not counted).
+
+        Returns:
+          raw:  (N, K, esm_dim) float32 tensor
+          mask: (N, K) bool tensor, True = real (non-padding) slot
+        """
+        per_node: list[list[tuple[float, np.ndarray]]] = [[] for _ in range(N)]
+
+        for constellation, count in occ.items():
+            key = frozenset(constellation)
+            node_embs = self.embeddings.get(key)
+            if node_embs is None:
+                self._miss_count += 1
+                continue
+            self._hit_count += 1
+            w = float(count) if isinstance(count, (int, float)) else 1.0
+            for node_idx, emb in node_embs.items():
+                if node_idx < N:
+                    per_node[node_idx].append((w, emb))
+
+        raw = np.zeros((N, K, self.esm_dim), dtype=np.float32)
+        mask = np.zeros((N, K), dtype=bool)
+        for i in range(N):
+            items = per_node[i]
+            if not items:
+                continue
+            items.sort(key=lambda item: -item[0])  # top-K by count, deterministic
+            for k, (w, emb) in enumerate(items[:K]):
+                raw[i, k] = emb
+                mask[i, k] = True
+
+        return torch.tensor(raw, dtype=torch.float32), torch.tensor(mask, dtype=torch.bool)
+
     def report_coverage(self):
         total = self._hit_count + self._miss_count
         pct = 100.0 * self._hit_count / total if total else float("nan")

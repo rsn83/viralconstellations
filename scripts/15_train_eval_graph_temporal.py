@@ -52,6 +52,13 @@ parser.add_argument("--eval_pair_batch", type=int, default=50000,
 parser.add_argument("--esm_cache_path", type=str, default="outputs/esm_cache.pkl",
                      help="output of scripts/17_extract_esm_embeddings.py")
 parser.add_argument("--esm_adapter_dim", type=int, default=32)
+parser.add_argument("--use_attention_esm_pool", action="store_true", default=False,
+                     help="use learnable attention pooling (Ilse et al. 2018) over raw "
+                          "per-constellation ESM embeddings instead of a fixed "
+                          "count-weighted mean -- see AttentionPoolESMAdapter")
+parser.add_argument("--esm_pool_k", type=int, default=8,
+                     help="max carrier constellations sampled per node per month for "
+                          "attention pooling (only used if --use_attention_esm_pool)")
 parser.add_argument("--dropout", type=float, default=0.2,
                      help="dropout applied throughout the model (GNN conv, GRU, edge-history "
                           "encoder, ESM adapter, decoder). Helps prevent overfitting in "
@@ -298,6 +305,15 @@ def main():
         f"esm_dim={esm_cache.esm_dim}")
     log(f"target_type={args.target_type}")
 
+    def esm_to_device(esm_emb):
+        """esm_emb is either a plain (N, esm_dim) tensor (mean-pool mode)
+        or a (raw, mask) tuple (attention-pool mode) -- move whichever
+        it is onto device."""
+        if args.use_attention_esm_pool:
+            raw, mask = esm_emb
+            return raw.to(device), mask.to(device)
+        return esm_emb.to(device)
+
     month_cache = {}
     def get_month(idx):
         if idx not in month_cache:
@@ -305,7 +321,10 @@ def main():
             g_t_np, f_t_np, occ, n_seq = load_month(graphs_dir, m)
             prev_f = month_cache[idx - 1][2] if (idx - 1) in month_cache else None
             nf, adj, freq, g_t, g_t_freq_np = build_month_tensors(g_t_np, f_t_np, occ, n_seq, N, prev_f)
-            esm_emb = esm_cache.build_month_node_embeddings(occ, N)  # (N, esm_dim), cheap
+            if args.use_attention_esm_pool:
+                esm_emb = esm_cache.build_month_node_raw_embeddings(occ, N, K=args.esm_pool_k)  # (raw, mask)
+            else:
+                esm_emb = esm_cache.build_month_node_embeddings(occ, N)  # (N, esm_dim), cheap
             month_cache[idx] = (nf, adj, freq, g_t, occ, g_t_np, esm_emb, g_t_freq_np)
         return month_cache[idx]
 
@@ -374,7 +393,7 @@ def main():
         node_feat_dim=3, hidden_dim=args.hidden_dim,
         relation_names=["cooc", "struct", "profile_sim", "background_overlap"],
         edge_history_window=W, esm_dim=esm_cache.esm_dim, esm_adapter_dim=args.esm_adapter_dim,
-        dropout=args.dropout, **cfg,
+        dropout=args.dropout, use_attention_esm_pool=args.use_attention_esm_pool, **cfg,
     ).to(device) for name, cfg in configs.items()}
     optimizers = {name: torch.optim.Adam(m.parameters(), lr=args.lr, weight_decay=args.weight_decay)
                   for name, m in models.items()}
@@ -395,7 +414,7 @@ def main():
             node_feats_seq.append(nf.to(device))
             adj_seq.append({k: v.to(device) for k, v in adj.items()})
             g_t_history.append(g_t_freq_np)  # frequency-normalized, not raw count -- see build_month_tensors
-            esm_seq.append(esm_emb.to(device))
+            esm_seq.append(esm_to_device(esm_emb))
 
         _, _, freq_t, g_t_t, occ_t, _, _, _ = get_month(t_idx - 1)
         edges_t = occupied_edge_set(occ_t)
@@ -478,7 +497,7 @@ def main():
             node_feats_seq.append(nf.to(device))
             adj_seq.append({k: v.to(device) for k, v in adj.items()})
             g_t_history.append(g_t_freq_np)  # frequency-normalized, not raw count -- see build_month_tensors
-            esm_seq.append(esm_emb.to(device))
+            esm_seq.append(esm_to_device(esm_emb))
 
         # "Today" = the last input month = this window's context anchor.
         # This IS the real outcome that has just become known.

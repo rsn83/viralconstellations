@@ -78,6 +78,59 @@ class RelationalGraphConv(nn.Module):
         return self.dropout(F.relu(out))
 
 
+class AttentionPoolESMAdapter(nn.Module):
+    """
+    Alternative to ESMNodeAdapter: instead of receiving an already
+    mean-pooled (N, esm_dim) vector, receives the RAW per-constellation
+    ESM embeddings for each node this month (up to K of them) and
+    learns which contexts matter, via gated attention pooling (Ilse,
+    Tomczak, Welling, "Attention-based Deep Multiple Instance Learning",
+    ICML 2018) -- the standard fix for exactly this problem in the
+    broader literature (also well known in NLP: averaging contextual
+    embeddings across many occurrences of the same word washes out
+    polysemy/context, same failure mode as fixed count-weighted mean
+    pooling here).
+
+    Why this matters here specifically: a node's ESM embedding is
+    CONTEXTUAL -- it depends on which other mutations were present in
+    the sequence it was computed from. A fixed weighted mean across
+    all of a node's carrier constellations collapses that
+    context-dependence back into something close to a static
+    per-residue vector, which may be exactly why ESM wasn't found to
+    help in earlier ablations: not because the embeddings lack useful
+    information, but because the aggregation step was discarding it
+    before the model ever saw it. This lets the model itself learn
+    which contexts are most informative, rather than that being fixed
+    in advance by raw popularity.
+    """
+    def __init__(self, esm_dim: int, hidden_dim: int, attn_dim: int = 64, dropout: float = 0.0):
+        super().__init__()
+        self.V = nn.Linear(esm_dim, attn_dim)
+        self.U = nn.Linear(esm_dim, attn_dim)
+        self.w = nn.Linear(attn_dim, 1)
+        self.adapter = nn.Sequential(
+            nn.Linear(esm_dim, hidden_dim), nn.ReLU(), nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+    def forward(self, raw_embeds: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """
+        raw_embeds: (n_nodes, K, esm_dim) -- padded, per-constellation
+        mask:       (n_nodes, K) bool, True = real (non-padding) slot
+        returns:    (n_nodes, hidden_dim)
+        """
+        gate = torch.tanh(self.V(raw_embeds)) * torch.sigmoid(self.U(raw_embeds))  # (n_nodes, K, attn_dim)
+        scores = self.w(gate).squeeze(-1)  # (n_nodes, K)
+
+        scores = scores.masked_fill(~mask, float("-inf"))
+        all_masked = (~mask).all(dim=-1, keepdim=True)
+        scores = scores.masked_fill(all_masked, 0.0)  # guard: node with zero carriers this month
+
+        attn = F.softmax(scores, dim=-1)  # (n_nodes, K)
+        pooled = (attn.unsqueeze(-1) * raw_embeds).sum(dim=1)  # (n_nodes, esm_dim)
+        return self.adapter(pooled)
+
+
 class ESMNodeAdapter(nn.Module):
     """
     Takes a PRECOMPUTED, FROZEN ESM2 embedding per node (built once,
@@ -95,6 +148,12 @@ class ESMNodeAdapter(nn.Module):
     embedding for this task; the embedding itself (frozen) is not
     retrained, so there's no risk of overfitting a large pretrained
     representation to a few thousand constellations.
+
+    NOTE: this expects an ALREADY mean-pooled (N, esm_dim) vector (see
+    ESMEmbeddingCache.build_month_node_embeddings). See
+    AttentionPoolESMAdapter above for a learnable-pooling alternative
+    that operates on the raw per-constellation embeddings instead --
+    use --use_attention_esm_pool to switch (scripts 15/18).
     """
     def __init__(self, esm_dim: int, hidden_dim: int, dropout: float = 0.0):
         super().__init__()
@@ -115,25 +174,34 @@ class NodeTemporalEncoder(nn.Module):
     use_rnn=False: skip the GRU, use only the LAST month's conv output
                    (ablation: does temporal memory matter).
     use_esm_context=True: concatenate an adapted, frozen-ESM-derived
-                   embedding (see ESMNodeAdapter above) onto the raw
-                   scalar node features (freq, freq_trend, degree)
-                   before the conv/proj + GRU pipeline below. Set False
-                   to ablate this pathway, same pattern as the other
-                   ablation flags -- confirm it's actually earning its
-                   keep before trusting it.
+                   embedding onto the raw scalar node features (freq,
+                   freq_trend, degree) before the conv/proj + GRU
+                   pipeline below. Set False to ablate this pathway.
+    use_attention_esm_pool=False: if True, use AttentionPoolESMAdapter
+                   (learnable pooling over raw per-constellation
+                   embeddings) instead of ESMNodeAdapter (fixed
+                   count-weighted mean, pre-pooled outside the model).
+                   Only relevant if use_esm_context=True. esm_seq
+                   entries must then be (raw, mask) tuples, not plain
+                   (N, esm_dim) tensors -- see
+                   ESMEmbeddingCache.build_month_node_raw_embeddings.
     """
     def __init__(self, node_feat_dim: int, hidden_dim: int, relation_names: list[str],
                  n_conv_layers: int = 2, use_gnn: bool = True, use_rnn: bool = True,
                  use_esm_context: bool = True, esm_dim: int = 640, esm_adapter_dim: int = 32,
-                 dropout: float = 0.0):
+                 dropout: float = 0.0, use_attention_esm_pool: bool = False):
         super().__init__()
         self.use_gnn = use_gnn
         self.use_rnn = use_rnn
         self.use_esm_context = use_esm_context
+        self.use_attention_esm_pool = use_attention_esm_pool
         self.hidden_dim = hidden_dim
 
         if use_esm_context:
-            self.esm_adapter = ESMNodeAdapter(esm_dim, esm_adapter_dim, dropout=dropout)
+            if use_attention_esm_pool:
+                self.esm_adapter = AttentionPoolESMAdapter(esm_dim, esm_adapter_dim, dropout=dropout)
+            else:
+                self.esm_adapter = ESMNodeAdapter(esm_dim, esm_adapter_dim, dropout=dropout)
             total_in_dim = node_feat_dim + esm_adapter_dim
         else:
             total_in_dim = node_feat_dim
@@ -154,7 +222,12 @@ class NodeTemporalEncoder(nn.Module):
 
     def forward(self, node_feats_seq: list[torch.Tensor],
                 adj_seq: list[dict[str, torch.Tensor]],
-                esm_seq: list[torch.Tensor] | None = None) -> torch.Tensor:
+                esm_seq=None) -> torch.Tensor:
+        """
+        esm_seq: list of (N, esm_dim) tensors (mean-pool mode), or list
+                 of (raw, mask) tuples (attention-pool mode) -- must
+                 match use_attention_esm_pool.
+        """
         P = node_feats_seq[0].shape[0]
         h = torch.zeros(P, self.hidden_dim, device=node_feats_seq[0].device)
 
@@ -167,7 +240,11 @@ class NodeTemporalEncoder(nn.Module):
         months = months_data if self.use_rnn else [months_data[-1]]
         for x_t, adj_t, esm_t in months:
             if self.use_esm_context:
-                esm_emb = self.esm_adapter(esm_t)      # (N, esm_adapter_dim), cheap -- ESM itself not run here
+                if self.use_attention_esm_pool:
+                    raw, mask = esm_t
+                    esm_emb = self.esm_adapter(raw, mask)
+                else:
+                    esm_emb = self.esm_adapter(esm_t)   # (N, esm_adapter_dim), cheap -- ESM itself not run here
                 x_t = torch.cat([x_t, esm_emb], dim=-1)
 
             if self.use_gnn:
@@ -199,7 +276,7 @@ class GraphTemporalScorer(nn.Module):
                  use_gnn: bool = True, use_rnn: bool = True, use_edge_history: bool = True,
                  use_horizon_embed: bool = True, max_horizon: int = 12,
                  use_esm_context: bool = True, esm_dim: int = 640, esm_adapter_dim: int = 32,
-                 dropout: float = 0.0):
+                 dropout: float = 0.0, use_attention_esm_pool: bool = False):
         super().__init__()
         self.use_edge_history = use_edge_history
         self.use_horizon_embed = use_horizon_embed
@@ -207,7 +284,7 @@ class GraphTemporalScorer(nn.Module):
         self.node_encoder = NodeTemporalEncoder(
             node_feat_dim, hidden_dim, relation_names, n_conv_layers, use_gnn, use_rnn,
             use_esm_context=use_esm_context, esm_dim=esm_dim, esm_adapter_dim=esm_adapter_dim,
-            dropout=dropout,
+            dropout=dropout, use_attention_esm_pool=use_attention_esm_pool,
         )
         decoder_in = hidden_dim * 2
         if use_edge_history:
