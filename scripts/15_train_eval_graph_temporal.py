@@ -1,28 +1,37 @@
 """
 Step 15: Train and evaluate GraphTemporalScorer on real (position,residue)
-data, at h=1/3/6, with FULL pair-space AP (not sampled-negative AP) as the
-reported metric, against three baselines and a leave-one-component-out
-ablation.
+data, at h=1/3/6, with FULL pair-space evaluation against baselines and
+a leave-one-component-out ablation.
+
+--target_type binary (original): predict whether pair (i,j) newly
+    co-occurs by t+h. Label = 0/1. Loss = BCE. Metric = AP.
+--target_type regression (default): predict log1p(g_{t+h}[i,j]) --
+    the actual co-occurrence COUNT, not just whether it's nonzero.
+    This subsumes appearance (0 -> positive) AND growth/decline
+    (positive -> different positive) AND extinction (positive -> 0)
+    in one target, using information (g_t is already a real count
+    matrix, not binary) that was previously being discarded down to
+    0/1 for the appearance-only framing. Loss = MSE on log1p(count).
+    Metrics = AP (still reported, using the raw predicted score to
+    rank pairs -- monotonic transforms don't change AP, so this stays
+    comparable to the binary run) AND Spearman correlation + MSE
+    against the true log1p(count), which the binary framing cannot
+    report at all since it never predicts magnitude.
 
 Design decisions, all fixed, not re-litigated per run:
   - Windowing: W=6 input months -> encode ONCE -> decode h=1,3,6 from that
     SAME encoding (DySAT-style, no autoregressive feedback).
-  - Training: negative-sampled BCE (standard, necessary given class
-    imbalance).
-  - Reported metric: FULL pair-space AP -- every possible (i,j) pair in
-    that month scored and compared against the true future graph. This
-    is what "predicted graph vs actual graph" means, computed properly.
+  - Reported AP: FULL pair-space -- every possible (i,j) pair in that
+    month scored and compared against the true future graph.
   - Baselines, same eval, so numbers are directly comparable:
       1. random
       2. naive persistence (g_{t+h} = g_t)
-      3. frequency-only logistic (edge exists iff both endpoints'
-         marginal frequency product exceeds nothing -- i.e. a simple
-         frequency-based edge score, fit per window like your existing
-         LogisticFrontierScorer)
-  - Ablation: full model vs no-GNN vs no-RNN vs no-edge-history.
+      3. frequency-only (product of endpoint marginal frequencies)
+  - Ablation: full model vs no-GNN vs no-RNN vs no-edge-history vs
+    no-ESM-context.
 
 Usage:
-  python scripts/15_train_eval_graph_temporal.py --window 6 --epochs 20
+  python scripts/15_train_eval_graph_temporal.py --window 6 --epochs 20 --target_type regression
 """
 
 import sys, argparse, pickle
@@ -43,6 +52,9 @@ parser.add_argument("--eval_pair_batch", type=int, default=50000,
 parser.add_argument("--esm_cache_path", type=str, default="outputs/esm_cache.pkl",
                      help="output of scripts/17_extract_esm_embeddings.py")
 parser.add_argument("--esm_adapter_dim", type=int, default=32)
+parser.add_argument("--target_type", type=str, default="regression", choices=["binary", "regression"],
+                     help="binary: predict appearance only (0/1). regression: predict "
+                          "log1p(count) -- appearance AND magnitude in one target.")
 args = parser.parse_args()
 
 import numpy as np
@@ -50,7 +62,7 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 from sklearn.metrics import average_precision_score
-from sklearn.linear_model import LogisticRegression
+from scipy.stats import spearmanr
 
 from viralconstellations.model.graph_temporal_scorer_v2 import (
     GraphTemporalScorer, NaivePersistenceBaseline,
@@ -138,6 +150,48 @@ def sample_training_pairs(edges_t: set, edges_th: set, N: int, n_neg_per_pos: in
     return new_edges + neg_pairs, [1] * len(new_edges) + [0] * len(neg_pairs)
 
 
+def sample_regression_pairs(edges_t: set, edges_th: set, g_th_np: np.ndarray, N: int,
+                             n_neg_per_pos: int, rng):
+    """
+    Regression version: candidates = every pair that is an edge at t
+    OR at t+h (covers appearance, growth, decline, AND extinction --
+    all in one set), labeled with the REAL count g_th_np[i,j] (0 for
+    the extinction case). Plus a sampled set of true negatives (never
+    an edge at either time) labeled 0, same negative-sampling ratio as
+    the binary version, so training set size/imbalance is comparable.
+    """
+    candidate = sorted(edges_t | edges_th)
+    edge_union = edges_t | edges_th
+    n_pos = max(len(candidate), 1)
+    n_neg = min(n_pos * n_neg_per_pos, N * (N - 1) // 2)
+    neg_pairs, attempts = [], 0
+    while len(neg_pairs) < n_neg and attempts < n_neg * 20:
+        i, j = rng.integers(0, N, size=2)
+        attempts += 1
+        if i == j:
+            continue
+        pair = (min(int(i), int(j)), max(int(i), int(j)))
+        if pair in edge_union:
+            continue
+        neg_pairs.append(pair)
+
+    if not candidate and not neg_pairs:
+        return [], []
+    pos_labels = [float(g_th_np[i, j]) for (i, j) in candidate]
+    neg_labels = [0.0] * len(neg_pairs)
+    return candidate + neg_pairs, pos_labels + neg_labels
+
+
+def regression_metrics(scores: np.ndarray, g_th_np: np.ndarray, iu: np.ndarray, ju: np.ndarray) -> dict:
+    """scores: raw model output, trained to approximate log1p(count).
+    Compared directly against the true log1p(count) over the full pair
+    space -- same evaluation scope as full_pairspace_ap."""
+    true_log = np.log1p(g_th_np[iu, ju])
+    mse = float(np.mean((scores - true_log) ** 2))
+    rho, _ = spearmanr(scores, true_log)
+    return {"mse_log1p": mse, "spearman": float(rho) if not np.isnan(rho) else float("nan")}
+
+
 def build_edge_history(pairs, g_t_history, window):
     hist = np.zeros((len(pairs), window), dtype=np.float32)
     for k, (i, j) in enumerate(pairs):
@@ -167,8 +221,11 @@ def score_full_pairspace(model, node_feats_seq, adj_seq, g_t_history, iu, ju, ba
             hz = torch.full((end - start,), horizon, dtype=torch.long, device=device)
             parts.append(model.horizon_embed(hz))
         combined = torch.cat(parts, dim=-1)
-        logits = model.decoder(combined).squeeze(-1)
-        scores[start:end] = torch.sigmoid(logits).cpu().numpy()
+        raw = model.decoder(combined).squeeze(-1)
+        # No sigmoid: AP is unaffected by monotonic transforms, and for
+        # target_type=="regression" this raw value IS the prediction
+        # (approximating log1p(count)), not a probability.
+        scores[start:end] = raw.cpu().numpy()
     return scores
 
 
@@ -193,8 +250,9 @@ def main():
     log(f"Full pair space: {len(iu):,} pairs")
 
     esm_cache = ESMEmbeddingCache(ROOT / args.esm_cache_path)
-    log(f"Loaded ESM cache: {len(esm_cache.constellation_list)} constellations, "
+    log(f"Loaded ESM cache: {len(esm_cache.embeddings)} constellations, "
         f"esm_dim={esm_cache.esm_dim}")
+    log(f"target_type={args.target_type}")
 
     month_cache = {}
     def get_month(idx):
@@ -219,6 +277,11 @@ def main():
     baseline_results = {"random": {h: [] for h in args.horizons},
                          "naive_persistence": {h: [] for h in args.horizons},
                          "frequency": {h: [] for h in args.horizons}}
+    # Only populated when target_type=="regression" -- (ctx_month, mse, spearman) tuples
+    results_reg = {name: {h: [] for h in args.horizons} for name in configs}
+    baseline_results_reg = {"random": {h: [] for h in args.horizons},
+                             "naive_persistence": {h: [] for h in args.horizons},
+                             "frequency": {h: [] for h in args.horizons}}
 
     max_h = max(args.horizons)
     cutoffs = list(range(W, len(months) - max_h))
@@ -256,9 +319,14 @@ def main():
             target_idx_h = t_idx - 1 + h
             if target_idx_h >= len(months):
                 continue
-            _, _, _, _, occ_th_h, _, _ = get_month(target_idx_h)
+            _, _, _, _, occ_th_h, g_th_np_h, _ = get_month(target_idx_h)
             edges_th_h = occupied_edge_set(occ_th_h)
-            pairs_h, labels_h = sample_training_pairs(edges_t, edges_th_h, N, args.n_neg_per_pos, rng)
+            if args.target_type == "regression":
+                pairs_h, labels_h = sample_regression_pairs(
+                    edges_t, edges_th_h, g_th_np_h, N, args.n_neg_per_pos, rng)
+            else:
+                pairs_h, labels_h = sample_training_pairs(
+                    edges_t, edges_th_h, N, args.n_neg_per_pos, rng)
             combined_pairs.extend(pairs_h)
             combined_labels.extend(labels_h)
             combined_horizon_ids.extend([h] * len(pairs_h))
@@ -276,11 +344,14 @@ def main():
             opt = optimizers[name]
             for _ in range(args.epochs):
                 opt.zero_grad()
-                logits = model(node_feats_seq, adj_seq, pair_i, pair_j,
+                raw_out = model(node_feats_seq, adj_seq, pair_i, pair_j,
                                 edge_hist if model.use_edge_history else None,
                                 horizon_ids_t if model.use_horizon_embed else None,
                                 esm_seq=esm_seq if model.use_esm_context else None)
-                loss = F.binary_cross_entropy_with_logits(logits, labels_t)
+                if args.target_type == "regression":
+                    loss = F.mse_loss(raw_out, torch.log1p(labels_t))
+                else:
+                    loss = F.binary_cross_entropy_with_logits(raw_out, labels_t)
                 loss.backward()
                 opt.step()
 
@@ -289,7 +360,7 @@ def main():
             target_idx = t_idx - 1 + h
             if target_idx >= len(months):
                 continue
-            _, _, _, _, occ_th, _, _ = get_month(target_idx)
+            _, _, _, _, occ_th, g_th_np, _ = get_month(target_idx)
             edges_th = occupied_edge_set(occ_th)
 
             ctx_month = months[t_idx - 1]
@@ -301,21 +372,34 @@ def main():
                 ap = full_pairspace_ap(scores, edges_th, iu, ju)
                 if not np.isnan(ap):
                     results[name][h].append((ctx_month, ap))
+                if args.target_type == "regression":
+                    rm = regression_metrics(scores, g_th_np, iu, ju)
+                    results_reg[name][h].append((ctx_month, rm["mse_log1p"], rm["spearman"]))
 
             rand_scores = rng.random(len(iu))
             ap_r = full_pairspace_ap(rand_scores, edges_th, iu, ju)
             if not np.isnan(ap_r):
                 baseline_results["random"][h].append((ctx_month, ap_r))
+            if args.target_type == "regression":
+                rm = regression_metrics(rand_scores, g_th_np, iu, ju)
+                baseline_results_reg["random"][h].append((ctx_month, rm["mse_log1p"], rm["spearman"]))
 
             persist_scores = g_t_t[iu, ju]
             ap_p = full_pairspace_ap(persist_scores, edges_th, iu, ju)
             if not np.isnan(ap_p):
                 baseline_results["naive_persistence"][h].append((ctx_month, ap_p))
+            if args.target_type == "regression":
+                # naive persistence predicts raw counts, so compare on log1p scale directly
+                rm = regression_metrics(np.log1p(persist_scores), g_th_np, iu, ju)
+                baseline_results_reg["naive_persistence"][h].append((ctx_month, rm["mse_log1p"], rm["spearman"]))
 
             freq_scores = frequency_baseline_scores(freq_t, iu, ju)
             ap_f = full_pairspace_ap(freq_scores, edges_th, iu, ju)
             if not np.isnan(ap_f):
                 baseline_results["frequency"][h].append((ctx_month, ap_f))
+            if args.target_type == "regression":
+                rm = regression_metrics(freq_scores, g_th_np, iu, ju)
+                baseline_results_reg["frequency"][h].append((ctx_month, rm["mse_log1p"], rm["spearman"]))
 
         if w_idx % 5 == 0:
             log(f"  window {w_idx+1}/{len(cutoffs)}  ctx_month={months[t_idx-1]}  loss={loss.item():.4f}")
@@ -332,6 +416,16 @@ def main():
             return float("nan"), float("nan"), 0
         return float(np.mean(vals)), float(np.std(vals)), len(vals)
 
+    def summarize_reg(triples: list[tuple[str, float, float]]) -> tuple[float, float, int]:
+        """Mean Spearman correlation across windows (higher = better rank
+        agreement with true magnitude), and mean MSE on log1p(count)."""
+        if not triples:
+            return float("nan"), float("nan"), 0
+        mses = [t[1] for t in triples]
+        rhos = [t[2] for t in triples if not np.isnan(t[2])]
+        mean_rho = float(np.mean(rhos)) if rhos else float("nan")
+        return float(np.mean(mses)), mean_rho, len(triples)
+
     log("\n" + "=" * 70)
     log("RESULTS (full pair-space AP, mean +/- std across ALL windows)")
     log("=" * 70)
@@ -345,6 +439,21 @@ def main():
             m, s, n = summarize(results[name][h])
             if n:
                 log(f"  {name:<20} AP = {m:.4f} +/- {s:.4f}  (n={n})")
+
+    if args.target_type == "regression":
+        log("\n" + "=" * 70)
+        log("REGRESSION METRICS (mean MSE on log1p(count), mean Spearman rho)")
+        log("=" * 70)
+        for h in args.horizons:
+            log(f"\n--- horizon h={h} ---")
+            for name in ["random", "naive_persistence", "frequency"]:
+                mse, rho, n = summarize_reg(baseline_results_reg[name][h])
+                if n:
+                    log(f"  {name:<20} MSE={mse:.4f}  spearman={rho:.4f}  (n={n})")
+            for name in configs:
+                mse, rho, n = summarize_reg(results_reg[name][h])
+                if n:
+                    log(f"  {name:<20} MSE={mse:.4f}  spearman={rho:.4f}  (n={n})")
 
     # ------------------------------------------------------------------
     # ERA BREAKDOWN: sequence volume swings ~15-20x across the timeline
@@ -372,6 +481,25 @@ def main():
                 mean, std, n = summarize(pairs)
                 if n:
                     log(f"    {name:<20} AP = {mean:.4f} +/- {std:.4f}  (n={n})")
+
+    if args.target_type == "regression":
+        log("\n" + "=" * 70)
+        log("REGRESSION METRICS ERA BREAKDOWN")
+        log("=" * 70)
+        for h in args.horizons:
+            log(f"\n--- horizon h={h} ---")
+            for era in ["high_volume_2020_2022", "low_volume_2023_2026"]:
+                log(f"\n  [{era}]")
+                for name in ["random", "naive_persistence", "frequency"]:
+                    triples = [t for t in baseline_results_reg[name][h] if era_of(t[0]) == era]
+                    mse, rho, n = summarize_reg(triples)
+                    if n:
+                        log(f"    {name:<20} MSE={mse:.4f}  spearman={rho:.4f}  (n={n})")
+                for name in configs:
+                    triples = [t for t in results_reg[name][h] if era_of(t[0]) == era]
+                    mse, rho, n = summarize_reg(triples)
+                    if n:
+                        log(f"    {name:<20} MSE={mse:.4f}  spearman={rho:.4f}  (n={n})")
 
 
 if __name__ == "__main__":
