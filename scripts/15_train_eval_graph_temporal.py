@@ -278,44 +278,83 @@ def main():
             _, _, _, _, occ_th, _ = get_month(target_idx)
             edges_th = occupied_edge_set(occ_th)
 
+            ctx_month = months[t_idx - 1]
+
             for name, model in models.items():
                 scores = score_full_pairspace(model, node_feats_seq, adj_seq, g_t_history,
                                                iu, ju, args.eval_pair_batch, device, horizon=h)
                 ap = full_pairspace_ap(scores, edges_th, iu, ju)
                 if not np.isnan(ap):
-                    results[name][h].append(ap)
+                    results[name][h].append((ctx_month, ap))
 
             rand_scores = rng.random(len(iu))
             ap_r = full_pairspace_ap(rand_scores, edges_th, iu, ju)
             if not np.isnan(ap_r):
-                baseline_results["random"][h].append(ap_r)
+                baseline_results["random"][h].append((ctx_month, ap_r))
 
             persist_scores = g_t_t[iu, ju]
             ap_p = full_pairspace_ap(persist_scores, edges_th, iu, ju)
             if not np.isnan(ap_p):
-                baseline_results["naive_persistence"][h].append(ap_p)
+                baseline_results["naive_persistence"][h].append((ctx_month, ap_p))
 
             freq_scores = frequency_baseline_scores(freq_t, iu, ju)
             ap_f = full_pairspace_ap(freq_scores, edges_th, iu, ju)
             if not np.isnan(ap_f):
-                baseline_results["frequency"][h].append(ap_f)
+                baseline_results["frequency"][h].append((ctx_month, ap_f))
 
         if w_idx % 5 == 0:
             log(f"  window {w_idx+1}/{len(cutoffs)}  ctx_month={months[t_idx-1]}  loss={loss.item():.4f}")
 
+    def era_of(month_str: str) -> str:
+        year = int(month_str[:4])
+        return "high_volume_2020_2022" if year <= 2022 else "low_volume_2023_2026"
+
+    def summarize(pairs: list[tuple[str, float]]) -> tuple[float, float, int]:
+        vals = [ap for _, ap in pairs]
+        if not vals:
+            return float("nan"), float("nan"), 0
+        return float(np.mean(vals)), float(np.std(vals)), len(vals)
+
     log("\n" + "=" * 70)
-    log("RESULTS (full pair-space AP, mean +/- std across windows)")
+    log("RESULTS (full pair-space AP, mean +/- std across ALL windows)")
     log("=" * 70)
     for h in args.horizons:
         log(f"\n--- horizon h={h} ---")
         for name in ["random", "naive_persistence", "frequency"]:
-            vals = baseline_results[name][h]
-            if vals:
-                log(f"  {name:<20} AP = {np.mean(vals):.4f} +/- {np.std(vals):.4f}  (n={len(vals)})")
+            m, s, n = summarize(baseline_results[name][h])
+            if n:
+                log(f"  {name:<20} AP = {m:.4f} +/- {s:.4f}  (n={n})")
         for name in configs:
-            vals = results[name][h]
-            if vals:
-                log(f"  {name:<20} AP = {np.mean(vals):.4f} +/- {np.std(vals):.4f}  (n={len(vals)})")
+            m, s, n = summarize(results[name][h])
+            if n:
+                log(f"  {name:<20} AP = {m:.4f} +/- {s:.4f}  (n={n})")
+
+    # ------------------------------------------------------------------
+    # ERA BREAKDOWN: sequence volume swings ~15-20x across the timeline
+    # (833k seqs in 2022-01 vs ~3k in 2025). Split results by data-volume
+    # era, using the EXACT context month recorded alongside each AP value
+    # (not an approximate window-index alignment), since GNN/RNN
+    # performance may depend heavily on how much data was available per
+    # window, not just on the architecture itself.
+    # ------------------------------------------------------------------
+    log("\n" + "=" * 70)
+    log("ERA BREAKDOWN (exact month-based split)")
+    log("=" * 70)
+
+    for h in args.horizons:
+        log(f"\n--- horizon h={h} ---")
+        for era in ["high_volume_2020_2022", "low_volume_2023_2026"]:
+            log(f"\n  [{era}]")
+            for name in ["random", "naive_persistence", "frequency"]:
+                pairs = [(m, ap) for m, ap in baseline_results[name][h] if era_of(m) == era]
+                mean, std, n = summarize(pairs)
+                if n:
+                    log(f"    {name:<20} AP = {mean:.4f} +/- {std:.4f}  (n={n})")
+            for name in configs:
+                pairs = [(m, ap) for m, ap in results[name][h] if era_of(m) == era]
+                mean, std, n = summarize(pairs)
+                if n:
+                    log(f"    {name:<20} AP = {mean:.4f} +/- {std:.4f}  (n={n})")
 
 
 if __name__ == "__main__":
