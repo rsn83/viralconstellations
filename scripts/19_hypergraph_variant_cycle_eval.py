@@ -116,13 +116,19 @@ parser.add_argument("--end_month", type=str, default=None,
                          "2024 and frontier coverage degrades with it (d1: 0.69 in 2022 "
                          "-> 0.28 in 2026), so late months measure surveillance, not "
                          "evolution. Recommend 2024-12.")
-parser.add_argument("--frontier_top_parents", type=int, default=300,
-                    help="expand the frontier from the N most abundant circulating "
-                         "constellations only (compute cap)")
-parser.add_argument("--frontier_max", type=int, default=20000,
-                    help="subsample the frontier to at most this many candidates "
-                         "(compute cap). Keep FIXED across runs -- changing it changes "
-                         "the base rate and makes cells non-comparable.")
+parser.add_argument("--frontier_top_parents", type=int, default=0,
+                    help="expand from the N most abundant circulating constellations. "
+                         "0 = ALL of them (recommended). Capping this destroys coverage: "
+                         "median_parents_at_d1 == 1, so each new constellation has exactly "
+                         "ONE valid parent and it is usually not among the most abundant.")
+parser.add_argument("--frontier_top_nodes", type=int, default=0,
+                    help="only add mutations from the M most frequent active nodes. "
+                         "0 = ALL active nodes. This is the SAFER cap: a new constellation "
+                         "usually adds a mutation that is already circulating somewhere.")
+parser.add_argument("--frontier_max", type=int, default=0,
+                    help="uniformly subsample the frontier to at most this many candidates. "
+                         "0 = no subsampling (recommended). Subsampling removes reachable "
+                         "positives at random and lowers coverage proportionally.")
 args = parser.parse_args()
 
 import numpy as np
@@ -222,29 +228,42 @@ def sample_hyperedge_candidates(constellations_t: dict, constellations_th: dict,
     return all_candidates, all_labels
 
 
-def frontier_candidates(constellations_t: dict, max_set_size: int, rng,
-                        top_parents: int = 300, n_max: int = 20000):
+def frontier_candidates(constellations_t: dict, freq_t, max_set_size: int, rng,
+                        top_parents: int = 0, top_nodes: int = 0, n_max: int = 0):
     """F(O_t): constellations reachable by adding ONE mutation to something
     circulating at t, excluding anything already circulating.
 
-    Justified empirically, not assumed: script 22 measured that ~62% of
-    newly-appearing constellations at t+1 are exactly one addition away from a
-    circulating set, with a median of exactly ONE such parent. That figure is
-    stable across abundance thresholds (0.554 / 0.622 / 0.582 at min_count
-    1 / 3 / 10) but degrades with horizon (0.62 / 0.51 / 0.27 at h=1 / 3 / 6),
-    which is why this eval targets h=1.
+    Justified empirically: script 22 measured that ~62% of newly-appearing
+    constellations at t+1 are exactly one addition from a circulating set,
+    with a MEDIAN OF EXACTLY ONE such parent, stable across abundance
+    thresholds (0.554 / 0.622 / 0.582 at min_count 1 / 3 / 10) and degrading
+    with horizon (0.62 / 0.51 / 0.27 at h = 1 / 3 / 6). Hence h=1.
 
-    The remaining ~38% is a HARD RECALL CEILING and is reported, not hidden.
+    The unique-parent property is why top_parents must default to ALL: the one
+    valid parent of a new constellation is usually a rare circulating set, not
+    an abundant one. Capping parents at 300 collapsed measured coverage from
+    ~62% to 3.3%.
+
+    Cap `top_nodes` instead if the pool must be reduced -- restricting which
+    mutation gets ADDED is far less destructive than restricting which set it
+    is added TO.
+
+    Returns (candidates, n_before_subsample).
     """
     parents = [(c, v) for c, v in constellations_t.items()
                if 1 <= len(c) < max_set_size]
     if not parents:
-        return []
-    parents.sort(key=lambda kv: -kv[1])
-    parents = [c for c, _ in parents[:top_parents]]
-    active = sorted({m for c in constellations_t.keys() for m in c})
-    occupied = set(constellations_t.keys())
+        return [], 0
+    if top_parents and top_parents > 0:
+        parents.sort(key=lambda kv: -kv[1])
+        parents = parents[:top_parents]
+    parents = [c for c, _ in parents]
 
+    active = sorted({m for c in constellations_t.keys() for m in c})
+    if top_nodes and top_nodes > 0 and len(active) > top_nodes:
+        active = sorted(active, key=lambda m: -float(freq_t[m]))[:top_nodes]
+
+    occupied = set(constellations_t.keys())
     out = set()
     for p in parents:
         for m in active:
@@ -253,15 +272,17 @@ def frontier_candidates(constellations_t: dict, max_set_size: int, rng,
             cand = frozenset(set(p) | {m})
             if 2 <= len(cand) <= max_set_size and cand not in occupied:
                 out.add(cand)
+
+    n_raw = len(out)
     out = list(out)
-    if len(out) > n_max:
+    if n_max and n_max > 0 and len(out) > n_max:
         idx = rng.choice(len(out), size=n_max, replace=False)
         out = [out[i] for i in idx]
-    return out
+    return out, n_raw
 
 
-def build_forecast_pool(constellations_t: dict, constellations_th: dict,
-                        max_set_size: int, rng, top_parents=300, n_max=20000):
+def build_forecast_pool(constellations_t: dict, constellations_th: dict, freq_t,
+                        max_set_size: int, rng, top_parents=0, top_nodes=0, n_max=0):
     """Candidate pool = everything circulating at t, PLUS the frontier.
 
     Built ONLY from month t. Nothing from t+h enters the pool construction --
@@ -272,8 +293,10 @@ def build_forecast_pool(constellations_t: dict, constellations_th: dict,
     Returns (candidates, actual_counts_at_th, is_old_mask, stats).
     """
     occ_t = {c for c in constellations_t.keys() if 2 <= len(c) <= max_set_size}
-    frontier = set(frontier_candidates(constellations_t, max_set_size, rng,
-                                        top_parents=top_parents, n_max=n_max))
+    frontier_list, n_frontier_raw = frontier_candidates(
+        constellations_t, freq_t, max_set_size, rng,
+        top_parents=top_parents, top_nodes=top_nodes, n_max=n_max)
+    frontier = set(frontier_list)
     new_th = {c for c in constellations_th.keys()
               if c not in occ_t and 2 <= len(c) <= max_set_size}
 
@@ -288,6 +311,8 @@ def build_forecast_pool(constellations_t: dict, constellations_th: dict,
         "n_pool": len(cands),
         "n_old": int(is_old.sum()),
         "n_frontier": len(frontier),
+        "n_frontier_raw": n_frontier_raw,
+        "subsample_frac": (len(frontier) / n_frontier_raw) if n_frontier_raw else float("nan"),
         "n_new_total": len(new_th),
         "n_new_in_pool": len(new_th & frontier),
         "coverage": (len(new_th & frontier) / len(new_th)) if new_th else float("nan"),
@@ -643,8 +668,9 @@ def main():
 
                 # ---------- HYPERGRAPH RECONSTRUCTION (leak-free pool) ----------
                 cands_r, actual_r, is_old_r, stats_r = build_forecast_pool(
-                    constellations_t, constellations_th, args.max_set_size, rng,
-                    top_parents=args.frontier_top_parents, n_max=args.frontier_max)
+                    constellations_t, constellations_th, freq_t, args.max_set_size, rng,
+                    top_parents=args.frontier_top_parents,
+                    top_nodes=args.frontier_top_nodes, n_max=args.frontier_max)
 
                 if cands_r and (actual_r > 0).sum() > 0:
                     mi_r, mm_r = pad_candidates(cands_r, device, args.max_set_size)
@@ -710,8 +736,17 @@ def main():
                 covs = [r["coverage"] for r in rr if not np.isnan(r["coverage"])]
                 log(f"\n[{name}] HYPERGRAPH RECONSTRUCTION at t+h  (top-K, K=|H_t|)")
                 if covs:
+                    sf = [r["subsample_frac"] for r in rr if not np.isnan(r.get("subsample_frac", np.nan))]
+                    npool = np.mean([r["n_pool"] for r in rr])
                     log(f"  frontier reaches {np.mean(covs):.1%} of genuinely new "
                         f"constellations -- HARD CEILING on appear_rec")
+                    log(f"  pool={npool:.0f}  frontier_raw={np.mean([r['n_frontier_raw'] for r in rr]):.0f}"
+                        f"  kept={np.mean(sf) if sf else 1.0:.1%}"
+                        f"  new_total={np.mean([r['n_new_total'] for r in rr]):.0f}")
+                    if np.mean(covs) < 0.40:
+                        log(f"  !! coverage far below the ~62% measured by script 22. "
+                            f"If kept<100%, raise --frontier_max (0=off). Otherwise raise "
+                            f"--frontier_top_parents (0=all) / --frontier_top_nodes (0=all).")
                 log(f"  {'config':<18}{'h':>2} | {'F1':>6}{'P':>7}{'R':>7} | "
                     f"{'persF1':>7}{'persR':>7} | {'appF1':>7}{'appR':>7}{'appN':>6} | "
                     f"{'wRho':>6}{'wMSE':>8}")
