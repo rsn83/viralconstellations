@@ -116,6 +116,23 @@ parser.add_argument("--end_month", type=str, default=None,
                          "2024 and frontier coverage degrades with it (d1: 0.69 in 2022 "
                          "-> 0.28 in 2026), so late months measure surveillance, not "
                          "evolution. Recommend 2024-12.")
+parser.add_argument("--train_on_frontier", action="store_true", default=True,
+                    help="draw TRAINING negatives from the frontier, matching the "
+                         "evaluation pool. Previously training negatives were random "
+                         "node sets (rng.choice(N, k)) while evaluation used frontier "
+                         "candidates -- the model was graded on a task it never saw. "
+                         "Random sets are separable by node commonness alone, which is "
+                         "exactly what the frequency baseline computes.")
+parser.add_argument("--no_train_on_frontier", dest="train_on_frontier",
+                    action="store_false")
+parser.add_argument("--n_frontier_negs", type=int, default=4000,
+                    help="frontier negatives sampled per training window per horizon")
+parser.add_argument("--use_set_history", action="store_true", default=True,
+                    help="give the scorer each candidate's own log1p count trajectory "
+                         "over the window, as a residual head. Without it the score is "
+                         "a function of member-node embeddings only and cannot express "
+                         "persistence, which is why copy_forward wins.")
+parser.add_argument("--no_set_history", dest="use_set_history", action="store_false")
 parser.add_argument("--frontier_top_parents", type=int, default=0,
                     help="expand from the N most abundant circulating constellations. "
                          "0 = ALL of them (recommended). Capping this destroys coverage: "
@@ -320,6 +337,61 @@ def build_forecast_pool(constellations_t: dict, constellations_th: dict, freq_t,
     return cands, actual, is_old, stats
 
 
+def build_set_history(candidates, constellations_seq, device):
+    """(B, W) tensor of log1p(count) for each candidate across the window months.
+
+    Frontier candidates are all-zero: they have never been observed. That is
+    correct and informative -- the scorer's 'has history' flag turns it into an
+    explicit regime indicator rather than a silently-imputed value.
+    """
+    W = len(constellations_seq)
+    hist = np.zeros((len(candidates), W), dtype=np.float32)
+    for w, cons in enumerate(constellations_seq):
+        if not cons:
+            continue
+        for i, c in enumerate(candidates):
+            v = cons.get(c)
+            if v:
+                hist[i, w] = np.log1p(v)
+    return torch.tensor(hist, dtype=torch.float32).to(device)
+
+
+def sample_frontier_training_pool(constellations_t, constellations_th, freq_t,
+                                  max_set_size, rng, n_negs,
+                                  top_parents=0, top_nodes=0):
+    """Training pool built the SAME WAY as the evaluation pool.
+
+    positives : constellations circulating at t (label = count at t+h, which is
+                0 for extinctions -- that is a real negative outcome, not a
+                random set) PLUS newly-appearing constellations the frontier
+                reaches.
+    negatives : frontier candidates that did NOT appear at t+h. These are hard:
+                real, plausible, built from currently-circulating mutations, so
+                they cannot be separated by node commonness.
+
+    Using the labels here is training, not leakage -- the leak was in the
+    EVALUATION pool, which previously drew candidates from constellations_th.
+    """
+    occ_t = {c for c in constellations_t.keys() if 2 <= len(c) <= max_set_size}
+    frontier, _ = frontier_candidates(constellations_t, freq_t, max_set_size, rng,
+                                      top_parents=top_parents, top_nodes=top_nodes,
+                                      n_max=0)
+    frontier = list(frontier)
+    new_th = {c for c in constellations_th.keys()
+              if c not in occ_t and 2 <= len(c) <= max_set_size}
+
+    fset = set(frontier)
+    pos_new = list(new_th & fset)
+    neg_pool = [c for c in frontier if c not in new_th]
+    if len(neg_pool) > n_negs:
+        idx = rng.choice(len(neg_pool), size=n_negs, replace=False)
+        neg_pool = [neg_pool[i] for i in idx]
+
+    cands = list(occ_t) + pos_new + neg_pool
+    labels = [float(constellations_th.get(c, 0.0)) for c in cands]
+    return cands, labels
+
+
 def _prf(pred_mask, true_mask):
     tp = int((pred_mask & true_mask).sum())
     npred, ntrue = int(pred_mask.sum()), int(true_mask.sum())
@@ -501,13 +573,18 @@ def main():
     for name, s, e in variant_windows:
         log(f"  {name}: {months[s]} to {months[e]}")
 
+    _H = args.use_set_history
     configs = {
-        "full_model":       dict(use_gnn=True,  use_rnn=True,  use_esm_context=True,  use_struct=True),
-        "no_gnn":           dict(use_gnn=False, use_rnn=True,  use_esm_context=True,  use_struct=True),
-        "no_rnn":           dict(use_gnn=True,  use_rnn=False, use_esm_context=True,  use_struct=True),
-        "no_esm_context":   dict(use_gnn=True,  use_rnn=True,  use_esm_context=False, use_struct=True),
-        "no_struct":        dict(use_gnn=True,  use_rnn=True,  use_esm_context=True,  use_struct=False),
+        "full_model":       dict(use_gnn=True,  use_rnn=True,  use_esm_context=True,  use_struct=True,  use_set_history=_H),
+        "no_gnn":           dict(use_gnn=False, use_rnn=True,  use_esm_context=True,  use_struct=True,  use_set_history=_H),
+        "no_rnn":           dict(use_gnn=True,  use_rnn=False, use_esm_context=True,  use_struct=True,  use_set_history=_H),
+        "no_esm_context":   dict(use_gnn=True,  use_rnn=True,  use_esm_context=False, use_struct=True,  use_set_history=_H),
+        "no_struct":        dict(use_gnn=True,  use_rnn=True,  use_esm_context=True,  use_struct=False, use_set_history=_H),
     }
+    if _H:
+        # direct test of how much performance is persistence vs. learned structure
+        configs["no_set_history"] = dict(use_gnn=True, use_rnn=True, use_esm_context=True,
+                                          use_struct=True, use_set_history=False)
     log(f"\nTraining {len(configs)} models per window every cycle: {list(configs.keys())}")
     # NOTE: no "no_edge_history" ablation here -- edge-history was a
     # PAIRWISE concept (a specific pair's own g_t trajectory). It
@@ -518,7 +595,8 @@ def main():
         m = {name: HypergraphTemporalScorer(
             node_feat_dim=3, hidden_dim=args.hidden_dim,
             esm_dim=esm_cache.esm_dim, esm_adapter_dim=args.esm_adapter_dim,
-            dropout=args.dropout, use_attention_esm_pool=args.use_attention_esm_pool, **cfg,
+            dropout=args.dropout, use_attention_esm_pool=args.use_attention_esm_pool,
+            history_len=args.window, **cfg,
         ).to(device) for name, cfg in configs.items()}
         o = {name: torch.optim.Adam(mm.parameters(), lr=args.lr, weight_decay=args.weight_decay)
              for name, mm in m.items()}
@@ -532,12 +610,13 @@ def main():
             if c_idx % 5 == 0 or c_idx == len(candidates_t) - 1:
                 log(f"      window {c_idx+1}/{len(candidates_t)}  (ctx_month={months[t_idx-1]})")
             window_idxs = list(range(t_idx - W, t_idx))
-            node_feats_seq, incidence_seq, esm_seq = [], [], []
+            node_feats_seq, incidence_seq, esm_seq, constellations_seq = [], [], [], []
             for idx in window_idxs:
                 nf, freq, incidence, occ, esm_emb, constellations = get_month(idx)
                 node_feats_seq.append(nf.to(device))
                 incidence_seq.append(incidence)  # already on device from build_incidence
                 esm_seq.append(esm_to_device(esm_emb))
+                constellations_seq.append(constellations)
 
             _, freq_t, _, occ_t, _, constellations_t = get_month(t_idx - 1)
 
@@ -545,9 +624,16 @@ def main():
             for h in args.horizons:
                 target_idx_h = t_idx - 1 + h
                 _, _, _, occ_th_h, _, constellations_th = get_month(target_idx_h)
-                cands, labs = sample_hyperedge_candidates(
-                    constellations_t, constellations_th, N, args.n_neg_per_pos, rng,
-                    args.max_set_size, n_neg_fixed=args.n_neg_fixed)
+                if args.train_on_frontier:
+                    cands, labs = sample_frontier_training_pool(
+                        constellations_t, constellations_th, freq_t, args.max_set_size,
+                        rng, args.n_frontier_negs,
+                        top_parents=args.frontier_top_parents,
+                        top_nodes=args.frontier_top_nodes)
+                else:
+                    cands, labs = sample_hyperedge_candidates(
+                        constellations_t, constellations_th, N, args.n_neg_per_pos, rng,
+                        args.max_set_size, n_neg_fixed=args.n_neg_fixed)
                 all_candidates.extend(cands)
                 all_labels.extend(labs)
                 all_horizon_ids.extend([h] * len(cands))
@@ -557,6 +643,8 @@ def main():
             member_indices, member_mask = pad_candidates(all_candidates, device, args.max_set_size)
             labels_t = torch.tensor(all_labels, dtype=torch.float32).to(device)
             horizon_ids_t = torch.tensor(all_horizon_ids, dtype=torch.long).to(device)
+            set_hist_t = build_set_history(all_candidates, constellations_seq, device) \
+                if args.use_set_history else None
 
             for name, model in models.items():
                 model.train()
@@ -566,7 +654,8 @@ def main():
                     raw_out = model(node_feats_seq, incidence_seq, member_indices, member_mask,
                                      struct_adj=struct_adj if model.node_encoder.use_struct else None,
                                      esm_seq=esm_seq if model.node_encoder.use_esm_context else None,
-                                     horizon_ids=horizon_ids_t)
+                                     horizon_ids=horizon_ids_t,
+                                     set_history=set_hist_t if model.use_set_history else None)
                     loss = F.mse_loss(raw_out, torch.log1p(labels_t))
                     loss.backward()
                     opt.step()
@@ -580,7 +669,7 @@ def main():
 
     @torch.no_grad()
     def score_candidates(model, node_feats_seq, incidence_seq, esm_seq, member_indices, member_mask,
-                          horizon_ids_t, batch_size):
+                          horizon_ids_t, batch_size, set_history=None):
         model.eval()
         n = member_indices.shape[0]
         scores = np.zeros(n, dtype=np.float32)
@@ -596,6 +685,10 @@ def main():
             if model.use_horizon_embed:
                 member_embeds = member_embeds + model.horizon_embed(hz).unsqueeze(1)
             s = model.hyperedge_scorer(member_embeds, mm)
+            if model.use_set_history:
+                sh = set_history[start:end]
+                hh = (sh.abs().sum(dim=-1, keepdim=True) > 0).float()
+                s = s + model.history_head(torch.cat([sh, hh], dim=-1)).squeeze(-1)
             scores[start:end] = s.cpu().numpy()
         return scores
 
@@ -605,12 +698,13 @@ def main():
             if t_idx - W < 0:
                 continue
             window_idxs = list(range(t_idx - W, t_idx))
-            node_feats_seq, incidence_seq, esm_seq = [], [], []
+            node_feats_seq, incidence_seq, esm_seq, constellations_seq = [], [], [], []
             for idx in window_idxs:
                 nf, freq, incidence, occ, esm_emb, constellations = get_month(idx)
                 node_feats_seq.append(nf.to(device))
                 incidence_seq.append(incidence)
                 esm_seq.append(esm_to_device(esm_emb))
+                constellations_seq.append(constellations)
             _, freq_t, _, occ_t, _, constellations_t = get_month(t_idx - 1)
             ctx_month = months[t_idx - 1]
 
@@ -631,10 +725,12 @@ def main():
                 binary_labels = (labels_arr > 0).astype(np.int32)
                 horizon_ids_t = torch.full((len(candidates),), h, dtype=torch.long).to(device)
 
+                sh_old = build_set_history(candidates, constellations_seq, device) \
+                    if args.use_set_history else None
                 for name, model in models.items():
                     scores = score_candidates(model, node_feats_seq, incidence_seq, esm_seq,
                                                member_indices, member_mask, horizon_ids_t,
-                                               args.eval_batch)
+                                               args.eval_batch, set_history=sh_old)
                     ap = full_ap(scores, binary_labels)
                     if not np.isnan(ap):
                         results[name].append((variant_name, h, ctx_month, target_month, ap))
@@ -675,6 +771,8 @@ def main():
                 if cands_r and (actual_r > 0).sum() > 0:
                     mi_r, mm_r = pad_candidates(cands_r, device, args.max_set_size)
                     hz_r = torch.full((len(cands_r),), h, dtype=torch.long).to(device)
+                    sh_r = build_set_history(cands_r, constellations_seq, device) \
+                        if args.use_set_history else None
                     K = stats_r["n_old"]
 
                     def _rec(cfg, sc, is_log1p):
@@ -686,7 +784,8 @@ def main():
 
                     for name_m, model_m in models.items():
                         sc = score_candidates(model_m, node_feats_seq, incidence_seq, esm_seq,
-                                               mi_r, mm_r, hz_r, args.eval_batch)
+                                               mi_r, mm_r, hz_r, args.eval_batch,
+                                               set_history=sh_r)
                         _rec(name_m, sc, True)
 
                     _rec("copy_forward",

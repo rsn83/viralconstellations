@@ -394,9 +394,12 @@ class HypergraphTemporalScorer(nn.Module):
                  use_esm_context: bool = True, use_struct: bool = True,
                  esm_dim: int = 640, esm_adapter_dim: int = 32,
                  dropout: float = 0.0, use_horizon_embed: bool = True, max_horizon: int = 12,
-                 n_attn_heads: int = 4, use_attention_esm_pool: bool = False):
+                 n_attn_heads: int = 4, use_attention_esm_pool: bool = False,
+                 use_set_history: bool = True, history_len: int = 6):
         super().__init__()
         self.use_horizon_embed = use_horizon_embed
+        self.use_set_history = use_set_history
+        self.history_len = history_len
         self.node_encoder = HypergraphNodeTemporalEncoder(
             node_feat_dim, hidden_dim, n_conv_layers, use_gnn, use_rnn,
             use_esm_context=use_esm_context, use_struct=use_struct,
@@ -407,9 +410,37 @@ class HypergraphTemporalScorer(nn.Module):
             self.horizon_embed = nn.Embedding(max_horizon + 1, hidden_dim)
         self.hyperedge_scorer = HyperSAGNNScorer(hidden_dim, n_heads=n_attn_heads, dropout=dropout)
 
+        # ---- set-history residual head ----
+        # The HyperSAGNN score is a function of the candidate's MEMBER NODE
+        # embeddings only. Nothing in it carries "this exact constellation had
+        # count 340 last month". That is why a trivial copy-forward baseline
+        # (predict H_t unchanged) beat the full model on reconstruction F1 and
+        # on weight correlation: it knows something the scorer structurally
+        # cannot see.
+        #
+        # The event-based temporal hypergraph literature does not need this
+        # channel -- there a hyperedge is an EVENT that occurs once, so
+        # per-hyperedge history does not exist and node memory suffices
+        # (DHyperNodeTPP's memory is indexed by node). Here hyperedges are
+        # PERSISTENT WEIGHTED STATES with monthly counts, so the channel is
+        # both meaningful and necessary.
+        #
+        # Structured as a RESIDUAL: final = structure_score + history_score.
+        # The history head can learn copy-forward on its own, freeing the
+        # HyperSAGNN branch to model the deviation from it rather than having
+        # to rediscover persistence through message passing.
+        if use_set_history:
+            self.history_head = nn.Sequential(
+                nn.Linear(history_len + 1, hidden_dim),   # +1 = "has any history" flag
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, 1),
+            )
+
     def forward(self, node_feats_seq, incidence_seq, member_indices: torch.Tensor,
                 member_mask: torch.Tensor, struct_adj: torch.Tensor | None = None,
-                esm_seq=None, horizon_ids=None) -> torch.Tensor:
+                esm_seq=None, horizon_ids=None, set_history: torch.Tensor | None = None
+                ) -> torch.Tensor:
         """
         member_indices: (batch, max_set_size) long, node index per slot
                          (padding value doesn't matter, masked out anyway)
@@ -426,4 +457,16 @@ class HypergraphTemporalScorer(nn.Module):
             hz = self.horizon_embed(horizon_ids)          # (batch, hidden_dim)
             member_embeds = member_embeds + hz.unsqueeze(1)  # broadcast onto every member
 
-        return self.hyperedge_scorer(member_embeds, member_mask)
+        score = self.hyperedge_scorer(member_embeds, member_mask)
+
+        if self.use_set_history:
+            assert set_history is not None, \
+                "use_set_history=True requires set_history (batch, history_len) of " \
+                "log1p per-month counts for each candidate. Frontier candidates get " \
+                "all-zero rows, which is correct -- they have no history, and the " \
+                "'has history' flag lets the model treat that as its own regime."
+            has_hist = (set_history.abs().sum(dim=-1, keepdim=True) > 0).float()
+            hist_in = torch.cat([set_history, has_hist], dim=-1)
+            score = score + self.history_head(hist_in).squeeze(-1)
+
+        return score
