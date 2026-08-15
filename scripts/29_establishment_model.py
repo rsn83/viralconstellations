@@ -133,9 +133,23 @@ def main():
                           "reachability collapses from 60%% to 9-14%% in sparse "
                           "months, an artefact of unobserved intermediates.")
     ap_.add_argument("--window", type=int, default=6)
-    ap_.add_argument("--top_sources", type=int, default=400)
-    ap_.add_argument("--top_muts", type=int, default=200)
-    ap_.add_argument("--min_train_months", type=int, default=6)
+    ap_.add_argument("--top_sources", type=int, default=0,
+                     help="expand from the N most abundant sets. 0 = ALL. "
+                          "Capping this destroys coverage: script 28 measured a "
+                          "median of exactly ONE source per establishing set, and "
+                          "that source is usually rare, not abundant. top_sources=400 "
+                          "cut 95 usable events down to 13.")
+    ap_.add_argument("--top_muts", type=int, default=0,
+                     help="only add the M most frequent mutations. 0 = ALL. "
+                          "Safer cap than top_sources if the pool must be reduced.")
+    ap_.add_argument("--min_train_months", type=int, default=4)
+    ap_.add_argument("--low", type=float, default=0.001,
+                     help="a candidate counts as a target only if its frequency at "
+                          "t is AT OR BELOW this. Matches script 28. Sets already "
+                          "circulating at low frequency are still establishment "
+                          "targets -- excluding everything in H_t (the old behaviour) "
+                          "dropped ~21%% of events, since script 27 found from_0=0.79 "
+                          "at this threshold, not 1.00.")
     ap_.add_argument("--esm_features", type=str, default=None)
     ap_.add_argument("--out", default=str(ROOT / "outputs" / "29_establishment_model.csv"))
     args = ap_.parse_args()
@@ -198,8 +212,12 @@ def main():
         prev3 = H(months[i - 3]) if i >= 3 else H(mt)
 
         srcs = [c for c, _ in sorted(Ht.items(), key=lambda kv: -kv[1])
-                if len(c) < args.max_set_size][:args.top_sources]
-        muts = [m for m, _ in mmt.most_common(args.top_muts)]
+                if len(c) < args.max_set_size]
+        if args.top_sources and args.top_sources > 0:
+            srcs = srcs[:args.top_sources]
+        muts = [m for m, _ in mmt.most_common()]
+        if args.top_muts and args.top_muts > 0:
+            muts = muts[:args.top_muts]
         if len(srcs) < 10 or len(muts) < 5:
             return None
         rank = {c: r / max(len(srcs) - 1, 1) for r, c in enumerate(srcs)}
@@ -226,6 +244,7 @@ def main():
             cent[m] = (np.sum(cs, axis=0), len(cs)) if cs else (np.zeros(N, np.float32), 0)
 
         rows, ys, keys = [], [], []
+        seen_cand = set()
         for s in srcs:
             sc = Ht[s]
             g1 = np.log1p(sc) - np.log1p(prev1[0].get(s, 0.0))
@@ -240,8 +259,16 @@ def main():
                 c = frozenset(set(s) | {m})
                 if len(c) > args.max_set_size:
                     continue
-                if c in Ht:                      # already circulating: not a birth
+                # A candidate is a target if it is at or below `low` frequency
+                # NOW. Excluding everything in H_t removes sets that are present
+                # but rare, which script 27 showed are ~21% of establishment
+                # events at this threshold.
+                if ft.get(c, 0.0) > args.low:
                     continue
+                if seen_cand is not None:
+                    if c in seen_cand:
+                        continue
+                    seen_cand.add(c)
                 tot_v, nadopt = cent[m]
                 aff = float(compc[s] @ tot_v)
                 if s in contains[m]:
@@ -265,15 +292,24 @@ def main():
                 keys.append(c)
         if not rows:
             return None
+        # COVERAGE: of all establishment events at this month pair, how many did
+        # the candidate pool actually contain? This is a hard recall ceiling and
+        # must be reported, never hidden. The earlier run silently had ~14%.
+        all_ev = {c for c, f in ftk.items()
+                  if f > args.high and ft.get(c, 0.0) <= args.low
+                  and 2 <= len(c) <= args.max_set_size}
+        in_pool = all_ev & set(keys)
+        cov = len(in_pool) / len(all_ev) if all_ev else float("nan")
         return (np.asarray(rows, dtype=np.float32), np.asarray(ys, dtype=bool),
-                mt, mtk, keys)
+                mt, mtk, keys, cov, len(all_ev))
 
     data = {}
     for i in range(len(months) - args.horizon):
         d = build(i)
         if d is not None and d[1].sum() > 0:
             data[i] = d
-            log(f"  {d[2]} -> {d[3]}  cands={len(d[1]):7d}  positives={int(d[1].sum()):4d}")
+            log(f"  {d[2]} -> {d[3]}  cands={len(d[1]):8d}  positives={int(d[1].sum()):4d}"
+                f"  events={d[6]:4d}  coverage={d[5]:.1%}")
     log(f"\nusable months: {len(data)}  "
         f"total positives: {sum(int(d[1].sum()) for d in data.values())}\n")
     if len(data) <= args.min_train_months:
@@ -286,7 +322,7 @@ def main():
             continue
         Xtr = np.vstack([data[j][0] for j in idxs[:pos]])
         ytr = np.concatenate([data[j][1] for j in idxs[:pos]])
-        X, y, mt, mtk, _ = data[ti]
+        X, y, mt, mtk, _, cov, nev = data[ti]
         if ytr.sum() < 10 or y.sum() == 0:
             continue
 
@@ -307,7 +343,8 @@ def main():
 
         base = y.mean()
         out = dict(month_t=mt, month_tk=mtk, n_cand=len(y),
-                   n_pos=int(y.sum()), base_rate=base)
+                   n_pos=int(y.sum()), base_rate=base,
+                   coverage=cov, n_events_total=nev)
         for nm, s in scores.items():
             out[f"{nm}_auc"] = auc(y, s)
             a = ap(y, s)
@@ -332,7 +369,9 @@ def main():
     for nm in ["freq_product", "source_count", "logreg", "gbm"]:
         log(f"  {nm:<16}{df[f'{nm}_auc'].mean():8.3f}{df[f'{nm}_ap'].mean():9.4f}"
             f"{df[f'{nm}_lift'].mean():8.2f}{df[f'{nm}_r50'].mean():11.3f}")
-    log(f"\n  mean base rate {df.base_rate.mean():.5f}  "
+    log(f"\n  mean frontier coverage {df.coverage.mean():.1%} "
+        f"-- HARD CEILING on recall; events outside the pool cannot be found")
+    log(f"  mean base rate {df.base_rate.mean():.5f}  "
         f"(lift is mechanically capped at {1/max(df.base_rate.mean(),1e-9):.0f}x)")
 
     log("\n" + "-" * 78)
