@@ -125,8 +125,10 @@ def main():
     vocab = pd.read_csv(Path(args.graphs_dir) / "posres_vocab.tsv", sep="\t")
     log(f"posres_vocab.tsv columns: {list(vocab.columns)}")
     cols = {c.lower(): c for c in vocab.columns}
-    pos_col = next((cols[c] for c in ("pos", "position", "site") if c in cols), None)
-    res_col = next((cols[c] for c in ("res", "residue", "aa", "aa_to", "alt") if c in cols), None)
+    pos_col = next((cols[c] for c in ("aa_pos", "pos", "position", "site",
+                                      "aa_position", "site_pos", "spike_pos") if c in cols), None)
+    res_col = next((cols[c] for c in ("residue", "res", "aa", "aa_to", "alt",
+                                      "aa_alt", "mut_aa", "to_aa") if c in cols), None)
     if pos_col is None or res_col is None:
         raise SystemExit(f"could not find position/residue columns in {list(vocab.columns)}; "
                          f"edit the lookup above")
