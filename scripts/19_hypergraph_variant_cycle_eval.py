@@ -959,6 +959,18 @@ def main():
     MIN_TRAIN_WINDOWS_TO_EVAL = 3
     MIN_TRAIN_WINDOWS_WARN = 10
     for name, start_idx, end_idx in variant_windows:
+        # Count available training windows BEFORE training. bulk_train_range
+        # returns its count only after doing the work, so checking the skip
+        # threshold on its return value paid full training cost for every
+        # variant and then discarded it. This mirrors the `candidates_t`
+        # expression inside bulk_train_range exactly.
+        n_avail = len([t for t in range(W, start_idx) if t - 1 + max_h < start_idx])
+        _need = max(MIN_TRAIN_WINDOWS_TO_EVAL, args.min_train_windows)
+        if n_avail < _need:
+            log(f"[{name}] SKIPPED (before training): {n_avail} windows available, "
+                f"need >= {_need}")
+            continue
+
         models, optimizers = fresh_models()
         n_trained = bulk_train_range(models, optimizers, start_idx)
         log(f"\n[{name}] bulk-trained FROM SCRATCH on {n_trained} windows "
