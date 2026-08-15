@@ -101,6 +101,28 @@ parser.add_argument("--max_set_size", type=int, default=30,
                      help="cap on constellation size for attention/padding -- constellations "
                           "larger than this get truncated (rare; a warning is printed if it happens)")
 parser.add_argument("--variant_windows", type=str, nargs="+", default=None)
+# ---- forecast-eval additions ----
+parser.add_argument("--min_count", type=int, default=3,
+                    help="drop constellations seen fewer than this many times in a month. "
+                         "min_count=1 keeps singletons, which are largely sequencing "
+                         "artefacts: they inflate turnover (68%% of H_t+1 'new' at mc1 vs "
+                         "38%% at mc10) because they appear once and vanish. mc=3 keeps "
+                         "frontier parent coverage (no_subset=0.086) while removing the "
+                         "churn; mc=10 discards too many parents (no_subset=0.177).")
+parser.add_argument("--start_month", type=str, default=None,
+                    help="ignore months before this (e.g. 2021-01)")
+parser.add_argument("--end_month", type=str, default=None,
+                    help="ignore months after this. Sampling density collapses after "
+                         "2024 and frontier coverage degrades with it (d1: 0.69 in 2022 "
+                         "-> 0.28 in 2026), so late months measure surveillance, not "
+                         "evolution. Recommend 2024-12.")
+parser.add_argument("--frontier_top_parents", type=int, default=300,
+                    help="expand the frontier from the N most abundant circulating "
+                         "constellations only (compute cap)")
+parser.add_argument("--frontier_max", type=int, default=20000,
+                    help="subsample the frontier to at most this many candidates "
+                         "(compute cap). Keep FIXED across runs -- changing it changes "
+                         "the base rate and makes cells non-comparable.")
 args = parser.parse_args()
 
 import numpy as np
@@ -200,6 +222,128 @@ def sample_hyperedge_candidates(constellations_t: dict, constellations_th: dict,
     return all_candidates, all_labels
 
 
+def frontier_candidates(constellations_t: dict, max_set_size: int, rng,
+                        top_parents: int = 300, n_max: int = 20000):
+    """F(O_t): constellations reachable by adding ONE mutation to something
+    circulating at t, excluding anything already circulating.
+
+    Justified empirically, not assumed: script 22 measured that ~62% of
+    newly-appearing constellations at t+1 are exactly one addition away from a
+    circulating set, with a median of exactly ONE such parent. That figure is
+    stable across abundance thresholds (0.554 / 0.622 / 0.582 at min_count
+    1 / 3 / 10) but degrades with horizon (0.62 / 0.51 / 0.27 at h=1 / 3 / 6),
+    which is why this eval targets h=1.
+
+    The remaining ~38% is a HARD RECALL CEILING and is reported, not hidden.
+    """
+    parents = [(c, v) for c, v in constellations_t.items()
+               if 1 <= len(c) < max_set_size]
+    if not parents:
+        return []
+    parents.sort(key=lambda kv: -kv[1])
+    parents = [c for c, _ in parents[:top_parents]]
+    active = sorted({m for c in constellations_t.keys() for m in c})
+    occupied = set(constellations_t.keys())
+
+    out = set()
+    for p in parents:
+        for m in active:
+            if m in p:
+                continue
+            cand = frozenset(set(p) | {m})
+            if 2 <= len(cand) <= max_set_size and cand not in occupied:
+                out.add(cand)
+    out = list(out)
+    if len(out) > n_max:
+        idx = rng.choice(len(out), size=n_max, replace=False)
+        out = [out[i] for i in idx]
+    return out
+
+
+def build_forecast_pool(constellations_t: dict, constellations_th: dict,
+                        max_set_size: int, rng, top_parents=300, n_max=20000):
+    """Candidate pool = everything circulating at t, PLUS the frontier.
+
+    Built ONLY from month t. Nothing from t+h enters the pool construction --
+    that was the defect in sample_hyperedge_candidates, which took
+    `set(constellations_t) | set(constellations_th)`, i.e. built the candidate
+    list partly from the answer.
+
+    Returns (candidates, actual_counts_at_th, is_old_mask, stats).
+    """
+    occ_t = {c for c in constellations_t.keys() if 2 <= len(c) <= max_set_size}
+    frontier = set(frontier_candidates(constellations_t, max_set_size, rng,
+                                        top_parents=top_parents, n_max=n_max))
+    new_th = {c for c in constellations_th.keys()
+              if c not in occ_t and 2 <= len(c) <= max_set_size}
+
+    cands = list(occ_t | frontier)
+    if not cands:
+        return [], None, None, {}
+
+    actual = np.array([float(constellations_th.get(c, 0.0)) for c in cands])
+    is_old = np.array([c in occ_t for c in cands], dtype=bool)
+
+    stats = {
+        "n_pool": len(cands),
+        "n_old": int(is_old.sum()),
+        "n_frontier": len(frontier),
+        "n_new_total": len(new_th),
+        "n_new_in_pool": len(new_th & frontier),
+        "coverage": (len(new_th & frontier) / len(new_th)) if new_th else float("nan"),
+    }
+    return cands, actual, is_old, stats
+
+
+def _prf(pred_mask, true_mask):
+    tp = int((pred_mask & true_mask).sum())
+    npred, ntrue = int(pred_mask.sum()), int(true_mask.sum())
+    p = tp / npred if npred else float("nan")
+    r = tp / ntrue if ntrue else float("nan")
+    f = (2 * p * r / (p + r)) if (npred and ntrue and (p + r) > 0) else float("nan")
+    return p, r, f, tp, npred, ntrue
+
+
+def hypergraph_reconstruction(scores, actual, is_old, K, scores_are_log1p):
+    """Top-K by score = the predicted hypergraph at t+h. Compare to the actual.
+
+    Reported THREE ways, because a single aggregate F1 is dominated by
+    persistence and moves for reasons unrelated to forecasting:
+      all     -- the whole predicted hypergraph
+      persist -- restricted to sets already circulating at t
+      appear  -- restricted to sets NOT circulating at t (the open problem)
+
+    K = |H_t|: predict as many constellations as currently exist. Rank-based,
+    no threshold, no calibration assumption, and no leakage (K comes from the
+    present, not the future).
+    """
+    scores = np.asarray(scores, dtype=np.float64)
+    true_mask = actual > 0
+    K = int(min(max(K, 1), len(scores)))
+    order = np.argsort(-scores, kind="stable")[:K]
+    pred_mask = np.zeros(len(scores), dtype=bool)
+    pred_mask[order] = True
+
+    out = {"K": K}
+    for tag, sel in [("all", np.ones(len(scores), dtype=bool)),
+                     ("persist", is_old), ("appear", ~is_old)]:
+        p, r, f, tp, npred, ntrue = _prf(pred_mask & sel, true_mask & sel)
+        out[f"{tag}_prec"], out[f"{tag}_rec"], out[f"{tag}_f1"] = p, r, f
+        out[f"{tag}_tp"], out[f"{tag}_npred"], out[f"{tag}_ntrue"] = tp, npred, ntrue
+
+    hit = pred_mask & true_mask
+    if hit.sum() >= 3:
+        a_log = np.log1p(actual[hit])
+        rho, _ = spearmanr(scores[hit], a_log)
+        out["w_spearman"] = float(rho) if not np.isnan(rho) else float("nan")
+        out["w_mse_log1p"] = float(np.mean((scores[hit] - a_log) ** 2)) \
+            if scores_are_log1p else float("nan")
+    else:
+        out["w_spearman"] = float("nan")
+        out["w_mse_log1p"] = float("nan")
+    return out
+
+
 def pad_candidates(candidates: list, device, max_set_size: int):
     """Returns (member_indices, member_mask) padded tensors."""
     batch = len(candidates)
@@ -270,6 +414,14 @@ def main():
     graphs_dir = ROOT / "data" / "processed" / "full_data_graphs_posres"
     index_df = pd.read_csv(graphs_dir / "index.tsv", sep="\t")
     months = sorted(index_df["month"].tolist())
+    _n_all = len(months)
+    if args.start_month:
+        months = [m for m in months if m >= args.start_month]
+    if args.end_month:
+        months = [m for m in months if m <= args.end_month]
+    if len(months) != _n_all:
+        log(f"month range restricted: {_n_all} -> {len(months)} months "
+            f"({months[0]} .. {months[-1]})")
     vocab_df = pd.read_csv(graphs_dir / "posres_vocab.tsv", sep="\t")
     N = len(vocab_df)
     log(f"N={N} (position,residue) nodes, {len(months)} months")
@@ -307,6 +459,9 @@ def main():
             else:
                 esm_emb = esm_cache.build_month_node_embeddings(occ, N)
             constellations = constellations_of(occ)
+            if args.min_count > 1:
+                constellations = {c: v for c, v in constellations.items()
+                                  if v >= args.min_count}
             month_cache[idx] = (nf, freq, incidence, occ, esm_emb, constellations)
         return month_cache[idx]
 
@@ -396,6 +551,7 @@ def main():
     results_reg = {name: [] for name in configs}
     baseline_results = {"random": [], "naive_persistence": [], "frequency": []}
     baseline_results_reg = {"random": [], "naive_persistence": [], "frequency": []}
+    recon_results = []   # hypergraph reconstruction: one dict per (config, cell)
 
     @torch.no_grad()
     def score_candidates(model, node_feats_seq, incidence_seq, esm_seq, member_indices, member_mask,
@@ -485,6 +641,33 @@ def main():
                 baseline_results_reg["frequency"].append((variant_name, h, ctx_month, target_month,
                                                             rm["mse_log1p"], rm["spearman"]))
 
+                # ---------- HYPERGRAPH RECONSTRUCTION (leak-free pool) ----------
+                cands_r, actual_r, is_old_r, stats_r = build_forecast_pool(
+                    constellations_t, constellations_th, args.max_set_size, rng,
+                    top_parents=args.frontier_top_parents, n_max=args.frontier_max)
+
+                if cands_r and (actual_r > 0).sum() > 0:
+                    mi_r, mm_r = pad_candidates(cands_r, device, args.max_set_size)
+                    hz_r = torch.full((len(cands_r),), h, dtype=torch.long).to(device)
+                    K = stats_r["n_old"]
+
+                    def _rec(cfg, sc, is_log1p):
+                        m = hypergraph_reconstruction(sc, actual_r, is_old_r, K, is_log1p)
+                        m.update({"config": cfg, "variant": variant_name, "horizon": h,
+                                  "ctx_month": ctx_month, "target_month": target_month,
+                                  **stats_r})
+                        recon_results.append(m)
+
+                    for name_m, model_m in models.items():
+                        sc = score_candidates(model_m, node_feats_seq, incidence_seq, esm_seq,
+                                               mi_r, mm_r, hz_r, args.eval_batch)
+                        _rec(name_m, sc, True)
+
+                    _rec("copy_forward",
+                         np.array([np.log1p(constellations_t.get(c, 0.0)) for c in cands_r]), True)
+                    _rec("frequency", frequency_baseline_scores(cands_r, freq_t), False)
+                    _rec("random", rng.random(len(cands_r)), False)
+
     MIN_TRAIN_WINDOWS_TO_EVAL = 3
     MIN_TRAIN_WINDOWS_WARN = 10
     for name, start_idx, end_idx in variant_windows:
@@ -520,6 +703,34 @@ def main():
                     )
                     flag = "  <-- predicted MORE THAN ONCE" if len(preds) > 1 else ""
                     log(f"    {target_month}: {pred_str}{flag}")
+
+            # ---------- HYPERGRAPH RECONSTRUCTION TABLE ----------
+            rr = [r for r in recon_results if r["variant"] == name]
+            if rr:
+                covs = [r["coverage"] for r in rr if not np.isnan(r["coverage"])]
+                log(f"\n[{name}] HYPERGRAPH RECONSTRUCTION at t+h  (top-K, K=|H_t|)")
+                if covs:
+                    log(f"  frontier reaches {np.mean(covs):.1%} of genuinely new "
+                        f"constellations -- HARD CEILING on appear_rec")
+                log(f"  {'config':<18}{'h':>2} | {'F1':>6}{'P':>7}{'R':>7} | "
+                    f"{'persF1':>7}{'persR':>7} | {'appF1':>7}{'appR':>7}{'appN':>6} | "
+                    f"{'wRho':>6}{'wMSE':>8}")
+                order = ["random", "frequency", "copy_forward"] + list(configs.keys())
+                for h in sorted({r["horizon"] for r in rr}):
+                    for cfg in order:
+                        rows = [r for r in rr if r["config"] == cfg and r["horizon"] == h]
+                        if not rows:
+                            continue
+                        def mu(k):
+                            v = [r[k] for r in rows if not np.isnan(r[k])]
+                            return float(np.mean(v)) if v else float("nan")
+                        log(f"  {cfg:<18}{h:>2} | {mu('all_f1'):6.3f}{mu('all_prec'):7.3f}"
+                            f"{mu('all_rec'):7.3f} | {mu('persist_f1'):7.3f}{mu('persist_rec'):7.3f}"
+                            f" | {mu('appear_f1'):7.3f}{mu('appear_rec'):7.3f}"
+                            f"{int(np.mean([r['appear_ntrue'] for r in rows])):6d} | "
+                            f"{mu('w_spearman'):6.3f}{mu('w_mse_log1p'):8.3f}")
+                log(f"  CHECK: copy_forward appR must be 0.000 -- it predicts H_t unchanged "
+                    f"and cannot name anything new. Nonzero => is_old mask is broken.")
 
     def summarize(rows):
         vals = [r[-1] for r in rows]
@@ -588,6 +799,37 @@ def main():
                     mse, rho = reg_lookup.get((v, h, cm, tm), ("", ""))
                     writer.writerow([source, name, v, h, cm, tm, ap, mse, rho])
     log(f"\nWrote {csv_path}")
+
+    if recon_results:
+        csv_rec = out_dir / "19_hypergraph_reconstruction.csv"
+        keys = sorted(recon_results[0].keys())
+        with open(csv_rec, "w", newline="") as fh:
+            wtr = csv.DictWriter(fh, fieldnames=keys)
+            wtr.writeheader()
+            for r in recon_results:
+                wtr.writerow(r)
+        log(f"Wrote {csv_rec}")
+
+        log("\n" + "=" * 70)
+        log("HYPERGRAPH RECONSTRUCTION -- POOLED ACROSS VARIANTS")
+        log("=" * 70)
+        rdf = pd.DataFrame(recon_results)
+        for h in sorted(rdf["horizon"].unique()):
+            log(f"\n  h={h}")
+            log(f"  {'config':<18} {'cells':>5} | {'F1':>6}{'P':>7}{'R':>7} | "
+                f"{'persF1':>7} | {'appF1':>7}{'appR':>7} | {'wRho':>6}{'wMSE':>8}")
+            sub = rdf[rdf["horizon"] == h]
+            for cfg in ["random", "frequency", "copy_forward"] + list(configs.keys()):
+                g = sub[sub["config"] == cfg]
+                if not len(g):
+                    continue
+                log(f"  {cfg:<18} {len(g):>5} | {g['all_f1'].mean():6.3f}"
+                    f"{g['all_prec'].mean():7.3f}{g['all_rec'].mean():7.3f} | "
+                    f"{g['persist_f1'].mean():7.3f} | {g['appear_f1'].mean():7.3f}"
+                    f"{g['appear_rec'].mean():7.3f} | {g['w_spearman'].mean():6.3f}"
+                    f"{g['w_mse_log1p'].mean():8.3f}")
+        log(f"\n  mean frontier coverage (recall ceiling on appear): "
+            f"{rdf['coverage'].mean():.3f}")
 
 
 if __name__ == "__main__":
