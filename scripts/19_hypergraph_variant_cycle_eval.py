@@ -137,7 +137,7 @@ parser.add_argument("--min_appear_count", type=int, default=1,
                          "established. Raising it turns the target from PROPOSAL (did "
                          "this set appear at all) toward SELECTION (did it establish). "
                          "Sweep 1 / 10 / 50 / 200 and watch the model-vs-frequency gap "
-                         "on appear_rec. Applies to LABELS only -- the candidate pool "
+                         "on appear lift. Applies to LABELS only -- the candidate pool "
                          "and frontier are always built from the full population, "
                          "because median_parents_at_d1 == 1 means the single valid "
                          "parent of a new set is usually a RARE circulating set, and "
@@ -1014,7 +1014,7 @@ def main():
                     sf = [r["subsample_frac"] for r in rr if not np.isnan(r.get("subsample_frac", np.nan))]
                     npool = np.mean([r["n_pool"] for r in rr])
                     log(f"  frontier reaches {np.mean(covs):.1%} of genuinely new "
-                        f"constellations -- HARD CEILING on appear_rec")
+                        f"constellations -- HARD CEILING on appear AP")
                     log(f"  pool={npool:.0f}  frontier_raw={np.mean([r['n_frontier_raw'] for r in rr]):.0f}"
                         f"  kept={np.mean(sf) if sf else 1.0:.1%}"
                         f"  new_total={np.mean([r['n_new_total'] for r in rr]):.0f}")
@@ -1022,10 +1022,10 @@ def main():
                         log(f"  !! coverage far below the ~62% measured by script 22. "
                             f"If kept<100%, raise --frontier_max (0=off). Otherwise raise "
                             f"--frontier_top_parents (0=all) / --frontier_top_nodes (0=all).")
-                log(f"  "
-                    f"K_appear={int(np.mean([r['K_appear'] for r in rr]))}  "
-                    f"(separate budgets -- persistence and appearance no longer "
-                    f"compete for the same slots)")
+                log(f"  persistence and appearance are ranked SEPARATELY within "
+                    f"their own subsets (no shared budget), so a scorer cannot win "
+                    f"one by crowding out the other. Lift = AP / base rate; "
+                    f"1.00 = chance.")
                 log(f"  {'config':<18}{'h':>2} | {'F1':>6}{'P':>7}{'R':>7} | "
                     f"{'persAP':>7}{'persLift':>9} | {'appAP':>7}{'appLift':>8}"
                     f"{'appN':>6} | {'wRho':>6}{'wMSE':>8}")
@@ -1038,10 +1038,6 @@ def main():
                       f"new_total {np.mean([r['n_new_total'] for r in rr_c]):.0f}) ---")
                   for h in sorted({r["horizon"] for r in rr_c}):
                     rr = rr_c
-                    rand_rows = [r for r in rr if r["config"] == "random" and r["horizon"] == h]
-                    rand_app = float(np.mean([r["appear_rec"] for r in rand_rows
-                                              if not np.isnan(r["appear_rec"])])) \
-                        if rand_rows else float("nan")
                     for cfg in order:
                         rows = [r for r in rr if r["config"] == cfg and r["horizon"] == h]
                         if not rows:
