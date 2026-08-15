@@ -116,6 +116,16 @@ parser.add_argument("--end_month", type=str, default=None,
                          "2024 and frontier coverage degrades with it (d1: 0.69 in 2022 "
                          "-> 0.28 in 2026), so late months measure surveillance, not "
                          "evolution. Recommend 2024-12.")
+parser.add_argument("--ref_anchored_node_features", type=str, default=None,
+                    help="path to outputs/esm_node_features_ref.pkl from script 21. "
+                         "When set, the ESM channel becomes STATIC reference-anchored "
+                         "per-mutation contrasts instead of the per-month pooled mean "
+                         "over constellations containing each node. The pooled mean "
+                         "estimates E[emb | m present], which varies with lineage "
+                         "composition rather than with the mutation -- a lineage "
+                         "descriptor, not a mutation descriptor. Sequence context is "
+                         "preserved (ESM still attends over the whole spike); only the "
+                         "population-averaging is removed.")
 parser.add_argument("--train_on_frontier", action="store_true", default=True,
                     help="draw TRAINING negatives from the frontier, matching the "
                          "evaluation pool. Previously training negatives were random "
@@ -148,6 +158,7 @@ parser.add_argument("--frontier_max", type=int, default=0,
                          "positives at random and lowers coverage proportionally.")
 args = parser.parse_args()
 
+import pickle
 import numpy as np
 import pandas as pd
 import torch
@@ -160,6 +171,44 @@ from viralconstellations.model.esm_embeddings import ESMEmbeddingCache
 
 
 def log(msg): print(msg, flush=True)
+
+
+class RefAnchoredNodeFeatures:
+    """Drop-in replacement for ESMEmbeddingCache exposing the same interface.
+
+    Returns the SAME (N, d) matrix for every month. The features are properties
+    of a (position, residue) substitution against the reference spike, so they
+    do not change as the population changes -- a vocabulary lookup, not a
+    per-month aggregate. Everything that legitimately varies month to month
+    (frequency, trend, degree, incidence, set history) already reaches the
+    model through other channels.
+    """
+
+    def __init__(self, path: Path, N: int):
+        with open(path, "rb") as fh:
+            blob = pickle.load(fh)
+        X = np.asarray(blob["features"], dtype=np.float32)
+        if X.shape[0] != N:
+            raise ValueError(
+                f"node feature matrix has {X.shape[0]} rows but the graphs use N={N} "
+                f"nodes. Rebuild with script 21 against the SAME posres_vocab.tsv.")
+        self._X = torch.tensor(X, dtype=torch.float32)
+        self.esm_dim = int(X.shape[1])
+        self.names = blob.get("names", [])
+        self.meta = blob.get("meta", {})
+        self.embeddings = {}   # only used for a log line in main()
+
+    def build_month_node_embeddings(self, occ, N):
+        return self._X
+
+    def build_month_node_raw_embeddings(self, occ, N, K=8):
+        # attention pooling has nothing to pool over: there is one static
+        # vector per node, not K per-constellation vectors.
+        raise NotImplementedError(
+            "--use_attention_esm_pool is incompatible with "
+            "--ref_anchored_node_features. Attention pooling reweights which "
+            "constellations to average over; these features are not averaged "
+            "over constellations at all.")
 
 
 def load_month(graphs_dir: Path, month: str):
@@ -528,8 +577,22 @@ def main():
     W = args.window
     max_h = max(args.horizons)
 
-    esm_cache = ESMEmbeddingCache(ROOT / args.esm_cache_path)
-    log(f"Loaded ESM cache: {len(esm_cache.embeddings)} constellations, esm_dim={esm_cache.esm_dim}")
+    if args.ref_anchored_node_features:
+        if args.use_attention_esm_pool:
+            raise SystemExit("--use_attention_esm_pool is incompatible with "
+                             "--ref_anchored_node_features (nothing to pool over).")
+        esm_cache = RefAnchoredNodeFeatures(ROOT / args.ref_anchored_node_features, N)
+        log(f"ESM channel = REFERENCE-ANCHORED per-mutation contrasts "
+            f"(static, dim={esm_cache.esm_dim})")
+        log(f"  features: {esm_cache.names}")
+        log(f"  meta: {esm_cache.meta}")
+    else:
+        esm_cache = ESMEmbeddingCache(ROOT / args.esm_cache_path)
+        log(f"Loaded ESM cache: {len(esm_cache.embeddings)} constellations, "
+            f"esm_dim={esm_cache.esm_dim}")
+        log("  NOTE: this is the per-month POOLED mean over constellations "
+            "containing each node -- confounded with lineage. See "
+            "--ref_anchored_node_features.")
 
     struct_prior_path = ROOT / args.struct_prior_path
     if struct_prior_path.exists():
