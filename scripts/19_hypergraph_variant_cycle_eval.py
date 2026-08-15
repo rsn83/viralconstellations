@@ -116,6 +116,19 @@ parser.add_argument("--end_month", type=str, default=None,
                          "2024 and frontier coverage degrades with it (d1: 0.69 in 2022 "
                          "-> 0.28 in 2026), so late months measure surveillance, not "
                          "evolution. Recommend 2024-12.")
+parser.add_argument("--appear_count_sweep", type=int, nargs="+", default=None,
+                    help="evaluate at SEVERAL establishment thresholds in ONE run, e.g. "
+                         "--appear_count_sweep 1 10 50 200. min_appear_count only "
+                         "changes EVALUATION LABELS -- not training, not the candidate "
+                         "pool, not the scores -- so re-running the whole script per "
+                         "threshold retrains and rescores identically each time. "
+                         "Sweeping in-run reuses one set of scores and is ~Nx faster.")
+parser.add_argument("--min_train_windows", type=int, default=0,
+                    help="skip any variant with fewer than this many training windows. "
+                         "Thin-history variants (Alpha had 7, Omicron_BA1 had 4) make "
+                         "the model-vs-baseline comparison unfair -- copy_forward needs "
+                         "no training at all. Set ~15 to evaluate only well-trained "
+                         "variants.")
 parser.add_argument("--min_appear_count", type=int, default=1,
                     help="a NEWLY-APPEARING constellation counts as a positive only if "
                          "it reaches at least this count at t+h. min_appear_count=1 asks "
@@ -377,9 +390,9 @@ def build_forecast_pool(constellations_t: dict, constellations_th: dict, freq_t,
         constellations_t, freq_t, max_set_size, rng,
         top_parents=top_parents, top_nodes=top_nodes, n_max=n_max)
     frontier = set(frontier_list)
-    new_th = {c for c in constellations_th.keys()
-              if c not in occ_t and 2 <= len(c) <= max_set_size
-              and constellations_th.get(c, 0) >= min_appear_count}
+    new_all = {c: constellations_th[c] for c in constellations_th.keys()
+               if c not in occ_t and 2 <= len(c) <= max_set_size}
+    new_th = {c for c, v in new_all.items() if v >= min_appear_count}
 
     cands = list(occ_t | frontier)
     if not cands:
@@ -397,6 +410,12 @@ def build_forecast_pool(constellations_t: dict, constellations_th: dict, freq_t,
         "n_new_total": len(new_th),
         "n_new_in_pool": len(new_th & frontier),
         "coverage": (len(new_th & frontier) / len(new_th)) if new_th else float("nan"),
+        # coverage is threshold-dependent: rarer new sets are likelier to sit
+        # outside a one-addition frontier, so raising the establishment bar
+        # generally RAISES coverage. Recorded per threshold so the sweep rows
+        # each carry their own ceiling.
+        "_new_all": new_all,
+        "_frontier": frontier,
     }
     return cands, actual, is_old, stats
 
@@ -466,71 +485,85 @@ def _prf(pred_mask, true_mask):
 
 
 def hypergraph_reconstruction(scores, actual, is_old, K, scores_are_log1p,
-                              min_appear_count=1, k_appear=None):
-    """Top-K by score = the predicted hypergraph at t+h. Compare to the actual.
+                              min_appear_count=1, k_appear=None, seed=0):
+    """Predicted hypergraph at t+h vs actual, reported three ways.
 
-    Reported THREE ways, because a single aggregate F1 is dominated by
-    persistence and moves for reasons unrelated to forecasting:
-      all     -- the whole predicted hypergraph
-      persist -- restricted to sets already circulating at t
-      appear  -- restricted to sets NOT circulating at t (the open problem)
+    TWO BUGS THIS REPLACES (both found by unit test, both invalidated earlier runs):
 
-    K = |H_t|: predict as many constellations as currently exist. Rank-based,
-    no threshold, no calibration assumption, and no leakage (K comes from the
-    present, not the future).
+    (1) K_persist was set to |H_t|, i.e. the ENTIRE persistence subset. Every
+        scorer then "predicted" every occupied set, so persist_prec was pinned
+        at the survival rate and persist_rec at 1.0 for everyone. persist_f1
+        was a CONSTANT, identical for random, frequency, copy_forward and the
+        model. A perfect oracle scored 0.644. The apparent finding that
+        "full_model converged onto copy_forward on persF1" (0.833 vs 0.837)
+        was the metric, not the model.
+
+    (2) copy_forward assigns the SAME score (0) to every frontier candidate.
+        np.argsort on a constant array returns index order, so top-K silently
+        selected the first K by position and copy_forward scored appear_rec
+        0.183 instead of the 0.000 the CHECK line claimed to guarantee. Any
+        scorer with tied values was being ranked by array position.
+
+    Fix: rank-based metrics WITHIN each subset, which need no budget and
+    handle ties correctly, plus deterministic jitter to break remaining ties
+    at random rather than by index.
+
+      persist_ap / appear_ap  -- average precision within the subset
+      *_lift                  -- AP / base rate (1.0 = chance)
+      *_prec/_rec/_f1 @K      -- kept for interpretability, K = subset base count
     """
     scores = np.asarray(scores, dtype=np.float64)
-    true_mask = actual > 0 if min_appear_count <= 1 else (actual > 0)
+    n = len(scores)
+
+    # deterministic tie-break: ranking must not depend on array position
+    rs = np.random.default_rng(seed)
+    span = np.ptp(scores)
+    jitter = rs.random(n) * (span if span > 0 else 1.0) * 1e-9
+    sj = scores + jitter
+
+    true_mask = actual > 0
     if min_appear_count > 1:
-        # LABEL filter, appearance side only. A set already circulating at t is
-        # judged on survival at any count; a NEW set must reach the threshold to
-        # count as having established.
+        # LABEL filter, appearance side only: an already-circulating set is
+        # judged on survival at any count; a NEW set must reach the threshold.
         true_mask = np.where(is_old, actual > 0, actual >= min_appear_count)
 
-    K = int(min(max(K, 1), len(scores)))
+    out = {}
+    for tag, sel in [("persist", is_old), ("appear", ~is_old)]:
+        idx = np.where(sel)[0]
+        y = true_mask[idx].astype(int)
+        n_sub, n_pos = len(idx), int(y.sum())
+        base = n_pos / n_sub if n_sub else float("nan")
+        out[f"{tag}_ntrue"] = n_pos
+        out[f"{tag}_npool"] = n_sub
+        out[f"{tag}_base"] = base
 
-    # SEPARATE BUDGETS.
-    # A single global top-K makes persistence and appearance compete for the
-    # same slots: with K = |H_t|, a scorer that ranks all occupied sets first
-    # spends the entire budget on them and has none left for frontier
-    # candidates. That is exactly what happened when the set-history head
-    # started dominating -- persist_f1 rose to copy_forward's level and
-    # appear_rec HALVED (0.086 -> 0.046) in the same run. The two moved
-    # together because they were the same event, not because the model got
-    # worse at appearance.
-    #
-    # Ranking within each subset separately decouples them: persistence is
-    # scored over occupied sets with budget K_persist = |H_t|, appearance over
-    # frontier candidates with budget K_appear. Same scores, two rankings.
-    n_old = int(is_old.sum())
-    n_new_slots = int((~is_old).sum())
-    K_persist = int(min(max(n_old, 1), n_old)) if n_old else 0
-    K_appear = int(min(max(k_appear if k_appear else n_old, 1), n_new_slots)) \
-        if n_new_slots else 0
+        if n_pos == 0 or n_pos == n_sub:
+            for k in ("ap", "lift", "prec", "rec", "f1"):
+                out[f"{tag}_{k}"] = float("nan")
+            continue
 
-    global_order = np.argsort(-scores, kind="stable")[:K]
-    pred_global = np.zeros(len(scores), dtype=bool)
-    pred_global[global_order] = True
+        ap = average_precision_score(y, sj[idx])
+        out[f"{tag}_ap"] = ap
+        out[f"{tag}_lift"] = ap / base if base > 0 else float("nan")
 
-    pred_persist = np.zeros(len(scores), dtype=bool)
-    if K_persist:
-        idx_old = np.where(is_old)[0]
-        top = idx_old[np.argsort(-scores[idx_old], kind="stable")[:K_persist]]
-        pred_persist[top] = True
-
-    pred_appear = np.zeros(len(scores), dtype=bool)
-    if K_appear:
-        idx_new = np.where(~is_old)[0]
-        top = idx_new[np.argsort(-scores[idx_new], kind="stable")[:K_appear]]
-        pred_appear[top] = True
-
-    out = {"K": K, "K_persist": K_persist, "K_appear": K_appear}
-    for tag, sel, pm in [("all", np.ones(len(scores), dtype=bool), pred_global),
-                         ("persist", is_old, pred_persist),
-                         ("appear", ~is_old, pred_appear)]:
-        p, r, f, tp, npred, ntrue = _prf(pm & sel, true_mask & sel)
+        # precision/recall at K = number of true positives, so a perfect
+        # scorer reaches 1.0 and the metric is not pinned by the budget
+        Ks = int(min(max(n_pos, 1), n_sub))
+        top = idx[np.argsort(-sj[idx], kind="stable")[:Ks]]
+        pm = np.zeros(n, dtype=bool); pm[top] = True
+        p, r, f, tp, npred, _ = _prf(pm & sel, true_mask & sel)
         out[f"{tag}_prec"], out[f"{tag}_rec"], out[f"{tag}_f1"] = p, r, f
-        out[f"{tag}_tp"], out[f"{tag}_npred"], out[f"{tag}_ntrue"] = tp, npred, ntrue
+        out[f"{tag}_tp"], out[f"{tag}_npred"] = tp, npred
+        out[f"{tag}_K"] = Ks
+
+    # whole-hypergraph view: global top-K with K = |H_t| (what you would
+    # actually emit as "the predicted hypergraph")
+    K = int(min(max(K, 1), n))
+    order = np.argsort(-sj, kind="stable")[:K]
+    pred_global = np.zeros(n, dtype=bool); pred_global[order] = True
+    p, r, f, tp, npred, ntrue = _prf(pred_global, true_mask)
+    out.update({"K": K, "all_prec": p, "all_rec": r, "all_f1": f,
+                "all_tp": tp, "all_npred": npred, "all_ntrue": ntrue})
 
     hit = pred_global & true_mask
     if hit.sum() >= 3:
@@ -543,7 +576,6 @@ def hypergraph_reconstruction(scores, actual, is_old, K, scores_are_log1p,
         out["w_spearman"] = float("nan")
         out["w_mse_log1p"] = float("nan")
     return out
-
 
 def pad_candidates(candidates: list, device, max_set_size: int):
     """Returns (member_indices, member_mask) padded tensors."""
@@ -894,15 +926,24 @@ def main():
                         if args.use_set_history else None
                     K = stats_r["n_old"]
 
+                    sweep = args.appear_count_sweep or [args.min_appear_count]
+                    _new_all = stats_r.pop("_new_all")
+                    _frontier = stats_r.pop("_frontier")
+
                     def _rec(cfg, sc, is_log1p):
-                        m = hypergraph_reconstruction(
-                            sc, actual_r, is_old_r, K, is_log1p,
-                            min_appear_count=args.min_appear_count,
-                            k_appear=stats_r["n_old"])
-                        m.update({"config": cfg, "variant": variant_name, "horizon": h,
-                                  "ctx_month": ctx_month, "target_month": target_month,
-                                  **stats_r})
-                        recon_results.append(m)
+                        for C in sweep:
+                            m = hypergraph_reconstruction(
+                                sc, actual_r, is_old_r, K, is_log1p,
+                                min_appear_count=C, k_appear=stats_r["n_old"])
+                            nt = {c for c, v in _new_all.items() if v >= C}
+                            m.update({"config": cfg, "variant": variant_name, "horizon": h,
+                                      "ctx_month": ctx_month, "target_month": target_month,
+                                      "min_appear_count": C,
+                                      **stats_r})
+                            m["n_new_total"] = len(nt)
+                            m["n_new_in_pool"] = len(nt & _frontier)
+                            m["coverage"] = (len(nt & _frontier) / len(nt)) if nt else float("nan")
+                            recon_results.append(m)
 
                     for name_m, model_m in models.items():
                         sc = score_candidates(model_m, node_feats_seq, incidence_seq, esm_seq,
@@ -922,8 +963,9 @@ def main():
         n_trained = bulk_train_range(models, optimizers, start_idx)
         log(f"\n[{name}] bulk-trained FROM SCRATCH on {n_trained} windows "
             f"(all months before {months[start_idx]})")
-        if n_trained < MIN_TRAIN_WINDOWS_TO_EVAL:
-            log(f"[{name}] SKIPPED: only {n_trained} training windows available.")
+        if n_trained < max(MIN_TRAIN_WINDOWS_TO_EVAL, args.min_train_windows):
+            log(f"[{name}] SKIPPED: {n_trained} training windows "
+                f"(need >= {max(MIN_TRAIN_WINDOWS_TO_EVAL, args.min_train_windows)}).")
         else:
             if n_trained < MIN_TRAIN_WINDOWS_WARN:
                 log(f"[{name}] WARNING: only {n_trained} training windows -- low-confidence")
@@ -968,16 +1010,22 @@ def main():
                         log(f"  !! coverage far below the ~62% measured by script 22. "
                             f"If kept<100%, raise --frontier_max (0=off). Otherwise raise "
                             f"--frontier_top_parents (0=all) / --frontier_top_nodes (0=all).")
-                log(f"  min_appear_count={args.min_appear_count}  "
-                    f"K_persist={int(np.mean([r['K_persist'] for r in rr]))}  "
+                log(f"  "
                     f"K_appear={int(np.mean([r['K_appear'] for r in rr]))}  "
                     f"(separate budgets -- persistence and appearance no longer "
                     f"compete for the same slots)")
                 log(f"  {'config':<18}{'h':>2} | {'F1':>6}{'P':>7}{'R':>7} | "
-                    f"{'persF1':>7}{'persR':>7} | {'appF1':>7}{'appR':>7}{'appLift':>8}"
+                    f"{'persAP':>7}{'persLift':>9} | {'appAP':>7}{'appLift':>8}"
                     f"{'appN':>6} | {'wRho':>6}{'wMSE':>8}")
                 order = ["random", "frequency", "copy_forward"] + list(configs.keys())
-                for h in sorted({r["horizon"] for r in rr}):
+                for C in sorted({r.get("min_appear_count", 1) for r in rr}):
+                  rr_c = [r for r in rr if r.get("min_appear_count", 1) == C]
+                  cov_c = [r["coverage"] for r in rr_c if not np.isnan(r["coverage"])]
+                  log(f"  --- min_appear_count={C}  "
+                      f"(coverage {np.mean(cov_c):.1%}, "
+                      f"new_total {np.mean([r['n_new_total'] for r in rr_c]):.0f}) ---")
+                  for h in sorted({r["horizon"] for r in rr_c}):
+                    rr = rr_c
                     rand_rows = [r for r in rr if r["config"] == "random" and r["horizon"] == h]
                     rand_app = float(np.mean([r["appear_rec"] for r in rand_rows
                                               if not np.isnan(r["appear_rec"])])) \
@@ -989,14 +1037,17 @@ def main():
                         def mu(k):
                             v = [r[k] for r in rows if not np.isnan(r[k])]
                             return float(np.mean(v)) if v else float("nan")
-                        alift = (mu('appear_rec') / rand_app) if rand_app and rand_app > 0 \
-                            else float("nan")
                         log(f"  {cfg:<18}{h:>2} | {mu('all_f1'):6.3f}{mu('all_prec'):7.3f}"
-                            f"{mu('all_rec'):7.3f} | {mu('persist_f1'):7.3f}{mu('persist_rec'):7.3f}"
-                            f" | {mu('appear_f1'):7.3f}{mu('appear_rec'):7.3f}{alift:8.2f}"
+                            f"{mu('all_rec'):7.3f} | {mu('persist_ap'):7.3f}{mu('persist_lift'):9.2f}"
+                            f" | {mu('appear_ap'):7.3f}{mu('appear_lift'):8.2f}"
                             f"{int(np.mean([r['appear_ntrue'] for r in rows])):6d} | "
                             f"{mu('w_spearman'):6.3f}{mu('w_mse_log1p'):8.3f}")
-                log(f"  appLift = appear_rec / random's appear_rec. The frequency row is "
+                rr = [r for r in recon_results if r["variant"] == name]
+                log(f"  Lift = AP / base rate; 1.00 = chance. random MUST sit at ~1.00 "
+                    f"and copy_forward MUST sit at ~1.00 on appLift (it scores every "
+                    f"frontier candidate 0). Anything else means a tie-breaking or "
+                    f"masking bug.")
+                log(f"  appLift is the number that matters. The frequency row is "
                     f"the independence-assumed baseline: beating IT on appLift is the "
                     f"result, not beating random.")
                 log(f"  CHECK: copy_forward appR must be 0.000 -- it predicts H_t unchanged "
@@ -1084,19 +1135,22 @@ def main():
         log("HYPERGRAPH RECONSTRUCTION -- POOLED ACROSS VARIANTS")
         log("=" * 70)
         rdf = pd.DataFrame(recon_results)
-        for h in sorted(rdf["horizon"].unique()):
+        for C in sorted(rdf.get("min_appear_count", pd.Series([1] * len(rdf))).unique()):
+          rdf_c = rdf[rdf.get("min_appear_count", 1) == C] if "min_appear_count" in rdf else rdf
+          log(f"\n  === min_appear_count={C}  coverage={rdf_c['coverage'].mean():.3f} ===")
+          for h in sorted(rdf_c["horizon"].unique()):
             log(f"\n  h={h}")
             log(f"  {'config':<18} {'cells':>5} | {'F1':>6}{'P':>7}{'R':>7} | "
-                f"{'persF1':>7} | {'appF1':>7}{'appR':>7} | {'wRho':>6}{'wMSE':>8}")
-            sub = rdf[rdf["horizon"] == h]
+                f"{'persLift':>8} | {'appAP':>7}{'appLift':>8} | {'wRho':>6}{'wMSE':>8}")
+            sub = rdf_c[rdf_c["horizon"] == h]
             for cfg in ["random", "frequency", "copy_forward"] + list(configs.keys()):
                 g = sub[sub["config"] == cfg]
                 if not len(g):
                     continue
                 log(f"  {cfg:<18} {len(g):>5} | {g['all_f1'].mean():6.3f}"
                     f"{g['all_prec'].mean():7.3f}{g['all_rec'].mean():7.3f} | "
-                    f"{g['persist_f1'].mean():7.3f} | {g['appear_f1'].mean():7.3f}"
-                    f"{g['appear_rec'].mean():7.3f} | {g['w_spearman'].mean():6.3f}"
+                    f"{g['persist_lift'].mean():7.3f} | {g['appear_ap'].mean():7.3f}"
+                    f"{g['appear_lift'].mean():7.3f} | {g['w_spearman'].mean():6.3f}"
                     f"{g['w_mse_log1p'].mean():8.3f}")
         log(f"\n  mean frontier coverage (recall ceiling on appear): "
             f"{rdf['coverage'].mean():.3f}")
