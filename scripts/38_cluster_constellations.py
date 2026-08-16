@@ -107,31 +107,47 @@ def _pairdist(M, size, metric, i0, i1, j0, j1):
     return si + sj - 2.0 * inter
 
 
-def cluster(sets, thresh, metric="jaccard", linkage="single", block=400):
-    """Agglomerative clustering at distance <= thresh.
-
-    single   -- connected components. Fast, but chains: A~B and B~C puts A and
-                C together however far apart they are. On this data that merged
-                pre-Alpha, Alpha and Delta at edit-2, because each consecutive
-                lineage is within 2 mutations of the last.
-    average  -- a point joins a cluster only if its MEAN distance to that
-                cluster's members is within thresh. Breaks chains.
-    complete -- MAX distance within thresh. Strictest; clusters have bounded
-                diameter.
-
-    average/complete are done greedily in abundance order (sets are passed
-    most-abundant-first), which is O(n * k) rather than the O(n^2 log n) of a
-    full agglomerative merge and is adequate here because real lineages are
-    seeded by abundant members.
-    """
+def _membership(sets):
     nodes = sorted({m for s in sets for m in s})
     idx = {m: i for i, m in enumerate(nodes)}
     M = np.zeros((len(sets), len(nodes)), dtype=np.float32)
     for i, s in enumerate(sets):
         for m in s:
             M[i, idx[m]] = 1
-    size = M.sum(1)
+    return M, M.sum(1)
+
+
+def cluster(sets, thresh, metric="jaccard", linkage="scipy_average", block=400):
+    """Agglomerative clustering at distance <= thresh.
+
+    scipy_* -- PROPER agglomerative: repeatedly merge the two closest clusters,
+               cut the dendrogram at thresh. Order-independent, which the greedy
+               versions are not. This is the default.
+    single  -- connected components. Fast, but chains: A~B and B~C merges A and
+               C however far apart. On this data that put pre-Alpha, Alpha and
+               Delta in one cluster at edit-2.
+    average/complete -- greedy in input order. Kept for comparison only; the
+               shuffle check showed they are order-dependent.
+    """
+    M, size = _membership(sets)
     n = len(sets)
+
+    if linkage.startswith("scipy_"):
+        from scipy.cluster.hierarchy import linkage as sp_linkage, fcluster
+        from scipy.spatial.distance import squareform
+        # condensed pairwise distances, computed blockwise to bound memory
+        D = np.empty((n, n), dtype=np.float32)
+        for i0 in range(0, n, block):
+            i1 = min(i0 + block, n)
+            for j0 in range(0, n, block):
+                j1 = min(j0 + block, n)
+                D[i0:i1, j0:j1] = _pairdist(M, size, metric, i0, i1, j0, j1)
+        np.fill_diagonal(D, 0.0)
+        D = (D + D.T) / 2.0                       # enforce exact symmetry
+        Z = sp_linkage(squareform(D, checks=False),
+                       method=linkage.split("_")[1])
+        lab = fcluster(Z, t=thresh, criterion="distance") - 1
+        return lab, M, size
 
     if linkage == "single":
         dsu = DSU(n)
@@ -147,10 +163,8 @@ def cluster(sets, thresh, metric="jaccard", linkage="single", block=400):
                         dsu.union(gu, gv)
         lab = np.array([dsu.find(i) for i in range(n)])
     else:
-        # greedy: walk sets in abundance order, join the first cluster whose
-        # mean (or max) distance is within thresh, else start a new one
         lab = np.full(n, -1, dtype=int)
-        members = []                      # list of index arrays, one per cluster
+        members = []
         for i in range(n):
             best, bestd = -1, np.inf
             for k, mem in enumerate(members):
@@ -184,8 +198,9 @@ def main():
     ap.add_argument("--max_sets", type=int, default=6000,
                     help="cap on distinct constellations pooled across months "
                          "(most abundant kept), for tractability")
-    ap.add_argument("--linkage", default="single",
-                    choices=["single", "average", "complete"],
+    ap.add_argument("--linkage", default="scipy_average",
+                    choices=["scipy_average", "scipy_complete", "scipy_ward",
+                             "single", "average", "complete"],
                     help="single: connected components. Chains along one-mutation "
                          "steps, which is how sublineages relate -- but that is "
                          "exactly why it merged pre-Alpha, Alpha and Delta into one "
