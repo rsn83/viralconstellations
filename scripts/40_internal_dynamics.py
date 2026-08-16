@@ -234,7 +234,16 @@ def main():
         f"{df.month.nunique()} months")
     log("=" * 78)
 
-    Z = df[["g_prev", "freq", "depth"]].to_numpy(float)
+    # CONTROL SET.
+    # n_seq (the cluster's OWN sequence count that month) is the critical one.
+    # new_set_share is the share of a cluster's sequences sitting in
+    # constellations first seen this month -- and a cluster with more sequences
+    # DISCOVERS more new constellations simply by sampling more. Without n_seq
+    # in the controls, a pure detection effect would look like a predictive one.
+    # Global `depth` does not cover this: it is the month total, not the
+    # cluster's own sampling.
+    CTRL = ["g_prev", "freq", "depth", "n_seq"]
+    Z = df[CTRL].to_numpy(float)
     log(f"\n  {'feature':<16}{'raw':>9}{'partial':>10}{'within-clu':>12}")
     log("  (raw = Spearman with next-month growth; partial = after removing")
     log("   current growth, current frequency and sequencing depth;")
@@ -246,7 +255,7 @@ def main():
         raw = float(pd.Series(x).corr(pd.Series(y), method="spearman"))
         par = partial_corr(x, y, Z)
         dm = df.groupby("cluster")[[c, "g_next"]].transform(lambda v: v - v.mean())
-        Zd = df.groupby("cluster")[["g_prev", "freq", "depth"]].transform(
+        Zd = df.groupby("cluster")[CTRL].transform(
             lambda v: v - v.mean()).to_numpy(float)
         wit = partial_corr(dm[c].to_numpy(float), dm.g_next.to_numpy(float), Zd)
         res.append((c, raw, par, wit))
@@ -264,11 +273,40 @@ def main():
     for y, g in df.groupby("year"):
         if len(g) < 40:
             continue
-        Zy = g[["g_prev", "freq", "depth"]].to_numpy(float)
+        Zy = g[CTRL].to_numpy(float)
         vals = [partial_corr(g[c].to_numpy(float), g.g_next.to_numpy(float), Zy)
                 for c in INTERNAL]
         log(f"  {y:>6}{len(g):>7}{g.depth.median():>10.0f}" +
             "".join(f"{v:>10.3f}" for v in vals))
+
+    # ---- LEAD OR CONCURRENT? ----
+    # A leading indicator should predict NEXT month's growth better than it
+    # explains the CURRENT month's. If both are equal the feature is describing
+    # what is already happening, not anticipating it.
+    log("\n  LEAD vs CONCURRENT  (partial corr with next-month vs this-month growth)")
+    log("  For the concurrent column g_prev is dropped from the controls, since")
+    log("  g_prev IS this-month growth.")
+    Zc = df[["freq", "depth", "n_seq"]].to_numpy(float)
+    log(f"  {'feature':<16}{'-> g_next':>11}{'-> g_prev':>11}{'lead margin':>13}")
+    for c in INTERNAL:
+        x = df[c].to_numpy(float)
+        nxt = partial_corr(x, df.g_next.to_numpy(float), Z)
+        cur = partial_corr(x, df.g_prev.to_numpy(float), Zc)
+        log(f"  {c:<16}{nxt:>11.3f}{cur:>11.3f}{nxt - cur:>13.3f}")
+    log("  positive margin = leads; near zero or negative = concurrent.")
+
+    # ---- SHUFFLE CONTROL ----
+    # Permute g_next within each month. Any correlation surviving this is an
+    # artefact of the estimator, not signal.
+    rs = np.random.default_rng(0)
+    sh = df.copy()
+    sh["g_next"] = sh.groupby("month")["g_next"].transform(
+        lambda v: rs.permutation(v.values))
+    log("\n  SHUFFLE CONTROL (g_next permuted within month; expect ~0)")
+    for c in INTERNAL[:4] + ["new_set_share"]:
+        v = partial_corr(sh[c].to_numpy(float), sh.g_next.to_numpy(float),
+                         sh[CTRL].to_numpy(float))
+        log(f"    {c:<16}{v:>9.3f}")
 
     log("\n" + "-" * 78)
     log("READ")
@@ -277,7 +315,8 @@ def main():
     log(f"  strongest partial correlation: {best[0]} at {best[2]:+.3f}")
     if abs(best[2]) > 0.15:
         log("  Internal state carries information about next-month growth beyond")
-        log("  current growth, frequency and depth. Check the per-year row: if it")
+        log("  current growth, frequency, depth AND the cluster's own sequence")
+        log("  count. Check the lead margin and the per-year row: if it")
         log("  holds in more than one era it is not a period artefact.")
     elif abs(best[2]) < 0.05:
         log("  Internal state adds essentially nothing once current growth is")
