@@ -160,7 +160,7 @@ def main():
     # E[new_set_share_k(t)] = mu * mean_set_size_k(t)
     # => mu = mean(new_set_share / mean_size) across all cluster-months
     df_valid = df[(df.new_set_share > 0) & (df.mean_size > 0)].copy()
-    mu = float((df_valid.new_set_share / df_valid.mean_size).mean())
+    mu = float(df_valid.new_set_share.mean() / df_valid.mean_size.mean())
     log(f"  mu = mean(new_set_share / mean_size) = {mu:.4f}")
     log(f"  interpretation: each position mutates with prob {mu:.4f} per month")
     log(f"  implied monthly turnover: mu * mean_size = "
@@ -256,7 +256,7 @@ def main():
         g_wf = max(0.0, float(b_wf[0]))
         mo1 = usable[i + 1]
         H_t = state[mo]["H"]
-        p_sw = (g_wf * H_t).clip(0, 1)
+        p_sw = float(np.clip(g_wf * H_t, 0, 1))
         is_sw = int(mo1 in SWITCH_MONTHS)
         wf_aucs.append((p_sw, is_sw))
 
@@ -361,7 +361,7 @@ def main():
         pi1_obs = np.array([st1["pi"].get(k, 0.0) for k in clusters])
         f = pi0 * np.exp(beta * nss0)
         pi1_pred = f / f.sum() if f.sum() > 0 else pi0
-        p_sw = (gamma * st["H"]).clip(0, 1)
+        p_sw = float(np.clip(gamma * st["H"], 0, 1))
         out_rows.append(dict(
             month_t=mo, month_t1=mo1,
             H=st["H"], p_switch=p_sw,
