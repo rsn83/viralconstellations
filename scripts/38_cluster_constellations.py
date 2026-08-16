@@ -98,8 +98,8 @@ class DSU:
             self.p[rb] = ra
 
 
-def cluster(sets, thresh, block=400):
-    """Single-linkage connected components at Jaccard distance < thresh.
+def cluster(sets, thresh, metric="jaccard", block=400):
+    """Single-linkage connected components at distance <= thresh.
 
     Blocked so the full N x N Jaccard matrix is never materialised -- with
     ~20k distinct constellations that would be 3 GB.
@@ -121,8 +121,12 @@ def cluster(sets, thresh, block=400):
             Mj = M[j0:j0 + block]
             sj = size[j0:j0 + block][None, :]
             inter = Mi @ Mj.T
-            jac = 1.0 - inter / np.maximum(si + sj - inter, 1e-9)
-            ii, jj = np.where(jac < thresh)
+            if metric == "jaccard":
+                D = 1.0 - inter / np.maximum(si + sj - inter, 1e-9)
+                ii, jj = np.where(D < thresh)
+            else:                                  # symmetric difference
+                D = si + sj - 2.0 * inter
+                ii, jj = np.where(D <= thresh)
             for u, v in zip(ii, jj):
                 gu, gv = i0 + u, j0 + v
                 if gu != gv:
@@ -144,12 +148,28 @@ def main():
     ap.add_argument("--max_sets", type=int, default=6000,
                     help="cap on distinct constellations pooled across months "
                          "(most abundant kept), for tractability")
-    ap.add_argument("--thresh", type=float, nargs="+",
-                    default=[0.05, 0.10, 0.15, 0.25])
+    ap.add_argument("--metric", default="jaccard", choices=["jaccard", "edit"],
+                    help="jaccard: 1 - |A&B|/|A|B|. Scale-dependent -- Jaccard "
+                         "0.15 means 4 differing mutations on a size-25 set but "
+                         "only 1 on a size-7 set, so a fixed threshold means "
+                         "different things in the Delta era (small sets) and the "
+                         "Omicron era (~30 mutations). That is why jaccard=0.15 "
+                         "resolves Delta but merges everything after BA.2, while "
+                         "0.05 resolves XBB but shatters Delta into pieces that "
+                         "trade dominance month to month.\n"
+                         "edit: |A symmetric-difference B|, the raw number of "
+                         "differing mutations. Scale-free, so one threshold "
+                         "means the same thing in both eras.")
+    ap.add_argument("--thresh", type=float, nargs="+", default=None,
+                    help="defaults to [0.05,0.10,0.15,0.25] for jaccard, "
+                         "[1,2,3,5] for edit")
     ap.add_argument("--detail", action="store_true",
                     help="print the dominance timeline for the first threshold")
     ap.add_argument("--out", default=str(ROOT / "outputs" / "38_clusters.csv"))
     args = ap.parse_args()
+    if args.thresh is None:
+        args.thresh = [0.05, 0.10, 0.15, 0.25] if args.metric == "jaccard" \
+            else [1.0, 2.0, 3.0, 5.0]
 
     gd = Path(args.graphs_dir)
     months = sorted(pd.read_csv(gd / "index.tsv", sep="\t")["month"].tolist())
@@ -178,7 +198,7 @@ def main():
 
     rows = []
     for th in args.thresh:
-        lab, M, size = cluster(sets, th)
+        lab, M, size = cluster(sets, th, args.metric)
         K = lab.max() + 1
 
         # sequence mass per cluster per month
@@ -208,8 +228,9 @@ def main():
             if i == j:
                 continue
             inter = float(M[i] @ M[j])
-            jac = 1.0 - inter / max(size[i] + size[j] - inter, 1e-9)
-            (wi if lab[i] == lab[j] else be).append(jac)
+            d = (1.0 - inter / max(size[i] + size[j] - inter, 1e-9)
+                 if args.metric == "jaccard" else size[i] + size[j] - 2.0 * inter)
+            (wi if lab[i] == lab[j] else be).append(d)
         coh_w = float(np.mean(wi)) if wi else np.nan
         coh_b = float(np.mean(be)) if be else np.nan
 
@@ -229,13 +250,13 @@ def main():
         switches = sum(1 for a, b in zip(list(dom.values())[:-1], list(dom.values())[1:])
                        if a != b)
 
-        rows.append(dict(thresh=th, n_clusters=K, n_big=n_big,
+        rows.append(dict(metric=args.metric, thresh=th, n_clusters=K, n_big=n_big,
                          share_top1=share_top1, share_top10=share_top10,
                          within_jac=coh_w, between_jac=coh_b,
                          contiguity=contiguity, dom_switches=switches))
         log(f"  thresh={th:<5} clusters={K:<6} >1%={n_big:<4} "
             f"top1={share_top1:.1%} top10={share_top10:.1%}  "
-            f"within={coh_w:.3f} between={coh_b:.3f}  "
+            f"within={coh_w:.2f} between={coh_b:.2f}  "
             f"contiguity={contiguity:.2f}  dominance switches={switches}")
 
         if args.detail and th == args.thresh[0]:
@@ -271,6 +292,11 @@ def main():
     log("  range sits between, and the dominance timeline is how to find it.")
     log("")
     log("  Rerun with --detail once a threshold looks right, and check the")
+    log("  switch months against Alpha / Delta / Omicron / BA.2. With")
+    log("  --metric edit the threshold is a COUNT of differing mutations, so")
+    log("  the same value means the same thing in the small-set Delta era and")
+    log("  the ~30-mutation Omicron era -- which is what the jaccard version")
+    log("  could not do.")
     log("  switch months against Alpha / Delta / Omicron / BA.2 before building")
     log("  anything on these clusters.")
     log(f"\n  wrote {args.out}")
