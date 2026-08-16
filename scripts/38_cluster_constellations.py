@@ -208,6 +208,15 @@ def main():
     ap.add_argument("--thresh", type=float, nargs="+", default=None,
                     help="defaults to [0.05,0.10,0.15,0.25] for jaccard, "
                          "[1,2,3,5] for edit")
+    ap.add_argument("--shuffle_seed", type=int, default=None,
+                    help="permute the constellation ordering before clustering. "
+                         "average/complete linkage are GREEDY in abundance order, "
+                         "so clusters are seeded by abundant members and the result "
+                         "can in principle depend on that ordering. Rerun with "
+                         "different seeds: if the dominance switch MONTHS survive, "
+                         "the six transitions are not an artefact of the ordering. "
+                         "Cluster IDs will differ between runs -- only the months "
+                         "and the sequence of switches are comparable.")
     ap.add_argument("--detail", action="store_true",
                     help="print the dominance timeline for the first threshold")
     ap.add_argument("--out", default=str(ROOT / "outputs" / "38_clusters.csv"))
@@ -237,6 +246,12 @@ def main():
         raise SystemExit("no usable months")
 
     sets = [c for c, _ in total.most_common(args.max_sets)]
+    if args.shuffle_seed is not None:
+        rs = np.random.default_rng(args.shuffle_seed)
+        order = rs.permutation(len(sets))
+        sets = [sets[i] for i in order]
+        log(f"ordering shuffled with seed {args.shuffle_seed} "
+            f"(greedy linkage seeds clusters in input order)")
     keep = set(sets)
     log(f"{len(per_month)} months, {len(total)} distinct constellations, "
         f"clustering the top {len(sets)}\n")
@@ -295,14 +310,19 @@ def main():
         switches = sum(1 for a, b in zip(list(dom.values())[:-1], list(dom.values())[1:])
                        if a != b)
 
-        rows.append(dict(metric=args.metric, linkage=args.linkage, thresh=th, n_clusters=K, n_big=n_big,
+        sw_months = [mo for prev, (mo, k) in
+                     zip([None] + list(dom.values())[:-1], dom.items())
+                     if prev is not None and k != prev]
+        rows.append(dict(metric=args.metric, linkage=args.linkage, thresh=th,
+                         switch_months="|".join(sw_months), n_clusters=K, n_big=n_big,
                          share_top1=share_top1, share_top10=share_top10,
                          within_jac=coh_w, between_jac=coh_b,
                          contiguity=contiguity, dom_switches=switches))
         log(f"  thresh={th:<5} clusters={K:<6} >1%={n_big:<4} "
             f"top1={share_top1:.1%} top10={share_top10:.1%}  "
             f"within={coh_w:.2f} between={coh_b:.2f}  "
-            f"contiguity={contiguity:.2f}  dominance switches={switches}")
+            f"contiguity={contiguity:.2f}  switches={switches}")
+        log(f"           switch months: {' '.join(sw_months) if sw_months else '(none)'}")
 
         if args.detail and th == args.thresh[0]:
             log(f"\n  DOMINANCE TIMELINE (thresh={th})")
