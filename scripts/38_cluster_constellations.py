@@ -98,11 +98,31 @@ class DSU:
             self.p[rb] = ra
 
 
-def cluster(sets, thresh, metric="jaccard", block=400):
-    """Single-linkage connected components at distance <= thresh.
+def _pairdist(M, size, metric, i0, i1, j0, j1):
+    Mi, Mj = M[i0:i1], M[j0:j1]
+    inter = Mi @ Mj.T
+    si, sj = size[i0:i1][:, None], size[j0:j1][None, :]
+    if metric == "jaccard":
+        return 1.0 - inter / np.maximum(si + sj - inter, 1e-9)
+    return si + sj - 2.0 * inter
 
-    Blocked so the full N x N Jaccard matrix is never materialised -- with
-    ~20k distinct constellations that would be 3 GB.
+
+def cluster(sets, thresh, metric="jaccard", linkage="single", block=400):
+    """Agglomerative clustering at distance <= thresh.
+
+    single   -- connected components. Fast, but chains: A~B and B~C puts A and
+                C together however far apart they are. On this data that merged
+                pre-Alpha, Alpha and Delta at edit-2, because each consecutive
+                lineage is within 2 mutations of the last.
+    average  -- a point joins a cluster only if its MEAN distance to that
+                cluster's members is within thresh. Breaks chains.
+    complete -- MAX distance within thresh. Strictest; clusters have bounded
+                diameter.
+
+    average/complete are done greedily in abundance order (sets are passed
+    most-abundant-first), which is O(n * k) rather than the O(n^2 log n) of a
+    full agglomerative merge and is adequate here because real lineages are
+    seeded by abundant members.
     """
     nodes = sorted({m for s in sets for m in s})
     idx = {m: i for i, m in enumerate(nodes)}
@@ -111,30 +131,46 @@ def cluster(sets, thresh, metric="jaccard", block=400):
         for m in s:
             M[i, idx[m]] = 1
     size = M.sum(1)
-
-    dsu = DSU(len(sets))
     n = len(sets)
-    for i0 in range(0, n, block):
-        Mi = M[i0:i0 + block]
-        si = size[i0:i0 + block][:, None]
-        for j0 in range(i0, n, block):
-            Mj = M[j0:j0 + block]
-            sj = size[j0:j0 + block][None, :]
-            inter = Mi @ Mj.T
-            if metric == "jaccard":
-                D = 1.0 - inter / np.maximum(si + sj - inter, 1e-9)
-                ii, jj = np.where(D < thresh)
-            else:                                  # symmetric difference
-                D = si + sj - 2.0 * inter
-                ii, jj = np.where(D <= thresh)
-            for u, v in zip(ii, jj):
-                gu, gv = i0 + u, j0 + v
-                if gu != gv:
-                    dsu.union(gu, gv)
-    lab = np.array([dsu.find(i) for i in range(n)])
-    # relabel densely
-    remap = {r: k for k, r in enumerate(sorted(set(lab)))}
-    return np.array([remap[x] for x in lab]), M, size
+
+    if linkage == "single":
+        dsu = DSU(n)
+        for i0 in range(0, n, block):
+            for j0 in range(i0, n, block):
+                D = _pairdist(M, size, metric, i0, min(i0 + block, n),
+                              j0, min(j0 + block, n))
+                ii, jj = np.where(D <= thresh) if metric == "edit" \
+                    else np.where(D < thresh)
+                for u, v in zip(ii, jj):
+                    gu, gv = i0 + u, j0 + v
+                    if gu != gv:
+                        dsu.union(gu, gv)
+        lab = np.array([dsu.find(i) for i in range(n)])
+    else:
+        # greedy: walk sets in abundance order, join the first cluster whose
+        # mean (or max) distance is within thresh, else start a new one
+        lab = np.full(n, -1, dtype=int)
+        members = []                      # list of index arrays, one per cluster
+        for i in range(n):
+            best, bestd = -1, np.inf
+            for k, mem in enumerate(members):
+                inter = M[mem] @ M[i]
+                if metric == "jaccard":
+                    d = 1.0 - inter / np.maximum(size[mem] + size[i] - inter, 1e-9)
+                else:
+                    d = size[mem] + size[i] - 2.0 * inter
+                dd = float(d.mean()) if linkage == "average" else float(d.max())
+                if dd <= thresh and dd < bestd:
+                    best, bestd = k, dd
+            if best < 0:
+                members.append(np.array([i]))
+                lab[i] = len(members) - 1
+            else:
+                members[best] = np.append(members[best], i)
+                lab[i] = best
+
+    remap = {r: k for k, r in enumerate(sorted(set(lab.tolist())))}
+    return np.array([remap[x] for x in lab.tolist()]), M, size
 
 
 def main():
@@ -148,6 +184,15 @@ def main():
     ap.add_argument("--max_sets", type=int, default=6000,
                     help="cap on distinct constellations pooled across months "
                          "(most abundant kept), for tractability")
+    ap.add_argument("--linkage", default="single",
+                    choices=["single", "average", "complete"],
+                    help="single: connected components. Chains along one-mutation "
+                         "steps, which is how sublineages relate -- but that is "
+                         "exactly why it merged pre-Alpha, Alpha and Delta into one "
+                         "cluster at edit-2: each consecutive pair is within 2, so "
+                         "the whole corridor links up. average/complete break those "
+                         "chains by requiring a candidate to be close to the cluster "
+                         "as a whole, not just to one member.")
     ap.add_argument("--metric", default="jaccard", choices=["jaccard", "edit"],
                     help="jaccard: 1 - |A&B|/|A|B|. Scale-dependent -- Jaccard "
                          "0.15 means 4 differing mutations on a size-25 set but "
@@ -198,7 +243,7 @@ def main():
 
     rows = []
     for th in args.thresh:
-        lab, M, size = cluster(sets, th, args.metric)
+        lab, M, size = cluster(sets, th, args.metric, args.linkage)
         K = lab.max() + 1
 
         # sequence mass per cluster per month
@@ -250,7 +295,7 @@ def main():
         switches = sum(1 for a, b in zip(list(dom.values())[:-1], list(dom.values())[1:])
                        if a != b)
 
-        rows.append(dict(metric=args.metric, thresh=th, n_clusters=K, n_big=n_big,
+        rows.append(dict(metric=args.metric, linkage=args.linkage, thresh=th, n_clusters=K, n_big=n_big,
                          share_top1=share_top1, share_top10=share_top10,
                          within_jac=coh_w, between_jac=coh_b,
                          contiguity=contiguity, dom_switches=switches))
