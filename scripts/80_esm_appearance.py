@@ -133,6 +133,60 @@ def load_esm(path, vocab):
     print(f"ESM cache type: {type(obj).__name__}")
 
     feats = {}
+    # layout produced by script 21: a row-aligned array plus a names list.
+    # Row i corresponds to node_idx i, so the row order must match
+    # posres_vocab.tsv -- checked below rather than assumed, because a silent
+    # off-by-one here would corrupt every number downstream.
+    if (isinstance(obj, dict) and "features" in obj and "names" in obj
+            and hasattr(obj["features"], "shape")):
+        F = np.asarray(obj["features"])
+        names_all = [str(x) for x in obj["names"]]
+        print(f"  features array {F.shape}, {len(names_all)} names")
+        print(f"  names: {names_all}")
+        if "meta" in obj:
+            print(f"  meta: {obj['meta']}")
+        if F.shape[0] != len(vocab):
+            sys.exit(f"row count {F.shape[0]} does not match the vocabulary "
+                     f"size {len(vocab)}; the row order cannot be trusted")
+        # a mask column, if present, says which rows are usable
+        mask_i = (names_all.index("is_scorable")
+                  if "is_scorable" in names_all else None)
+        # exclude the mask and any all-NaN or constant column from the
+        # predictive block
+        keep = []
+        for j, nm in enumerate(names_all):
+            if j == mask_i:
+                continue
+            colv = F[:, j]
+            fin = colv[np.isfinite(colv)]
+            if fin.size < 10 or float(np.nanstd(fin)) < 1e-9:
+                continue
+            keep.append(j)
+        n_drop = len(names_all) - len(keep) - (1 if mask_i is not None else 0)
+        if n_drop:
+            print(f"  dropped {n_drop} constant or empty feature columns")
+        n_unscorable = 0
+        for i in range(F.shape[0]):
+            if i not in vocab:
+                continue
+            if mask_i is not None and not bool(F[i, mask_i]):
+                n_unscorable += 1
+                continue
+            row = {names_all[j]: float(F[i, j]) for j in keep
+                   if np.isfinite(F[i, j])}
+            if len(row) == len(keep):
+                feats[vocab[i]] = row
+        if mask_i is not None:
+            print(f"  {n_unscorable} rows marked not scorable, skipped")
+        names = [names_all[j] for j in keep]
+        print(f"  mapped {len(feats)} (position, residue) cells")
+        print(f"  using {len(names)} features: {names}")
+        for k, v in list(feats.items())[:3]:
+            first = list(v.items())[:4]
+            print(f"    {k} -> " + ", ".join(f"{a}={b:+.3f}" for a, b in first)
+                  + (" ..." if len(v) > 4 else ""))
+        return feats, names
+
     if isinstance(obj, pd.DataFrame):
         print(f"  columns: {list(obj.columns)}")
         cols = {c.lower(): c for c in obj.columns}
@@ -307,11 +361,18 @@ def main():
           f"{len(vocab)}; the full grid is {len(grid_positions)} x 20 = "
           f"{len(grid_positions) * 20}")
     full_grid = covered > 1.5 * len(vocab)
-    print("  test B will use "
-          + ("the full grid of unseen cells" if full_grid else
-             "only cells present in the ESM cache -- a cache limited to the\n"
-             "  observed vocabulary cannot score truly novel cells, so test B\n"
-             "  is restricted and its coverage is reported"))
+    if full_grid:
+        print("  test B uses the full grid of unseen cells")
+    else:
+        print("  test B is RESTRICTED: the cache covers only the observed")
+        print("  vocabulary, so its candidates are cells that DO appear")
+        print("  somewhere in the series but have not appeared yet at month t.")
+        print("  The timing question is still real -- which of them arrives")
+        print("  next -- but the negatives are 'not yet' rather than 'never',")
+        print("  so the base rate is inflated and this is not a test against")
+        print("  the full space of possible mutations. Scoring truly novel")
+        print("  cells would need llr_ref from masked marginals on the")
+        print("  reference, which gives all 20 residues at every position.")
 
     # per-month presence and frequency
     freq, present = [], []
