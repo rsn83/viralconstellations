@@ -347,7 +347,9 @@ def main():
     ap.add_argument("--threshold", type=float, default=5.0)
     ap.add_argument("--max_sets", type=int, default=400)
     ap.add_argument("--min_mass", type=float, default=0.005)
-    ap.add_argument("--max_nodes", type=int, default=25)
+    ap.add_argument("--max_nodes", type=int, default=60)
+    ap.add_argument("--recent_months", type=int, default=3,
+                    help="profiles seen within this many months rank first")
     ap.add_argument("--n_cand", type=int, default=100,
                     help="candidate mutations for hypothetical children")
     ap.add_argument("--profile_window", type=int, default=12)
@@ -412,12 +414,26 @@ def main():
 
         # ---- lineage profiles from months <= t only -------------------------
         lo = max(0, t - args.profile_window + 1)
-        pool = []
+        uset = set(universe)
+        # score each candidate profile by how recently it was seen and how much
+        # of the population it accounted for. An earlier version sorted by SIZE,
+        # which kept mature lineages and discarded small recent ones -- exactly
+        # the lineages new mutations appear on, so it penalised the very thing
+        # the tree is meant to capture.
+        seen_at, best_mass = {}, {}
         for j in range(lo, t + 1):
-            pool.extend(cons[names[j]])
-        pool = [frozenset(p & set(universe)) for p in pool]
-        pool = [p for p in dict.fromkeys(pool) if p]
-        pool.sort(key=lambda p: -len(p))
+            tot_j = float(sum(occ_by[names[j]].values()))
+            for p in cons[names[j]]:
+                q = frozenset(p & uset)
+                if not q:
+                    continue
+                seen_at[q] = max(seen_at.get(q, -1), j)
+                mass = sum(w for c, w in occ_by[names[j]].items()
+                           if q <= c) / max(tot_j, 1.0)
+                best_mass[q] = max(best_mass.get(q, 0.0), mass)
+        pool = sorted(seen_at.keys(),
+                      key=lambda q: (-(t - seen_at[q] <= args.recent_months),
+                                     -best_mass[q]))
         profiles = pool[:args.max_nodes]
         if len(profiles) < 2:
             continue
@@ -445,7 +461,17 @@ def main():
         obs_w = np.array([occ_by[names[t]][c] for c in obs_sets], dtype=float)
         Xi = indicator(obs_sets, lab_index)
         x_sizes = Xi.sum(1)
-        LL = loglik_matrix(Xi, x_sizes, Pi, p_sizes, V, 3.0, -4.0)
+        # fit the two emission parameters by a small grid, on month t, rather
+        # than hardcoding them
+        best = None
+        for aa in (2.0, 3.0, 4.0, 5.0):
+            for bb in (-3.0, -4.0, -5.0, -6.0):
+                LLc = loglik_matrix(Xi, x_sizes, Pi, p_sizes, V, aa, bb)
+                _, llc = fit_weights(LLc, obs_w, n_iter=60)
+                if best is None or llc > best[0]:
+                    best = (llc, aa, bb)
+        _, a_hat, b_hat = best
+        LL = loglik_matrix(Xi, x_sizes, Pi, p_sizes, V, a_hat, b_hat)
         pi_tree, _ = fit_weights(LL, obs_w)
         pi_hist[t] = pi_tree
 
@@ -465,7 +491,7 @@ def main():
 
         # ---- matched ablation: same nodes, NO tree, no hypothetical children
         Pf = indicator(profiles, lab_index)
-        LLf = loglik_matrix(Xi, x_sizes, Pf, Pf.sum(1), V, 3.0, -4.0)
+        LLf = loglik_matrix(Xi, x_sizes, Pf, Pf.sum(1), V, a_hat, b_hat)
         pi_flat, _ = fit_weights(LLf, obs_w)
         m_flat = marginals(pi_flat, Pf)
 
@@ -509,8 +535,10 @@ def main():
                     "weight": float(pi_tree[i]),
                 })
 
-        print(f"  {names[t]}: {len(profiles)} lineages, {len(hyp)} hypothetical, "
-              f"{len(cand)} candidates, {int(y.sum())} entries")
+        n_recent = sum(1 for p in profiles if t - seen_at[p] <= args.recent_months)
+        print(f"  {names[t]}: {len(profiles)} lineages ({n_recent} recent), "
+              f"{len(hyp)} hypothetical, {len(cand)} candidates, "
+              f"{int(y.sum())} entries, a={a_hat:.0f} b={b_hat:.0f}")
 
     df = pd.DataFrame(rows)
     df.to_csv(f"{args.out_dir}/76_entry.csv", index=False)
@@ -554,7 +582,7 @@ def main():
         print("  hypothetical children.")
         print("\n  CALIBRATED on synthetic data with a nested child lineage")
         print("  planted to grow from rare to dominant, 11 origins:")
-        print("     tree_frozen 0.438   flat_frozen 0.302   ratio 1.45")
+        print("     tree_frozen 0.510   flat_frozen 0.302   ratio 1.69")
         print("  so the comparison does discriminate, and a null here means the")
         print("  tree genuinely adds nothing rather than the test being blind.")
         print("  tree well above flat, and near 0.33 or higher -> inheritance")

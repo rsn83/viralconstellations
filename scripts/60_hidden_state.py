@@ -408,7 +408,9 @@ def main():
         "p_poly_to_fixed": (ix["polymorphic"], ix["fixed"]),
         "p_fixed_to_lower": None,
     }
-    covs = ["modal_freq", "modal_size", "n_sets_half", "mpd", "mean_set_size"]
+    covs = ["modal_freq", "modal_size", "n_sets_half", "mpd", "mean_set_size",
+            "time_index"]
+    dfp["time_index"] = np.arange(len(dfp), dtype=float)
     Xc = dfp[covs].to_numpy()[:-1]
     Xc = (Xc - Xc.mean(axis=0)) / (Xc.std(axis=0) + 1e-9)
     Xd = np.column_stack([np.ones(len(Xc)), Xc])

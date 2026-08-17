@@ -262,7 +262,7 @@ def main():
     except Exception:
         pass
 
-    log()
+    log("")
     if r.gain.mean() > 0.02 and (r.gain > 0).sum() > 0.65 * len(r):
         log("  Interaction model beats simple model consistently.")
         log("  Clusters do not evolve independently -- competitive")

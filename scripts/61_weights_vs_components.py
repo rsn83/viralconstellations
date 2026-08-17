@@ -68,6 +68,7 @@ python scripts/61_weights_vs_components.py --min_count 3 --end_month 2024-12
 """
 
 import argparse
+import bisect
 import os
 import pickle
 import re
@@ -251,21 +252,22 @@ def main():
     T = len(names)
     eps = args.min_count / args.depth
 
-    # causal cell history
+    # per-month history, indexed by month so it can be queried CAUSALLY.
+    # (an earlier version accumulated last_seen and freq_hist over ALL months
+    # before the rolling-origin loop, which put future months into both.)
     seen_by = []
     seen = set()
-    last_seen = {}
-    freq_hist = defaultdict(list)
+    freq_by_month = []          # list of dict lab -> frequency in that month
+    present_idx = defaultdict(list)   # lab -> sorted month indices in support
     for j, m in enumerate(names):
         tot = float(sum(occ_by[m].values()))
         nc = defaultdict(float)
         for cs, c in occ_by[m].items():
             for lab in cs:
                 nc[lab] += c
+        freq_by_month.append({lab: v / tot for lab, v in nc.items()})
         for lab in support[m]:
-            last_seen[lab] = j
-        for lab, v in nc.items():
-            freq_hist[lab].append(v / tot)
+            present_idx[lab].append(j)
         seen |= support[m]
         seen_by.append(frozenset(seen))
 
@@ -299,9 +301,23 @@ def main():
         rows_next, w_next = encode(occ_by[names[t + 1]], cell_index)
 
         # simple baselines, no mixture involved
-        hist = np.array([np.mean(freq_hist[l][-args.fit_window:])
-                         if freq_hist[l] else 0.0 for l in cand])
-        rec = np.array([1.0 / (1.0 + (t - last_seen.get(l, -99))) for l in cand])
+        lo = max(0, t - args.fit_window + 1)
+        hist = np.array([
+            float(np.mean([freq_by_month[j].get(l, 0.0)
+                           for j in range(lo, t + 1)]))
+            for l in cand
+        ])
+
+        def _last_seen(lab):
+            """Most recent month <= t in which the label was in support."""
+            idx = present_idx.get(lab, [])
+            k = bisect.bisect_right(idx, t) - 1
+            return idx[k] if k >= 0 else None
+
+        rec = np.array([
+            (1.0 / (1.0 + (t - j))) if (j := _last_seen(l)) is not None else 0.0
+            for l in cand
+        ])
         base_scores = {
             "uniform": rng.random(len(cand)),
             "historical_freq": hist,
