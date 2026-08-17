@@ -1,61 +1,44 @@
 #!/usr/bin/env python
 """
-59_grid_prior.py
+59_grid_prior.py  (v2 -- resolves integer node IDs through index.tsv)
 
 Question
 --------
 The candidate space is (position, residue) cells. How much of it is ever used,
 and does a hierarchy over positions narrow what is possible at time t?
 
-Three candidate priors, and they narrow the space differently:
+Three candidate priors, narrowing the space differently:
 
-  1. STATIC OCCUPANCY  -- which cells are ever occupied at all. Time-invariant,
-     prunes the grid globally, costs nothing.
-  2. POSITION HIERARCHY -- positions differ in how often they mutate and in how
+  1. STATIC OCCUPANCY   -- which cells are ever occupied at all. Time-invariant,
+     prunes globally, costs nothing.
+  2. POSITION HIERARCHY -- positions differ in how often they mutate and how
      many residues they admit. Learnable, still time-invariant.
   3. LINEAGE-CONDITIONAL -- which mutations are possible given the background
      already present. Only this one is conditioned on t. Not measured here;
      script 58's pmi_min is the evidence it exists.
 
-Caution carried in from earlier work: the frontier result (positional score vs
-offspring count, r = -0.406) says positional structure alone does NOT predict
-where evolution goes. So the expectation is that 1 and 2 shrink the denominator
-without ranking what remains. This script measures how much shrinking there is,
-which sets how much room the conditional term has to work in.
+Caution carried in: the frontier result (positional score vs offspring count,
+r = -0.406) says positional structure alone does NOT predict where evolution
+goes. So the expectation is that 1 and 2 shrink the denominator without ranking
+what remains. This measures how much shrinking there is, which sets how much
+room the conditional term has to work in.
 
-Everything time-dependent here is causal: a prior at month t is built from
-months <= t and scored on t+1. Nothing is pooled across the full series except
-the descriptive totals in section A, which are labelled as such.
+Everything time-dependent is causal: a prior at month t is built from months
+<= t and scored on t+1. Section A is pooled and labelled descriptive.
 
 Sections
 --------
 A. GRID OCCUPANCY (descriptive, pooled -- not a prediction)
-   How many cells of the full grid are ever occupied. Positions that ever
-   mutate. Residues admitted per mutating position.
-
-B. CAUSAL COVERAGE OF THE STATIC PRIOR
-   For each t: of the cells active at t+1, what share was already seen by t?
-   That is the prior's recall. And of the cells seen by t, what share is active
-   at t+1? That is its precision. Recall bounds any model restricted to
-   previously-seen cells; precision says how much ranking work is left.
-
-C. POSITION HIERARCHY
-   Does a position's own history predict whether it carries a NEW residue at
-   t+1? Compared against a uniform-over-positions baseline. Reported as lift,
-   since the positive rate is small.
-
-D. RESIDUE GIVEN POSITION
-   Given that a position produces a new residue at t+1, is which residue
-   predictable from the residues that position has admitted before? This is the
-   second level of the hierarchy and is scored separately, because a prior that
-   only ranks positions leaves 19 choices untouched.
+B. CAUSAL COVERAGE OF THE STATIC PRIOR  (recall and precision on t+1)
+C. POSITION HIERARCHY   (does a position's history predict new residues there?)
+D. RESIDUE GIVEN POSITION (given a position produces novelty, which residue?)
 
 Outputs
 -------
-outputs/59_grid_summary.csv     section A totals
-outputs/59_coverage.csv         per-month recall/precision of the static prior
-outputs/59_position_hier.csv    per-month position-level lift
-outputs/59_residue_hier.csv     per-month residue-level lift
+outputs/59_grid_summary.csv
+outputs/59_coverage.csv
+outputs/59_position_hier.csv
+outputs/59_residue_hier.csv
 
 Usage
 -----
@@ -66,6 +49,7 @@ import argparse
 import os
 import pickle
 import re
+import sys
 from collections import defaultdict
 
 import numpy as np
@@ -73,8 +57,103 @@ import pandas as pd
 
 MONTH_RE = re.compile(r"(\d{4}-\d{2})_occupied\.pkl$")
 
-AAS = list("ACDEFGHIKLMNPQRSTVWY")   # 20 standard residues
-SPIKE_LEN = 1273                      # reference length, for context only
+AAS = list("ACDEFGHIKLMNPQRSTVWY")
+SPIKE_LEN = 1273
+
+# 'N501Y', '501Y', 'S:N501Y', '501_Y', 'del69', ...
+MUT_RE = re.compile(r"^(?:[A-Za-z]+:)?[A-Za-z\*\-]?(\d+)[_\-]?([A-Za-z\*\-]+)$")
+
+
+# ----------------------------------------------------------------------------
+# node id -> (position, residue), via index.tsv
+# ----------------------------------------------------------------------------
+
+def _parse_mut_string(s):
+    m = MUT_RE.match(str(s).strip())
+    if not m:
+        return None
+    return int(m.group(1)), m.group(2)
+
+
+def build_id_map(index_path, verbose=True):
+    """
+    Reads index.tsv and returns {node_id: (pos, res)}.
+
+    Handles the layouts these index files usually come in:
+      - explicit position and residue columns
+      - a single mutation-label column such as N501Y / 501Y / S:N501Y
+      - no header, in which case columns are positional
+    The id is taken from an id-like column when present, otherwise from the
+    row order, which is how these indices are normally written.
+    """
+    if not os.path.exists(index_path):
+        sys.exit(f"index file not found: {index_path}\n"
+                 "pass its location with --index_path")
+
+    df = pd.read_csv(index_path, sep="\t", dtype=str, keep_default_na=False)
+    # a headerless file shows up as a first row that is itself data
+    looks_headerless = all(
+        _parse_mut_string(c) is not None or str(c).isdigit() for c in df.columns
+    )
+    if looks_headerless:
+        df = pd.read_csv(index_path, sep="\t", dtype=str, header=None,
+                         keep_default_na=False)
+        df.columns = [f"c{i}" for i in range(df.shape[1])]
+
+    cols = {c.lower().strip(): c for c in df.columns}
+    if verbose:
+        print(f"index.tsv columns: {list(df.columns)}  ({len(df)} rows)")
+        print(df.head(3).to_string(index=False))
+
+    # id column
+    id_col = None
+    for cand in ("node_idx", "node", "node_id", "id", "index", "idx", "i"):
+        if cand in cols:
+            id_col = cols[cand]
+            break
+
+    # explicit position / residue columns
+    pos_col = next((cols[c] for c in ("pos", "position", "site", "aa_pos",
+                                      "aapos", "amino_acid_position")
+                    if c in cols), None)
+    res_col = next((cols[c] for c in ("res", "residue", "aa", "alt", "mut_aa",
+                                      "aa_res", "alt_aa")
+                    if c in cols), None)
+
+    id_map = {}
+    if pos_col is not None and res_col is not None:
+        for i, row in enumerate(df.itertuples(index=False)):
+            d = dict(zip(df.columns, row))
+            key = int(d[id_col]) if id_col else i
+            id_map[key] = (int(str(d[pos_col]).strip()), str(d[res_col]).strip())
+        how = f"columns '{pos_col}' + '{res_col}'"
+    else:
+        # find the column whose values parse as mutation labels
+        best_col, best_hits = None, 0
+        for c in df.columns:
+            if c == id_col:
+                continue
+            sample = df[c].head(200)
+            hits = sum(_parse_mut_string(v) is not None for v in sample)
+            if hits > best_hits:
+                best_col, best_hits = c, hits
+        if best_col is None or best_hits < max(5, 0.5 * min(200, len(df))):
+            sys.exit("could not identify a (position, residue) column in "
+                     "index.tsv; print a few rows and I will adjust the parser")
+        for i, row in enumerate(df.itertuples(index=False)):
+            d = dict(zip(df.columns, row))
+            key = int(d[id_col]) if id_col else i
+            pr = _parse_mut_string(d[best_col])
+            if pr:
+                id_map[key] = pr
+        how = f"column '{best_col}'"
+
+    if verbose:
+        print(f"resolved {len(id_map)} node ids from {how}"
+              f"{' with id column ' + id_col if id_col else ' by row order'}")
+        ex = list(id_map.items())[:5]
+        print("examples: " + ", ".join(f"{k} -> {v}" for k, v in ex))
+    return id_map
 
 
 # ----------------------------------------------------------------------------
@@ -102,26 +181,15 @@ def load_months(data_dir, min_count, start_month=None, end_month=None):
     return out
 
 
-def split_label(lab):
-    """
-    Labels are (position, residue) pairs. Tolerate tuple/list or a string form
-    like '501Y' / '501_Y' / 'N501Y' so this runs without reformatting the data.
-    """
-    if isinstance(lab, (tuple, list)) and len(lab) == 2:
-        return int(lab[0]), str(lab[1])
-    s = str(lab)
-    m = re.match(r"^[A-Za-z]?(\d+)[_\-]?([A-Za-z\*\-]+)$", s)
-    if m:
-        return int(m.group(1)), m.group(2)
-    raise ValueError(f"cannot parse label: {lab!r}")
-
-
-def month_cells(occ):
-    """Set of (pos, res) cells present in a month."""
+def month_cells(occ, id_map, missing):
     out = set()
     for cs in occ:
         for lab in cs:
-            out.add(split_label(lab))
+            cell = id_map.get(int(lab)) if not isinstance(lab, tuple) else lab
+            if cell is None:
+                missing.add(lab)
+                continue
+            out.add(cell)
     return out
 
 
@@ -143,6 +211,7 @@ def average_precision(y, s):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data_dir", default="data/processed/full_data_graphs_posres")
+    ap.add_argument("--index_path", default=None)
     ap.add_argument("--out_dir", default="outputs")
     ap.add_argument("--min_count", type=int, default=3)
     ap.add_argument("--start_month", default=None)
@@ -154,15 +223,22 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     rng = np.random.default_rng(args.seed)
 
+    index_path = args.index_path or os.path.join(args.data_dir, "index.tsv")
+    id_map = build_id_map(index_path)
+
     months = load_months(args.data_dir, args.min_count,
                          args.start_month, args.end_month)
+    missing = set()
+    cells = {m: month_cells(o, id_map, missing) for m, o in months}
     names = [m for m, _ in months]
-    cells = {m: month_cells(o) for m, o in months}
     T = len(names)
-    print(f"loaded {T} months: {names[0]} .. {names[-1]}")
+    print(f"\nloaded {T} months: {names[0]} .. {names[-1]}")
+    if missing:
+        print(f"WARNING: {len(missing)} node ids absent from index.tsv, dropped "
+              f"(e.g. {sorted(missing, key=str)[:5]})")
 
     # ========================================================================
-    # A. grid occupancy  (descriptive, pooled across all months)
+    # A. grid occupancy (descriptive, pooled)
     # ========================================================================
     print("\n" + "=" * 72)
     print("A. GRID OCCUPANCY  (descriptive; uses all months, not a forecast)")
@@ -182,7 +258,7 @@ def main():
         res_per_pos[p].add(r)
     rpp = np.array([len(v) for v in res_per_pos.values()])
 
-    print(f"positions observed          : {len(positions)} "
+    print(f"positions observed           : {len(positions)} "
           f"(max index {max_pos}; reference length {SPIKE_LEN})")
     print(f"distinct residue symbols     : {len(residues)}  {residues}")
     print(f"full grid (positions x 20)   : {grid}")
@@ -195,12 +271,11 @@ def main():
     print(f"residues per mutating position: mean {rpp.mean():.2f}, "
           f"median {np.median(rpp):.0f}, max {rpp.max()}")
     print("\ndecomposition of the reduction:")
-    print(f"  by position filter alone   : {len(positions) * len(AAS)} cells")
-    print(f"  plus residue filter        : {len(all_cells)} cells")
-    print(f"  the position filter does {100 * (1 - len(positions) * len(AAS) / grid):.1f}%"
-          " of the work,")
-    print(f"  the residue filter a further "
-          f"{100 * (1 - len(all_cells) / max(len(positions) * len(AAS), 1)):.1f}%")
+    print(f"  position filter alone      : {len(positions) * len(AAS)} cells "
+          f"({100 * (1 - len(positions) * len(AAS) / grid):.1f}% removed)")
+    print(f"  plus residue filter        : {len(all_cells)} cells "
+          f"(a further "
+          f"{100 * (1 - len(all_cells) / max(len(positions) * len(AAS), 1)):.1f}%)")
 
     pd.DataFrame([{
         "n_positions_observed": len(positions), "max_position": max_pos,
@@ -227,8 +302,7 @@ def main():
         hit = len(nxt & seen)
         rows.append({
             "month_t": names[t], "month_t1": names[t + 1],
-            "n_seen_by_t": len(seen),
-            "n_active_t1": len(nxt),
+            "n_seen_by_t": len(seen), "n_active_t1": len(nxt),
             "recall": hit / len(nxt),
             "precision": hit / len(seen) if seen else np.nan,
             "n_novel_cells": len(nxt - seen),
@@ -240,13 +314,13 @@ def main():
     print(f"\nmean recall    {cov['recall'].mean():.4f}  "
           f"(share of next month's cells already seen)")
     print(f"mean precision {cov['precision'].mean():.4f}  "
-          f"(share of seen cells that are active next month)")
+          f"(share of seen cells active next month)")
     print(f"mean novel cells per month: {cov['n_novel_cells'].mean():.1f}")
-    print(f"prior keeps {cov['n_seen_by_t'].mean():.0f} of {grid} cells on "
-          f"average ({100 * cov['search_space_reduction'].mean():.2f}% removed)")
-    print("\nread: high recall with low precision is the expected shape. It means")
-    print("      the static prior prunes hard but does not rank -- exactly what")
-    print("      the frontier null result (r = -0.406) predicted.")
+    print(f"prior keeps {cov['n_seen_by_t'].mean():.0f} of {grid} cells "
+          f"({100 * cov['search_space_reduction'].mean():.2f}% removed)")
+    print("\nread: high recall with low precision is the expected shape -- the")
+    print("      static prior prunes hard but does not rank, which is what the")
+    print("      frontier null result (r = -0.406) predicted.")
 
     # ========================================================================
     # C. position hierarchy
@@ -256,29 +330,25 @@ def main():
     print("   residues appearing there at t+1?)")
     print("=" * 72)
 
-    pos_hist_months = defaultdict(int)     # months in which the position mutated
-    pos_hist_res = defaultdict(set)        # residues the position has admitted
+    pos_hist_months = defaultdict(int)
+    pos_hist_res = defaultdict(set)
     pos_last_seen = {}
     prows = []
+    seen_by_t = set()
 
     for t in range(T - 1):
         for p, r in cells[names[t]]:
             pos_hist_months[p] += 1
             pos_hist_res[p].add(r)
             pos_last_seen[p] = t
+        seen_by_t |= cells[names[t]]
 
         if t < args.min_train:
             continue
-
-        seen_by_t = set()
-        for j in range(t + 1):
-            seen_by_t |= cells[names[j]]
         seen_pos = sorted({p for p, _ in seen_by_t})
         if len(seen_pos) < 10:
             continue
 
-        # target: does this position carry a residue at t+1 that it has NOT
-        # carried before? that is the position producing something new
         nxt = cells[names[t + 1]]
         new_by_pos = defaultdict(set)
         for p, r in nxt:
@@ -300,9 +370,8 @@ def main():
                          ("recency", recency)]:
             apv = average_precision(y, s)
             prows.append({
-                "month_t": names[t], "score": sname,
-                "ap": apv, "base_rate": base,
-                "lift": apv / base if base > 0 else np.nan,
+                "month_t": names[t], "score": sname, "ap": apv,
+                "base_rate": base, "lift": apv / base if base > 0 else np.nan,
                 "n_positions": len(seen_pos), "n_pos_new": int(y.sum()),
             })
 
@@ -310,24 +379,23 @@ def main():
     ph.to_csv(f"{args.out_dir}/59_position_hier.csv", index=False)
     if len(ph):
         g = ph.groupby("score").agg(
-            ap=("ap", "mean"), lift=("lift", "mean"),
-            base=("base_rate", "mean"), n_positions=("n_positions", "mean"),
-            n_new=("n_pos_new", "mean"), origins=("ap", "count"),
+            ap=("ap", "mean"), lift=("lift", "mean"), base=("base_rate", "mean"),
+            n_positions=("n_positions", "mean"), n_new=("n_pos_new", "mean"),
+            origins=("ap", "count"),
         ).reset_index().sort_values("ap", ascending=False)
         print(g.round(4).to_string(index=False))
         print("\nread: lift near 1 for every score means position history does not")
-        print("      say where novelty appears, and the hierarchy prunes only.")
-        print("      lift well above 1 means positions carry a usable rate.")
+        print("      say where novelty appears -- the hierarchy prunes only.")
 
     # ========================================================================
     # D. residue given position
     # ========================================================================
     print("\n" + "=" * 72)
-    print("D. RESIDUE GIVEN POSITION  (given a position produces something new,")
+    print("D. RESIDUE GIVEN POSITION  (given a position produces novelty,")
     print("   is WHICH residue predictable?)")
     print("=" * 72)
 
-    res_global = defaultdict(int)          # how often each residue is used anywhere
+    res_global = defaultdict(int)
     pos_res_hist = defaultdict(set)
     rrows = []
 
@@ -335,7 +403,6 @@ def main():
         for p, r in cells[names[t]]:
             pos_res_hist[p].add(r)
             res_global[r] += 1
-
         if t < args.min_train:
             continue
 
@@ -343,9 +410,12 @@ def main():
         ys, s_uniform, s_global = [], [], []
         gtot = sum(res_global.values()) or 1
         n_events = 0
-        for p in sorted({p for p, _ in nxt}):
+        by_pos = defaultdict(set)
+        for p, r in nxt:
+            by_pos[p].add(r)
+        for p in sorted(by_pos):
             known = pos_res_hist.get(p, set())
-            new_res = {r for q, r in nxt if q == p} - known
+            new_res = by_pos[p] - known
             if not new_res:
                 continue
             n_events += 1
@@ -373,15 +443,14 @@ def main():
     rh.to_csv(f"{args.out_dir}/59_residue_hier.csv", index=False)
     if len(rh):
         g2 = rh.groupby("score").agg(
-            ap=("ap", "mean"), lift=("lift", "mean"),
-            base=("base_rate", "mean"), n_candidates=("n_candidates", "mean"),
-            origins=("ap", "count"),
+            ap=("ap", "mean"), lift=("lift", "mean"), base=("base_rate", "mean"),
+            n_candidates=("n_candidates", "mean"), origins=("ap", "count"),
         ).reset_index().sort_values("ap", ascending=False)
         print(g2.round(4).to_string(index=False))
-        print("\nread: if global residue frequency has lift ~1, the second level of")
-        print("      the hierarchy carries nothing and knowing the position still")
-        print("      leaves ~19 equally likely choices. That would put the whole")
-        print("      burden of ranking on the background-conditional term.")
+        print("\nread: lift ~1 for global residue frequency means the second level")
+        print("      of the hierarchy carries nothing -- knowing the position still")
+        print("      leaves ~19 near-equal choices, putting the whole ranking")
+        print("      burden on the background-conditional term.")
 
     print(f"\nwrote 4 files to {args.out_dir}/")
 
