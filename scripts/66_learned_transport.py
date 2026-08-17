@@ -198,30 +198,30 @@ def build_graph(occ_t, prev_occ, rho_t, PMI, lab_index, max_sets,
                               targets)
 
 
-def pushforward(a, gfeat, edges, w_cost, w_growth, target_ids, n_targets):
+def pushforward(G, w_cost, w_growth):
     """
     Predicted mass per target set. Softmax over each source's outgoing edges of
     -cost, weighted by the source's mass times its growth multiplier.
+    All inputs are pre-built torch tensors held on the graph dict.
     """
-    src, feat, _ = edges
-    cost = feat @ w_cost
-    src_t = torch.from_numpy(src).long()
+    n_src = G["a_t"].shape[0]
+    src_t = G["src_t"]
+    neg = -(G["feat_t"] @ w_cost)
 
-    # per-source softmax over -cost, done with scatter reductions
-    neg = -cost
-    mx = torch.full((len(a),), -1e30, dtype=neg.dtype)
+    # per-source softmax over -cost, via scatter reductions
+    mx = torch.full((n_src,), -1e30, dtype=neg.dtype)
     mx = mx.scatter_reduce(0, src_t, neg, reduce="amax", include_self=True)
     ex = torch.exp(neg - mx[src_t])
-    den = torch.zeros(len(a), dtype=ex.dtype).scatter_add(0, src_t, ex)
+    den = torch.zeros(n_src, dtype=ex.dtype).scatter_add(0, src_t, ex)
     p = ex / den[src_t].clamp(min=1e-30)
 
-    g = torch.exp(torch.from_numpy(gfeat).float() @ w_growth)
-    at = torch.from_numpy(a).float() * g
+    g = torch.exp(G["gfeat_t"] @ w_growth)
+    at = G["a_t"] * g
     at = at / at.sum().clamp(min=1e-30)
 
     contrib = at[src_t] * p
-    out = torch.zeros(n_targets, dtype=contrib.dtype)
-    out = out.scatter_add(0, torch.from_numpy(target_ids).long(), contrib)
+    out = torch.zeros(G["n_targets"], dtype=contrib.dtype)
+    out = out.scatter_add(0, G["tid_t"], contrib)
     return out / out.sum().clamp(min=1e-30)
 
 
@@ -322,10 +322,36 @@ def main():
             if x in tgt_id:
                 obs[tgt_id[x]] += wv / ntot
                 reach_mass += wv / ntot
-        graphs[t] = dict(sources=sources, a=a, gfeat=gfeat, edges=edges,
-                         target_ids=target_ids, tgt_list=tgt_list, obs=obs,
-                         reach_mass=reach_mass, lab_index=lab_index,
-                         n_targets=len(tgt_list))
+        # label-marginal mapping, as index arrays rather than a dense matrix
+        # (this used to be rebuilt inside the loss on every epoch)
+        t_rows, l_cols = [], []
+        for i, x in enumerate(tgt_list):
+            for l in x:
+                if l in lab_index:
+                    t_rows.append(i)
+                    l_cols.append(lab_index[l])
+        om = np.zeros(len(lab_index), dtype=np.float32)
+        for l, v in rho[names[t + 1]].items():
+            if l in lab_index:
+                om[lab_index[l]] = v
+
+        graphs[t] = dict(
+            sources=sources, a=a, gfeat=gfeat, edges=edges,
+            target_ids=target_ids, tgt_list=tgt_list, obs=obs,
+            reach_mass=reach_mass, lab_index=lab_index,
+            n_targets=len(tgt_list),
+            # pre-built tensors
+            a_t=torch.from_numpy(a).float(),
+            gfeat_t=torch.from_numpy(gfeat).float(),
+            feat_t=torch.from_numpy(edges[1]).float(),
+            src_t=torch.from_numpy(edges[0]).long(),
+            tid_t=torch.from_numpy(target_ids).long(),
+            obs_t=torch.from_numpy(obs).float(),
+            marg_rows=torch.from_numpy(np.array(t_rows, dtype=np.int64)),
+            marg_cols=torch.from_numpy(np.array(l_cols, dtype=np.int64)),
+            om_t=torch.from_numpy(om).float(),
+            n_labels=len(lab_index),
+        )
         if t % 10 == 0:
             print(f"  {m_t}: {len(sources)} sources, {len(edges[0])} edges, "
                   f"{len(tgt_list)} candidate targets, "
@@ -352,24 +378,12 @@ def main():
 
     def loss_at(t):
         G = graphs[t]
-        pred = pushforward(G["a"], G["gfeat"], G["edges"], w_cost, w_growth,
-                           G["target_ids"], G["n_targets"])
-        obs = torch.from_numpy(G["obs"])
-        nll = -(obs * torch.log(pred.clamp(min=1e-12))).sum()
-        # label marginals implied by the pushforward vs observed
-        li = G["lab_index"]
-        M = torch.zeros(len(G["tgt_list"]), len(li))
-        for i, x in enumerate(G["tgt_list"]):
-            for l in x:
-                if l in li:
-                    M[i, li[l]] = 1.0
-        pm = pred @ M
-        om = torch.zeros(len(li))
-        nx = rho[names[t + 1]]
-        for l, v in nx.items():
-            if l in li:
-                om[li[l]] = v
-        marg = ((pm - om) ** 2).sum()
+        pred = pushforward(G, w_cost, w_growth)
+        nll = -(G["obs_t"] * torch.log(pred.clamp(min=1e-12))).sum()
+        # label marginals implied by the pushforward, vs the observed ones
+        pm = torch.zeros(G["n_labels"], dtype=pred.dtype).index_add(
+            0, G["marg_cols"], pred[G["marg_rows"]])
+        marg = ((pm - G["om_t"]) ** 2).sum()
         return nll + args.lam_marg * marg
 
     for ep in range(args.epochs):
@@ -417,8 +431,7 @@ def main():
         }
         for nm, (wcv, wgv) in variants.items():
             with torch.no_grad():
-                pred = pushforward(G["a"], G["gfeat"], G["edges"], wcv, wgv,
-                                   G["target_ids"], G["n_targets"]).numpy()
+                pred = pushforward(G, wcv, wgv).numpy()
             obs = G["obs"]
             nll = float(-(obs * np.log(np.clip(pred, 1e-12, None))).sum())
             keep = pred > (1.0 / 5000.0)
