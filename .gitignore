@@ -27,3 +27,6 @@ evaluation_results*
 processed_data.zip
 outputs/
 data/processed/full_data_graphs_posres/
+outputs/*.pkl
+outputs/*.png
+data/
