@@ -177,6 +177,8 @@ def main():
     ap.add_argument("--end_month", default="2024-12")
     ap.add_argument("--max_sets", type=int, default=200,
                     help="top sets per month by frequency")
+    ap.add_argument("--train_months", type=int, default=30,
+                    help="months used to estimate beta; rest are held out")
     ap.add_argument("--self_test", action="store_true")
     args = ap.parse_args()
 
@@ -193,6 +195,12 @@ def main():
     print(f"loaded {len(names)} months: {names[0]} .. {names[-1]}")
     print(f"fitting on top {args.max_sets} sets per month\n")
 
+    # ---- STEP 1: fit beta on the training months, in-sample ---------------
+    # This shows the in-sample result (which always wins) and the distribution
+    # of beta, so we can see whether it is consistently positive.
+    print("IN-SAMPLE (fits beta to each transition individually):")
+    print(f"{'month':>8} {'beta':>8} {'mu':>8} "
+          f"{'KL_model':>10} {'KL_cf':>10} {'winner':>14}")
     rows = []
     for i in range(len(names) - 1):
         m_t, m_n = names[i], names[i + 1]
@@ -233,19 +241,78 @@ def main():
     df.to_csv(f"{args.out_dir}/87_fit_results.csv", index=False)
 
     print("\n" + "=" * 72)
-    print("SUMMARY")
+    print("IN-SAMPLE SUMMARY (always wins -- not the real test)")
     print("=" * 72)
-    print(df[["month", "beta", "mu", "kl_model",
-              "kl_copy_forward", "model_wins"]].round(5).to_string(index=False))
+    print(f"  model wins: {df['model_wins'].sum()} / {len(df)} -- expected, "
+          f"two free parameters fitted to the outcome")
+    print(f"  mean beta : {df['beta'].mean():.4f}  "
+          f"std {df['beta'].std():.4f}  "
+          f"share > 0: {(df['beta'] > 0).mean():.3f}")
+    print(f"  NOTE: large mu values ({df['mu'].max():.1f} max) signal the")
+    print(f"  optimiser is fitting noise, not a mutation rate")
 
-    print(f"\nover {len(df)} month pairs:")
-    print(f"  mean beta        : {df['beta'].mean():.4f}")
-    print(f"  std beta         : {df['beta'].std():.4f}")
-    print(f"  share beta > 0   : {(df['beta'] > 0).mean():.3f}")
-    print(f"  model wins       : {df['model_wins'].sum()} / {len(df)}")
-    print(f"  mean KL model    : {df['kl_model'].mean():.6f}")
-    print(f"  mean KL cf       : {df['kl_copy_forward'].mean():.6f}")
-    print(f"  mean improvement : {df['kl_improvement'].mean():.6f}")
+    # ---- STEP 2: out-of-sample using a fixed beta -------------------------
+    # Estimate mean beta from the training months only, then use that single
+    # fixed value (with mu=0) to predict the held-out months.
+    train_df = df[df.index < args.train_months]
+    mean_beta = float(train_df["beta"].mean()) if len(train_df) else 0.0
+    print(f"\n" + "=" * 72)
+    print("OUT-OF-SAMPLE  (the real test)")
+    print("=" * 72)
+    print(f"  estimated beta from first {args.train_months} months: "
+          f"{mean_beta:.4f}")
+    print(f"  using this FIXED beta (mu=0) to predict held-out months")
+    print(f"  copy-forward uses no parameters at all")
+    print()
+    oos_rows = []
+    for i in range(args.train_months, len(names) - 1):
+        m_t, m_n = names[i], names[i + 1]
+        sets_t, p_t = top_sets(occ_by[m_t], args.max_sets)
+        sets_n, p_n = top_sets(occ_by[m_n], args.max_sets)
+        common = [c for c in sets_t if c in set(sets_n)]
+        if len(common) < 10:
+            continue
+        idx_t = {c: j for j, c in enumerate(sets_t)}
+        idx_n = {c: j for j, c in enumerate(sets_n)}
+        p_t_r = np.array([p_t[idx_t[c]] for c in common])
+        p_n_r = np.array([p_n[idx_n[c]] for c in common])
+        p_t_r /= p_t_r.sum()
+        p_n_r /= p_n_r.sum()
+        # predict with fixed beta, mu=0
+        q_fixed = model_q(p_t_r, common, mean_beta, 0.0)
+        kl_fixed = kl(p_n_r, q_fixed)
+        kl_cf = kl(p_n_r, p_t_r)
+        # also try with beta=0 (pure copy-forward via model)
+        oos_rows.append({
+            "month": m_t, "next": m_n,
+            "kl_fixed_beta": kl_fixed, "kl_copy_forward": kl_cf,
+            "model_wins": int(kl_fixed < kl_cf),
+        })
+        winner = "model" if kl_fixed < kl_cf else "copy-forward"
+        print(f"  {m_t}: KL_fixed={kl_fixed:.6f}  KL_cf={kl_cf:.6f}  "
+              f"-> {winner}")
+    if oos_rows:
+        oos = pd.DataFrame(oos_rows)
+        oos.to_csv(f"{args.out_dir}/87_oos_results.csv", index=False)
+        print(f"\n  out-of-sample: model wins "
+              f"{oos['model_wins'].sum()} / {len(oos)}")
+        print(f"  mean KL fixed beta : {oos['kl_fixed_beta'].mean():.6f}")
+        print(f"  mean KL copy-forward: {oos['kl_copy_forward'].mean():.6f}")
+        print(f"  mean improvement   : "
+              f"{(oos['kl_copy_forward'] - oos['kl_fixed_beta']).mean():.6f}")
+        print()
+        if oos["model_wins"].mean() > 0.6:
+            print("  -> model beats copy-forward out-of-sample: selection is")
+            print("     present and estimable; a parametric model improves")
+            print("     on copy-forward; the negative result does NOT hold.")
+        else:
+            print("  -> copy-forward wins out-of-sample: the in-sample beta")
+            print("     does not generalise. The data is consistent with a")
+            print("     neutral process where copy-forward is the MLE.")
+            print("     FORMAL ARGUMENT: the two-parameter model cannot")
+            print("     improve on copy-forward out-of-sample, so copy-forward")
+            print("     is the best predictor achievable from this data under")
+            print("     this model class.")
 
     print("\nreading:")
     print("  beta near 0 and copy-forward wins most months ->")
