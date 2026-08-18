@@ -113,52 +113,67 @@ def load_months(data_dir, min_count, start_month=None, end_month=None):
 # recombination test
 # ----------------------------------------------------------------------------
 
-def is_recombinant(c, circulating_sets, idx2pos, min_each_side=2):
+def is_recombinant(c, circulating_sets, idx2pos, min_each_side=5,
+                   min_parent_distance=10):
     """
     Test whether set c could be a recombinant of two circulating parents.
 
     For each possible breakpoint (a position value between consecutive
     positions in c), split c into left and right halves and check whether
-    some circulating set contains the left half and some circulating set
-    contains the right half.
+    some circulating set A contains the left half and some circulating set
+    B contains the right half, where A and B are genuinely distinct
+    (edit distance >= min_parent_distance).
 
-    min_each_side: minimum number of mutations required on each side of
-    the breakpoint for the test to be meaningful. This prevents trivially
-    splitting off one mutation and calling it recombination.
+    min_each_side: minimum mutations required on each side of the breakpoint.
+    min_parent_distance: minimum number of mutations by which the two parents
+        must differ from each other. This prevents spurious detection when
+        the same mutations appear in many overlapping sets.
 
     Returns (is_recomb, breakpoint, left_parent_size, right_parent_size)
     """
     if len(c) < 2 * min_each_side:
         return False, None, None, None
 
-    # sort mutations by position
     muts_by_pos = sorted(c, key=lambda m: idx2pos.get(m, 0))
     positions = [idx2pos.get(m, 0) for m in muts_by_pos]
-
-    # build a lookup: for each circulating set, its mutation set
     circ = list(circulating_sets)
 
-    # try each breakpoint between consecutive positions
     for split in range(min_each_side, len(muts_by_pos) - min_each_side + 1):
         left = frozenset(muts_by_pos[:split])
         right = frozenset(muts_by_pos[split:])
         bp = positions[split]
 
-        left_found = any(left <= s for s in circ)
-        if not left_found:
+        left_parents = [s for s in circ if left <= s]
+        if not left_parents:
             continue
-        right_found = any(right <= s for s in circ)
-        if right_found:
-            # find sizes of matching parents for reporting
-            lp = min((len(s) for s in circ if left <= s), default=None)
-            rp = min((len(s) for s in circ if right <= s), default=None)
+        right_parents = [s for s in circ if right <= s]
+        if not right_parents:
+            continue
+
+        # require the two parents to be genuinely distinct
+        found_distinct = False
+        for lpar in left_parents:
+            for rpar in right_parents:
+                if lpar is rpar:
+                    continue
+                # edit distance = symmetric difference
+                dist = len(lpar ^ rpar)
+                if dist >= min_parent_distance:
+                    found_distinct = True
+                    break
+            if found_distinct:
+                break
+
+        if found_distinct:
+            lp = min(len(s) for s in left_parents)
+            rp = min(len(s) for s in right_parents)
             return True, bp, lp, rp
 
     return False, None, None, None
 
 
 def classify_new_sets(occ_t, occ_next, ever_sets, ever_mut, idx2pos,
-                      min_each_side=2):
+                      min_each_side=5, min_parent_distance=10):
     """
     For each set present in occ_next but absent in occ_t, classify it as:
       one_step: one mutation added to a set in occ_t
@@ -195,7 +210,8 @@ def classify_new_sets(occ_t, occ_next, ever_sets, ever_mut, idx2pos,
             group = "unaccounted"
 
         # test recombination
-        is_rec, bp, lp, rp = is_recombinant(c, A, idx2pos, min_each_side)
+        is_rec, bp, lp, rp = is_recombinant(c, A, idx2pos, min_each_side,
+                                              min_parent_distance)
 
         results.append({
             "set_size": len(c),
@@ -228,24 +244,35 @@ def self_test():
 
     # recombinant: left half from A, right half from B
     c = frozenset({1, 2, 3, 7, 8, 9})
-    is_rec, bp, lp, rp = is_recombinant(c, circulating, idx2pos,
-                                         min_each_side=2)
+    # need larger parents that are genuinely different
+    A2 = frozenset(range(1, 16))    # positions 1-15
+    B2 = frozenset(range(6, 21))    # positions 6-20  (distinct by 10)
+    circ2 = {A2, B2}
+    idx2pos2 = {i: i for i in range(1, 21)}
+    # recombinant: left from A2 (pos 1-5), right from B2 (pos 11-15)
+    c_rec = frozenset(list(range(1, 6)) + list(range(11, 16)))
+    is_rec, bp, lp, rp = is_recombinant(c_rec, circ2, idx2pos2,
+                                          min_each_side=5,
+                                          min_parent_distance=10)
     assert is_rec, f"expected recombinant, got {is_rec}"
     print(f"  known recombinant detected, breakpoint at position {bp}  ok")
 
-    # non-recombinant: mutations scattered with no clean split
-    c2 = frozenset({1, 3, 5, 7, 9})
-    is_rec2, _, _, _ = is_recombinant(c2, {frozenset({1, 2, 3, 4, 5, 6})},
-                                       idx2pos, min_each_side=2)
-    # this should NOT be detected since right half {7,9} has no parent
-    assert not is_rec2, f"false positive: {is_rec2}"
-    print("  non-recombinant correctly rejected                 ok")
+    # same split but parents too similar (distance < 10)
+    A3 = frozenset(range(1, 16))
+    B3 = frozenset(range(1, 16)) - {15} | {16}  # distance 2 from A3
+    circ3 = {A3, B3}
+    is_rec3, _, _, _ = is_recombinant(c_rec, circ3, idx2pos2,
+                                       min_each_side=5,
+                                       min_parent_distance=10)
+    assert not is_rec3, f"parents too similar should be rejected: {is_rec3}"
+    print("  too-similar parents correctly rejected             ok")
 
     # too small: fewer than 2*min_each_side mutations
-    c3 = frozenset({1, 2, 3})
-    is_rec3, _, _, _ = is_recombinant(c3, circulating, idx2pos,
-                                       min_each_side=2)
-    assert not is_rec3
+    c_small = frozenset({1, 2, 3})
+    is_rec_s, _, _, _ = is_recombinant(c_small, circ2, idx2pos2,
+                                        min_each_side=5,
+                                        min_parent_distance=10)
+    assert not is_rec_s
     print("  set too small correctly skipped                    ok")
 
     print("all checks passed\n")
@@ -263,8 +290,10 @@ def main():
     ap.add_argument("--min_count", type=int, default=3)
     ap.add_argument("--start_month", default=None)
     ap.add_argument("--end_month", default="2024-12")
-    ap.add_argument("--min_each_side", type=int, default=2,
+    ap.add_argument("--min_each_side", type=int, default=5,
                     help="minimum mutations on each side of breakpoint")
+    ap.add_argument("--min_parent_distance", type=int, default=10,
+                    help="minimum edit distance between the two parents")
     ap.add_argument("--max_sets", type=int, default=800,
                     help="top sets per month to use as circulating parents")
     ap.add_argument("--self_test", action="store_true")
@@ -296,7 +325,8 @@ def main():
         occ_n = occ_by[m_n]
 
         results = classify_new_sets(occ_t, occ_n, ever_sets, ever_mut,
-                                    idx2pos, args.min_each_side)
+                                    idx2pos, args.min_each_side,
+                                    args.min_parent_distance)
 
         for r in results:
             r["month"] = m_t
