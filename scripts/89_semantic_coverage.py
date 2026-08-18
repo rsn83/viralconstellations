@@ -122,8 +122,13 @@ def load_months(data_dir, min_count, start_month=None, end_month=None):
 # ----------------------------------------------------------------------------
 
 def set_emb(s, F, pr2idx, pc_cols):
-    """Mean of per-mutation dir_pc vectors, unit-normalised."""
-    vecs = [F[pr2idx[m], pc_cols] for m in s if m in pr2idx]
+    """Mean of per-mutation dir_pc vectors, unit-normalised.
+    Labels are integers (node indices) -- index F directly."""
+    vecs = []
+    for m in s:
+        idx = int(m) if isinstance(m, (int, np.integer)) else pr2idx.get(m)
+        if idx is not None and 0 <= idx < F.shape[0]:
+            vecs.append(F[idx, pc_cols])
     if not vecs:
         return None
     v = np.mean(vecs, axis=0)
@@ -138,23 +143,29 @@ def cosine_dist(a, b):
 
 
 def grammar(s, F, pr2idx, llr_col):
-    vals = [float(F[pr2idx[m], llr_col]) for m in s if m in pr2idx]
+    vals = []
+    for m in s:
+        idx = int(m) if isinstance(m, (int, np.integer)) else pr2idx.get(m)
+        if idx is not None and 0 <= idx < F.shape[0]:
+            vals.append(float(F[idx, llr_col]))
     return float(np.mean(vals)) if vals else 0.0
 
 
 def dominant_emb(occ, F, pr2idx, pc_cols, top_n=50):
     """
-    Embedding of the dominant cluster: weighted mean of top-N sets' embeddings,
-    weighted by frequency.
+    Embedding of the dominant cluster: weighted mean of top-N sets embeddings,
+    weighted by frequency. Labels are integer node indices.
     """
     items = sorted(occ.items(), key=lambda kv: -kv[1])[:top_n]
     tot = sum(w for _, w in items)
+    if tot == 0:
+        return None
     acc = None
     for s, w in items:
         e = set_emb(s, F, pr2idx, pc_cols)
         if e is None:
             continue
-        acc = e * w / tot if acc is None else acc + e * w / tot
+        acc = e * (w / tot) if acc is None else acc + e * (w / tot)
     if acc is None:
         return None
     n = np.linalg.norm(acc)
@@ -266,13 +277,13 @@ def main():
         n_tested = 0
         for cs, w in top_sets:
             freq = w / tot
-            for mut, midx in pr2idx.items():
-                if mut in cs:
+            for midx in range(F.shape[0]):
+                if midx in cs:
                     continue
                 llr = float(F[midx, llr_col])
                 if llr < args.grammar_threshold:
                     continue
-                new_set = frozenset(cs | {mut})
+                new_set = frozenset(cs | {midx})
                 e = set_emb(new_set, F, pr2idx, pc_cols)
                 if e is None:
                     continue
