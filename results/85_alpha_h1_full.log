@@ -1,0 +1,95 @@
+reference length L = 1273   vocab nodes = 1,180
+
+loading train months 2020-03 .. 2020-12
+  2020-03: 255 unique sets, 20,722 sequences
+  2020-04: 423 unique sets, 30,578 sequences
+  2020-05: 332 unique sets, 17,196 sequences
+  2020-06: 308 unique sets, 16,822 sequences
+  2020-07: 352 unique sets, 19,947 sequences
+  2020-08: 446 unique sets, 21,722 sequences
+  2020-09: 562 unique sets, 31,576 sequences
+  2020-10: 988 unique sets, 53,584 sequences
+  2020-11: 1,304 unique sets, 66,661 sequences
+  2020-12: 1,953 unique sets, 84,318 sequences
+
+loading test month(s) ['2021-01']
+  3,300 sets kept, 0 skipped (unmapped node / non-AA residue)
+
+fitting M0  profile HMM (no prior) ...
+    MSA rows: 363,126 (from 363,126 sequences)
+fitting M0' profile HMM (laplace prior) ...
+    MSA rows: 363,126 (from 363,126 sequences)
+fitting M1a intercept-only logistic ...
+fitting M1b time-varying logistic ...
+    logistic-time iter 100/3000  LL/residue = -0.003207
+    logistic-time iter 200/3000  LL/residue = -0.003180
+    logistic-time iter 300/3000  LL/residue = -0.003168
+    logistic-time iter 400/3000  LL/residue = -0.003162
+    logistic-time iter 500/3000  LL/residue = -0.003158
+    logistic-time iter 600/3000  LL/residue = -0.003155
+    logistic-time iter 700/3000  LL/residue = -0.003153
+    logistic-time iter 800/3000  LL/residue = -0.003152
+    logistic-time iter 900/3000  LL/residue = -0.003151
+    logistic-time iter 1000/3000  LL/residue = -0.003150
+    logistic-time iter 1100/3000  LL/residue = -0.003149
+    logistic-time iter 1200/3000  LL/residue = -0.003148
+    logistic-time iter 1300/3000  LL/residue = -0.003148
+    logistic-time iter 1400/3000  LL/residue = -0.003147
+    logistic-time iter 1500/3000  LL/residue = -0.003147
+    logistic-time iter 1600/3000  LL/residue = -0.003146
+    logistic-time iter 1700/3000  LL/residue = -0.003146
+    logistic-time iter 1800/3000  LL/residue = -0.003146
+    logistic-time iter 1900/3000  LL/residue = -0.003145
+    logistic-time iter 2000/3000  LL/residue = -0.003145
+    logistic-time iter 2100/3000  LL/residue = -0.003145
+    logistic-time iter 2200/3000  LL/residue = -0.003145
+    logistic-time iter 2300/3000  LL/residue = -0.003145
+    logistic-time iter 2400/3000  LL/residue = -0.003144
+    logistic-time iter 2500/3000  LL/residue = -0.003144
+    logistic-time iter 2600/3000  LL/residue = -0.003144
+    logistic-time iter 2700/3000  LL/residue = -0.003144
+    logistic-time iter 2800/3000  LL/residue = -0.003144
+    logistic-time iter 2900/3000  LL/residue = -0.003143
+    logistic-time iter 3000/3000  LL/residue = -0.003143
+
+====================================================================
+(A) PER-POSITION:  total variation distance between emission models
+====================================================================
+comparison                               mean TVD    max TVD    >0.01
+HMM(ML)     vs logistic(intercept)       0.000000   0.000000        0
+HMM(laplace) vs logistic(+1 pseudo)      0.000000   0.000000        0
+HMM(ML)     vs logistic(time@test)       0.003611   0.612042       21
+
+====================================================================
+(B) FULL-SEQUENCE:  held-out ['2021-01'], 142,009 sequences
+====================================================================
+model                          mean LL/seq   per-res ppl
+M0  profile HMM (laplace)          -12.369       1.00976
+M1a logistic (intercept)           -12.369       1.00976
+M1b logistic (+time)                -9.078       1.00716
+
+rank correlation of per-sequence log-likelihood (Spearman):
+  M0  profile HMM (laplace)    vs M1a logistic (intercept)     rho = 1.000000
+  M0  profile HMM (laplace)    vs M1b logistic (+time)         rho = 0.508784
+  M1a logistic (intercept)     vs M1b logistic (+time)         rho = 0.508784
+
+saved -> results/85_alpha_h1_full.npz
+
+INTERPRETATION
+  Row 1 of (A) should be ~0 to machine precision. That IS the degeneracy:
+  with a fixed reference and no indels, the profile HMM's match emissions
+  are exactly the per-position empirical frequencies, i.e. an intercept-only
+  multinomial logistic. Any nonzero value means the loader introduced gaps
+  or the MSA is not gapless -- investigate before proceeding.
+
+  Row 2 isolates HMMER's Dirichlet prior as the only thing distinguishing
+  the two implementations.
+
+  In (B), all sequences have identical length L, so the HMMER null-model
+  score is constant across sequences and bit-score ranking equals
+  log-likelihood ranking. Spearman rho(M0, M1a) ~ 1.0 confirms the two
+  models induce the same ordering on held-out data.
+
+  M1b is the only model with a time term. Whatever it gains over M1a is
+  what a time covariate buys you -- and the profile HMM cannot express it.
+
