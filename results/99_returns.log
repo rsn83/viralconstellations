@@ -1,0 +1,81 @@
+V = 1,180   months 2020-06..2024-12 (55)   lookback = 5
+
+loading months ...
+  365,876 (month, constellation) observations
+
+candidate rows 1,122,917   returns 23,656 (2.11%)
+train months 0..35  814,152 rows, 18,109 returns
+test  months 36..     308,765 rows, 5,547 returns
+
+==============================================================
+FITTED WEIGHTS
+==============================================================
+  months_gone         -1.245  ######################
+  mean_node_freq      +0.767  #############
+  set_size            -0.622  ###########
+  last_freq           +0.452  ########
+  n_appearances       +0.095  #
+  peak_freq           +0.052  
+  min_node_freq       +0.049  
+  total_span          -0.021  
+  frac_nodes_live     +0.005  
+
+==============================================================
+HELD-OUT RANKING   base rate 1.80%
+==============================================================
+
+  FULL MODEL (9 features)
+       k   hits   precision    recall    lift
+      10      0        0.0%      0.0%    0.0x
+      50      3        6.0%      0.1%    3.3x
+     100      7        7.0%      0.1%    3.9x
+     500     48        9.6%      0.9%    5.3x
+
+  BASELINE -- frequency when last seen
+       k   hits   precision    recall    lift
+      10      0        0.0%      0.0%    0.0x
+      50      4        8.0%      0.1%    4.5x
+     100      7        7.0%      0.1%    3.9x
+     500     41        8.2%      0.7%    4.6x
+
+  RECENCY ONLY -- months_gone (negated)
+       k   hits   precision    recall    lift
+      10      0        0.0%      0.0%    0.0x
+      50      0        0.0%      0.0%    0.0x
+     100      1        1.0%      0.0%    0.6x
+     500     28        5.6%      0.5%    3.1x
+
+  HISTORY ONLY -- no current-month information
+       k   hits   precision    recall    lift
+      10      0        0.0%      0.0%    0.0x
+      50      3        6.0%      0.1%    3.3x
+     100      7        7.0%      0.1%    3.9x
+     500     48        9.6%      0.9%    5.3x
+
+  CURRENT ONLY -- are its mutations circulating now?
+       k   hits   precision    recall    lift
+      10      3       30.0%      0.1%   16.7x
+      50      9       18.0%      0.2%   10.0x
+     100     17       17.0%      0.3%    9.5x
+     500     44        8.8%      0.8%    4.9x
+
+
+HOW TO READ
+  The base rate here is far higher than the 0.1% of the birth task, because the
+  candidate pool is small -- only constellations seen in the last few months.
+  That makes this an easier problem, which is the point: it is the fraction the
+  18 August breakdown left untested.
+
+  The comparison that matters is FULL vs BASELINE (frequency when last seen).
+  If the full model does not clearly beat it, then how long a constellation has
+  been gone adds nothing over how common it was, and the finite-sites finding
+  stays descriptive.
+
+  RECENCY ONLY is the sharpest version of the same question: does time-since-
+  disappearance alone rank returns above chance?
+
+  HISTORY vs CURRENT separates two stories. History winning means a
+  constellation's own past predicts its return. Current winning means what
+  matters is whether its mutations are still circulating in other backgrounds --
+  a recombination story rather than a revival one.
+

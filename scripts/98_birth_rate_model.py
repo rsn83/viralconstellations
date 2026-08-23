@@ -140,6 +140,8 @@ def make_features(t, F, theta, Pi_t, pos, V, K):
 
     n_groups = (theta > .5).sum(0).astype(float)        # (V,)
     parent_size = theta.sum(1)                          # (K,)
+    conv = np.array([1.0 if pos.get(n, -1) in CONVERGENT_ALL else 0.0
+                     for n in range(V)])                # (V,) the published list
 
     rows, meta = [], []
     for j in range(K):
@@ -155,15 +157,24 @@ def make_features(t, F, theta, Pi_t, pos, V, K):
             mut_by_pos / 20.0,                          # pos_mutability
             ever.astype(float),                         # ever_seen
             other,                                      # max_other_group
+            conv,                                       # convergent (published)
         ])
         rows.append(f)
         meta += [(j, n, in_par[n]) for n in range(V)]
     return np.vstack(rows), meta
 
 
+# Residues repeatedly acquired by unrelated lineages under immune selection.
+# Pre-Omicron recurrent set: K417, L452, E484, N501, P681 (Alpha/Beta/Gamma/Delta).
+# Omicron-era convergent set: R346, K444, N450, N460, F486, F490, Q493, S494.
+# Sources: Focosi & Casadevall, IJMS 2023 ("variant soup"); Focosi et al. 2022.
+CONVERGENT_EARLY = {417, 452, 484, 501, 681}
+CONVERGENT_OMICRON = {346, 444, 450, 460, 486, 490, 493, 494}
+CONVERGENT_ALL = CONVERGENT_EARLY | CONVERGENT_OMICRON
+
 FEATS = ["pi_parent", "parent_size", "log_freq", "months_since_seen",
          "hist_peak", "n_groups", "pos_mutability", "ever_seen",
-         "max_other_group"]
+         "max_other_group", "convergent"]
 
 
 # ---------------------------------------------------------------- group refit
@@ -374,6 +385,26 @@ def main():
     for k, hit, pr, rc in prec_recall_at_k(s_freq, y[te]):
         print(f"  {k:>6}{int(hit):>7}{pr:>12.2%}{rc:>10.1%}{pr/base:>8.0f}x")
 
+    # ---- CONTROL: the published convergent-residue list, ALONE ----
+    ci_conv = FEATS.index("convergent")
+    s_conv = X[te][:, ci_conv] + 1e-6 * np.random.default_rng(0).random(te.sum())
+    n_conv = int((X[te][:, ci_conv] > 0).sum())
+    print(f"\n  CONTROL -- PUBLISHED CONVERGENT-RESIDUE LIST, ALONE:")
+    print(f"  binary: is this mutation at 346/417/444/450/452/460/484/486/490/")
+    print(f"  493/494/501/681. No fitting, no data -- just the literature.")
+    print(f"  {n_conv:,} of {te.sum():,} test candidates ({n_conv/te.sum():.1%}) "
+          f"are at a convergent residue.")
+    for k, hit, pr, rc in prec_recall_at_k(s_conv, y[te]):
+        print(f"  {k:>6}{int(hit):>7}{pr:>12.2%}{rc:>10.1%}{pr/base:>8.0f}x")
+
+    # ---- and the model WITHOUT it, to see what the model adds ----
+    ni = [i for i in range(len(FEATS)) if i != ci_conv]
+    wn, bn, mun, sdn = fit_logistic(X[tr][:, ni], y[tr])
+    s_noconv = predict(X[te][:, ni], wn, bn, mun, sdn)
+    print(f"\n  CONTROL -- full model WITHOUT the convergent feature:")
+    for k, hit, pr, rc in prec_recall_at_k(s_noconv, y[te]):
+        print(f"  {k:>6}{int(hit):>7}{pr:>12.2%}{rc:>10.1%}{pr/base:>8.0f}x")
+
     # ---- CONTROL: group-only. No mutation-level information at all. ----
     gi = [FEATS.index(f) for f in ("pi_parent", "parent_size")]
     wg, bg, mug, sdg = fit_logistic(X[tr][:, gi], y[tr])
@@ -427,6 +458,17 @@ HOW TO READ
   Precision@k against the random baseline is the number that matters. AUC at a
   0.1% positive rate is misleading -- it can exceed 0.95 while the top 100
   candidates contain nothing.
+
+  THE DECISIVE COMPARISON is the full model against the PUBLISHED CONVERGENT-
+  RESIDUE LIST used alone. That list is a fixed set of positions taken from the
+  literature -- no fitting, no data. If it matches the full model, this work
+  rediscovers something already catalogued and the claim has to change. If the
+  full model clearly beats it, the model knows something the list does not:
+  which BACKGROUND acquires the mutation, and when.
+
+  Compare also the full model with and without the convergent feature. If
+  removing it costs nothing, the model was never using the published knowledge
+  and found the signal independently.
 
   READ THE CONTROLS FIRST. pi_parent and parent_size are constant within a
   group, so a model using only those ranks GROUPS, not mutations. If the
