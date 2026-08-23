@@ -85,17 +85,75 @@ def load_vocab_size(path):
 
 
 def load_pango(path):
-    """Optional TSV: sorted node ids joined by ',' -> lineage. Used ONLY for scoring."""
+    """TSV from script 87: 'n1,n2,n3<TAB>lineage<TAB>count<TAB>purity'.
+
+    Returns (label_map, meta_map) where meta_map[set] = (count, purity).
+    The purity column is the TRUE ceiling -- it was computed on the raw
+    metadata, before collapsing each set to its majority lineage. Recomputing
+    purity from the collapsed labels gives 1.0 and is meaningless.
+    """
     if not path or not Path(path).exists():
-        return None
-    m = {}
+        return None, None
+    lab, meta = {}, {}
     with open(path) as f:
         for line in f:
             parts = line.rstrip("\n").split("\t")
             if len(parts) < 2: continue
             key = frozenset(int(x) for x in parts[0].split(",") if x != "")
-            m[key] = parts[1]
-    return m
+            lab[key] = parts[1]
+            if len(parts) >= 4:
+                try: meta[key] = (float(parts[2]), float(parts[3]))
+                except ValueError: pass
+    return lab, meta
+
+
+def load_label_sets(specs):
+    """--labels name=path (repeatable) -> [(name, dict)]"""
+    out = []
+    for spec in specs:
+        name, _, path = spec.partition("=")
+        if not path:
+            name, path = Path(spec).stem, spec
+        d, meta = load_pango(path)
+        if d is None:
+            print(f"  [warn] label file not found, skipping: {path}", file=sys.stderr)
+            continue
+        if not meta:
+            print(f"  [warn] {path} has no purity column -- ceiling unavailable. "
+                  f"Regenerate with script 87.", file=sys.stderr)
+        out.append((name, d, meta))
+    return out
+
+
+def set_purity(sets_list, ws, labels, meta):
+    """CEILING: accuracy of the best classifier that sees only the mutation set.
+
+    Uses the per-set purity computed by script 87 on the RAW metadata, weighted
+    by this window's sequence counts. Do NOT recompute from `labels` -- those
+    are already majority-collapsed and would give a trivial 1.0.
+    """
+    if not meta:
+        return float("nan"), 0.0
+    num = den = 0.0
+    for t in range(len(sets_list)):
+        for i, s in enumerate(sets_list[t]):
+            if s not in labels or s not in meta: continue
+            _, pur = meta[s]
+            num += pur * ws[t][i]; den += ws[t][i]
+    return (num / den if den else float("nan")), den
+
+
+def block_purity(z, w, truth):
+    """ACHIEVED: assign each inferred block its majority label, weighted accuracy.
+    Directly comparable to set_purity -- same scale, fewer clusters (K << #sets)."""
+    from collections import Counter, defaultdict
+    agg = defaultdict(Counter)
+    for zi, wi, ti in zip(z, w, truth):
+        agg[zi][ti] += wi
+    num = den = 0.0
+    for c in agg.values():
+        num += c.most_common(1)[0][1]; den += sum(c.values())
+    return num / den if den else float("nan")
 
 
 def build_month_matrix(records, V):
@@ -186,7 +244,7 @@ def em_shared(Xs, ws, K, iters=300, tol=1e-6, seed=0, verbose=True, prior=0.5):
     return theta, Pi, ll
 
 
-def fit_A(Pi, weights=None, ridge=1e-3):
+def fit_A(Pi, weights=None, ridge=1.0, shrink=0.0):
     """M-C: least-squares A with pi_t A ~ pi_{t+1}, rows on the simplex.
     Weighted by sqrt(monthly sequence count) so thin months count less."""
     Xp, Yp = Pi[:-1], Pi[1:]
@@ -194,9 +252,17 @@ def fit_A(Pi, weights=None, ridge=1e-3):
         s = np.sqrt(weights[:-1])[:, None]
         Xp, Yp = Xp * s, Yp * s
     K = Pi.shape[1]
-    A = np.linalg.solve(Xp.T @ Xp + ridge * np.eye(K), Xp.T @ Yp)
+    # ridge shrinks A toward 0; adding I to the target shrinks it toward
+    # PERSISTENCE (pi_{t+1} = pi_t), which is the honest default when there are
+    # only T-1 transitions to fit K^2 parameters.
+    A = np.linalg.solve(Xp.T @ Xp + ridge * np.eye(K),
+                        Xp.T @ Yp + ridge * np.eye(K))
     A = np.clip(A, 1e-6, None)
-    return A / A.sum(axis=1, keepdims=True)
+    A = A / A.sum(axis=1, keepdims=True)
+    if shrink > 0:
+        A = (1 - shrink) * A + shrink * np.eye(K)
+        A = A / A.sum(axis=1, keepdims=True)
+    return A
 
 
 # ---------------------------------------------------------------- evaluation
@@ -256,19 +322,53 @@ def score_sets(X, theta, pi):
     return (np.log(np.exp(lp - mx).sum(axis=1, keepdims=True)) + mx).ravel()
 
 
-def make_negatives(pos_sets, node_freq, V, rng, mult=5):
-    """Hard negatives: size-matched, nodes drawn proportional to frequency.
-    A model that only knows marginal frequency cannot separate these from
-    real sets -- which is exactly the discrimination we are testing."""
-    p = node_freq / node_freq.sum()
+def make_negatives(pos_sets, node_freq, V, rng, mult=5, scheme="perturb",
+                   pool=None, observed=None):
+    """Negatives for the appearance task.
+
+    'freq'    size-matched, nodes drawn proportional to marginal frequency.
+              BROKEN as a control: real new sets are a long backbone plus one
+              or two RARE additions, so frequency-drawn sets of the same size
+              score HIGHER under independence and the baseline AUC lands below
+              0.5. Kept only for reference.
+
+    'perturb' (default) take a real set observed in TRAINING and swap one node
+              for another. Same size, same backbone, one mutation different.
+              This is the discrimination that matters: given a plausible
+              background, which single addition actually happens?
+
+    'swap'    take a real training set and move it to a different backbone by
+              exchanging a block of nodes. Harder than 'perturb'.
+    """
     live = np.flatnonzero(node_freq > 0)
+    p = node_freq[live] / node_freq[live].sum()
+    observed = observed or set()
     negs = []
-    for s in pos_sets:
-        k = max(1, len(s))
-        for _ in range(mult):
-            pick = rng.choice(live, size=min(k, len(live)), replace=False,
-                              p=p[live] / p[live].sum())
-            negs.append(frozenset(int(x) for x in pick))
+
+    if scheme == "freq":
+        for s in pos_sets:
+            k = max(1, len(s))
+            for _ in range(mult):
+                pick = rng.choice(live, size=min(k, len(live)), replace=False, p=p)
+                negs.append(frozenset(int(x) for x in pick))
+        return negs
+
+    pool = pool if pool is not None else list(pos_sets)
+    for _ in range(mult * len(pos_sets)):
+        for _try in range(20):
+            base = list(pool[rng.integers(len(pool))])
+            if not base: continue
+            n_swap = 1 if scheme == "perturb" else max(1, len(base) // 4)
+            keep = list(base)
+            for _ in range(min(n_swap, len(keep))):
+                keep.pop(rng.integers(len(keep)))
+            add = []
+            while len(add) < n_swap:
+                c = int(rng.choice(live, p=p))
+                if c not in keep and c not in add: add.append(c)
+            cand = frozenset(keep + add)
+            if cand not in observed and len(cand) > 0:
+                negs.append(cand); break
     return negs
 
 
@@ -289,17 +389,30 @@ def main():
     ap.add_argument("--test", required=True)
     ap.add_argument("--K", type=int, default=8)
     ap.add_argument("--K-sweep", type=str, default="", help="e.g. 2,4,8,16,32")
-    ap.add_argument("--pango", default="", help="optional TSV: 'n1,n2,n3<TAB>lineage'")
+    ap.add_argument("--pango", default="", help="single label TSV (back-compat)")
+    ap.add_argument("--labels", action="append", default=[],
+                    help="repeatable: name=path, e.g. --labels who=... --labels pango2=...")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--ridge", type=float, default=1.0,
+                    help="ridge on A, shrinking toward persistence (identity)")
+    ap.add_argument("--seeds", type=int, default=1,
+                    help="restarts for M-B; reports the spread across seeds")
     ap.add_argument("--out", default="results/86_mixture.npz")
     args = ap.parse_args()
 
     V = load_vocab_size(args.vocab)
     tr_months = months_in_range(args.train)
     te_months = months_in_range(args.test)
-    pango = load_pango(args.pango)
-    print(f"vocab size V = {V:,}   K = {args.K}   pango labels: "
-          f"{'yes (' + str(len(pango)) + ' sets)' if pango else 'NO -- correspondence test skipped'}")
+    specs = list(args.labels)
+    if args.pango: specs.append(f"pango={args.pango}")
+    label_sets = load_label_sets(specs)
+    print(f"vocab size V = {V:,}   K = {args.K}")
+    if label_sets:
+        for nm, d, meta in label_sets:
+            print(f"  labels '{nm}': {len(d):,} sets"
+                  + ("" if meta else "   [no purity column -- ceiling unavailable]"))
+    else:
+        print("  NO label files -- correspondence test skipped")
 
     Xs, ws, sets_list = [], [], []
     print(f"\nloading train {tr_months[0]} .. {tr_months[-1]}")
@@ -342,18 +455,25 @@ def main():
         print("  M-B  shared theta, free pi_t ...")
         theta_B, Pi_B, ll_B = em_shared(Xs, ws, K, seed=args.seed)
 
-        print("  M-C  fitting A on the pi trajectory ...")
-        A = fit_A(Pi_B, weights=vol)
+        print(f"  M-C  fitting A on the pi trajectory "
+              f"({Pi_B.shape[0]-1} transitions for {K*K} parameters) ...")
+        A = fit_A(Pi_B, weights=vol, ridge=args.ridge)
         pi_next = Pi_B[-1] @ A
+        if K * K > 3 * (Pi_B.shape[0] - 1):
+            print(f"      [warn] A is underdetermined: {K*K} parameters from "
+                  f"{Pi_B.shape[0]-1} transitions. Expect it to lose to persistence.")
 
         # ---- (2) held-out likelihood ----
         ll_C = float((wte * score_sets(Xte, theta_B, pi_next)).sum() / wte.sum())
         ll_B_last = float((wte * score_sets(Xte, theta_B, Pi_B[-1])).sum() / wte.sum())
         print(f"\n  (2) HELD-OUT LOG-LIKELIHOOD per sequence, {te_months}")
-        print(f"      M-F  frequency (K=1)              {ll_F:>10.3f}")
-        print(f"      M-B  mixture, pi = last month     {ll_B_last:>10.3f}")
-        print(f"      M-C  mixture, pi = last month @ A {ll_C:>10.3f}")
-        print(f"      gain of M-C over M-F              {ll_C - ll_F:>10.3f} nats/seq")
+        print(f"      M-F  frequency baseline (K=1)         {ll_F:>10.3f}")
+        print(f"      M-B  mixture, pi = last month "
+              f"(persistence)                              {ll_B_last:>10.3f}")
+        print(f"      M-C  mixture, pi = last month @ A     {ll_C:>10.3f}")
+        print(f"      mixture over independence  (M-B - M-F) {ll_B_last - ll_F:>+9.3f}")
+        print(f"      chain over persistence     (M-C - M-B) {ll_C - ll_B_last:>+9.3f}"
+              f"   <- negative means A loses to doing nothing")
 
         # ---- (3) appearance ----
         train_sets = set().union(*[set(s) for s in sets_list])
@@ -361,41 +481,73 @@ def main():
         rng = np.random.default_rng(args.seed)
         node_freq = (wall[:, None] * Xall).sum(0)
         if len(new_sets) >= 5:
-            negs = make_negatives(new_sets, node_freq, V, rng, mult=5)
-            Xp, Xn = sets_to_X(new_sets, V), sets_to_X(negs, V)
             from sklearn.metrics import roc_auc_score
-            y = np.r_[np.ones(len(new_sets)), np.zeros(len(negs))]
-            auc_F = roc_auc_score(y, np.r_[score_sets(Xp, theta_F, pi_F),
-                                           score_sets(Xn, theta_F, pi_F)])
-            auc_C = roc_auc_score(y, np.r_[score_sets(Xp, theta_B, pi_next),
-                                           score_sets(Xn, theta_B, pi_next)])
-            print(f"\n  (3) APPEARANCE: {len(new_sets):,} genuinely new sets vs "
-                  f"{len(negs):,} hard negatives")
-            print(f"      AUC  M-F frequency  {auc_F:.4f}")
-            print(f"      AUC  M-C mixture    {auc_C:.4f}")
-            print(f"      lift                {auc_C - auc_F:+.4f}")
+            all_obs = set(train_sets) | set(sets_te)
+            pool = [s for s in train_sets if len(s) > 0]
+            print(f"\n  (3) APPEARANCE: {len(new_sets):,} genuinely new sets in "
+                  f"{te_months}, ranked against negatives")
+            print(f"      {'negatives':<30}{'#neg':>8}{'M-F':>9}{'M-C':>9}{'lift':>9}")
+            aucs = {}
+            for scheme, desc in [("perturb", "1-node swap on a real set"),
+                                  ("swap",    "block swap on a real set"),
+                                  ("freq",    "frequency-drawn (reference only)")]:
+                negs = make_negatives(new_sets, node_freq, V,
+                                      np.random.default_rng(args.seed),
+                                      mult=5, scheme=scheme, pool=pool,
+                                      observed=all_obs)
+                if len(negs) < 10: continue
+                Xp, Xn = sets_to_X(new_sets, V), sets_to_X(negs, V)
+                y = np.r_[np.ones(len(new_sets)), np.zeros(len(negs))]
+                aF = roc_auc_score(y, np.r_[score_sets(Xp, theta_F, pi_F),
+                                            score_sets(Xn, theta_F, pi_F)])
+                aC = roc_auc_score(y, np.r_[score_sets(Xp, theta_B, pi_next),
+                                            score_sets(Xn, theta_B, pi_next)])
+                aucs[scheme] = (aF, aC)
+                print(f"      {desc:<30}{len(negs):>8,}{aF:>9.4f}{aC:>9.4f}"
+                      f"{aC-aF:>+9.4f}")
+            auc_F, auc_C = aucs.get("perturb", (float("nan"), float("nan")))
+            print("      report the 1-node-swap row: same backbone, one mutation"
+                  " different.")
         else:
             auc_F = auc_C = float("nan")
             print(f"\n  (3) APPEARANCE: only {len(new_sets)} new sets -- skipped")
 
-        # ---- (1) correspondence ----
-        if pango:
-            print(f"\n  (1) CORRESPONDENCE: inferred block vs Pango, pooled adjacent months")
-            rows = eval_correspondence(thA, piA, theta_B, Pi_B, Xs, ws,
-                                        sets_list, tr_months, pango, K)
-            if rows:
-                print(f"      {'months':<18}{'n':>9}{'ARI M-A':>10}{'NMI M-A':>10}"
-                      f"{'ARI M-B':>10}{'NMI M-B':>10}")
-                for r in rows:
-                    print(f"      {r[0]:<18}{r[1]:>9,}{r[2]:>10.4f}{r[3]:>10.4f}"
-                          f"{r[4]:>10.4f}{r[5]:>10.4f}")
-                a = np.array([[r[2], r[3], r[4], r[5]] for r in rows]).mean(0)
-                print(f"      {'MEAN':<18}{'':>9}{a[0]:>10.4f}{a[1]:>10.4f}"
-                      f"{a[2]:>10.4f}{a[3]:>10.4f}")
-                print(f"\n      -> M-B minus M-A, ARI: {a[2]-a[0]:+.4f}   "
-                      f"this gap IS the correspondence result")
+        # ---- (1) correspondence, per label granularity ----
+        if label_sets:
+            print(f"\n  (1) CORRESPONDENCE, by label granularity")
+            print(f"      {'labels':<12}{'n':>10}{'ceiling':>10}{'M-A blk':>10}"
+                  f"{'M-B blk':>10}{'M-A ARI':>10}{'M-B ARI':>10}")
+            from sklearn.metrics import adjusted_rand_score
+            for nm, labels, meta in label_sets:
+                ceil, nlab = set_purity(sets_list, ws, labels, meta)
+                truth, wt, zA, zB = [], [], [], []
+                for t in range(len(tr_months)):
+                    RA, _ = responsibilities(Xs[t], thA[t], np.log(piA[t] + EPS))
+                    RB, _ = responsibilities(Xs[t], theta_B, np.log(Pi_B[t] + EPS))
+                    a, b = RA.argmax(1), RB.argmax(1)
+                    for i, s in enumerate(sets_list[t]):
+                        lin = labels.get(s)
+                        if lin is None: continue
+                        # M-A labels are per-month, so make them month-specific:
+                        # this is the correspondence problem, not a penalty we impose
+                        truth.append(lin); wt.append(ws[t][i])
+                        zA.append(f"{t}:{a[i]}"); zB.append(int(b[i]))
+                if not truth:
+                    print(f"      {nm:<12}{'0':>10}   (no sets matched -- check the join)")
+                    continue
+                wt = np.array(wt)
+                bpA = block_purity(zA, wt, truth)
+                bpB = block_purity(zB, wt, truth)
+                rep = np.minimum(wt, 50).astype(int)
+                tr_ = np.repeat(truth, rep); zA_ = np.repeat(zA, rep); zB_ = np.repeat(zB, rep)
+                ariA = adjusted_rand_score(tr_, zA_); ariB = adjusted_rand_score(tr_, zB_)
+                print(f"      {nm:<12}{int(wt.sum()):>10,}{ceil:>10.4f}{bpA:>10.4f}"
+                      f"{bpB:>10.4f}{ariA:>10.4f}{ariB:>10.4f}")
+            print("      ceiling = best possible with one cluster per distinct set")
+            print("      blk     = achieved with K blocks (majority label per block)")
+            print("      M-A blocks are per-month, so they cannot be reused across months")
         else:
-            print("\n  (1) CORRESPONDENCE: skipped (no --pango file)")
+            print("\n  (1) CORRESPONDENCE: skipped (no label files)")
 
         results[f"K{K}"] = dict(theta=theta_B, Pi=Pi_B, A=A, ll_C=ll_C,
                                 auc_C=auc_C, auc_F=auc_F)

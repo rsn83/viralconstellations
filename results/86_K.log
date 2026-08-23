@@ -1,0 +1,170 @@
+vocab size V = 1,180   K = 8
+  labels 'who': 99,604 sets
+  labels 'pango2': 101,542 sets
+
+loading train 2021-06 .. 2022-05
+  2021-06: 4,097 unique sets, 169,568 sequences
+  2021-07: 6,282 unique sets, 340,298 sequences
+  2021-08: 9,276 unique sets, 523,266 sequences
+  2021-09: 9,861 unique sets, 533,943 sequences
+  2021-10: 10,039 unique sets, 496,431 sequences
+  2021-11: 11,034 unique sets, 616,572 sequences
+  2021-12: 22,409 unique sets, 737,251 sequences
+  2022-01: 26,660 unique sets, 833,110 sequences
+  2022-02: 20,084 unique sets, 644,921 sequences
+  2022-03: 13,799 unique sets, 591,573 sequences
+  2022-04: 9,367 unique sets, 309,445 sequences
+  2022-05: 9,458 unique sets, 231,731 sequences
+test ['2022-06']: 10,181 unique sets, 240,709 sequences
+
+==========================================================================
+M-F  frequency baseline (K=1, independence)
+==========================================================================
+  held-out LL/seq = -40.089
+
+==========================================================================
+K = 4
+==========================================================================
+  M-A  per-month independent mixtures ...
+  M-B  shared theta, free pi_t ...
+      converged at iter 24
+  M-C  fitting A on the pi trajectory (11 transitions for 16 parameters) ...
+
+  (2) HELD-OUT LOG-LIKELIHOOD per sequence, ['2022-06']
+      M-F  frequency baseline (K=1)            -40.089
+      M-B  mixture, pi = last month (persistence)                                 -14.324
+      M-C  mixture, pi = last month @ A        -14.413
+      mixture over independence  (M-B - M-F)   +25.765
+      chain over persistence     (M-C - M-B)    -0.089   <- negative means A loses to doing nothing
+
+  (3) APPEARANCE: 6,589 genuinely new sets in ['2022-06'], ranked against negatives
+      negatives                         #neg      M-F      M-C     lift
+      1-node swap on a real set       32,945   0.2555   0.5668  +0.3112
+      block swap on a real set        32,945   0.2575   0.8059  +0.5484
+      frequency-drawn (reference only)  32,945   0.2443   0.9832  +0.7389
+      report the 1-node-swap row: same backbone, one mutation different.
+
+  (1) CORRESPONDENCE, by label granularity
+      labels               n   ceiling   M-A blk   M-B blk   M-A ARI   M-B ARI
+      who          6,022,076    0.9986    0.9867    0.9875    0.1105    0.6159
+      pango2       6,028,109    0.6196    0.5709    0.5905    0.1289    0.1700
+      ceiling = best possible with one cluster per distinct set
+      blk     = achieved with K blocks (majority label per block)
+      M-A blocks are per-month, so they cannot be reused across months
+
+==========================================================================
+K = 8
+==========================================================================
+  M-A  per-month independent mixtures ...
+  M-B  shared theta, free pi_t ...
+      converged at iter 17
+  M-C  fitting A on the pi trajectory (11 transitions for 64 parameters) ...
+      [warn] A is underdetermined: 64 parameters from 11 transitions. Expect it to lose to persistence.
+
+  (2) HELD-OUT LOG-LIKELIHOOD per sequence, ['2022-06']
+      M-F  frequency baseline (K=1)            -40.089
+      M-B  mixture, pi = last month (persistence)                                 -13.870
+      M-C  mixture, pi = last month @ A        -14.058
+      mixture over independence  (M-B - M-F)   +26.219
+      chain over persistence     (M-C - M-B)    -0.189   <- negative means A loses to doing nothing
+
+  (3) APPEARANCE: 6,589 genuinely new sets in ['2022-06'], ranked against negatives
+      negatives                         #neg      M-F      M-C     lift
+      1-node swap on a real set       32,945   0.2555   0.5453  +0.2897
+      block swap on a real set        32,945   0.2575   0.7935  +0.5360
+      frequency-drawn (reference only)  32,945   0.2443   0.9831  +0.7388
+      report the 1-node-swap row: same backbone, one mutation different.
+
+  (1) CORRESPONDENCE, by label granularity
+      labels               n   ceiling   M-A blk   M-B blk   M-A ARI   M-B ARI
+      who          6,022,076    0.9986    0.9918    0.9860    0.0828    0.6231
+      pango2       6,028,109    0.6196    0.6235    0.5951    0.1193    0.2003
+      ceiling = best possible with one cluster per distinct set
+      blk     = achieved with K blocks (majority label per block)
+      M-A blocks are per-month, so they cannot be reused across months
+
+==========================================================================
+K = 16
+==========================================================================
+  M-A  per-month independent mixtures ...
+  M-B  shared theta, free pi_t ...
+      converged at iter 20
+  M-C  fitting A on the pi trajectory (11 transitions for 256 parameters) ...
+      [warn] A is underdetermined: 256 parameters from 11 transitions. Expect it to lose to persistence.
+
+  (2) HELD-OUT LOG-LIKELIHOOD per sequence, ['2022-06']
+      M-F  frequency baseline (K=1)            -40.089
+      M-B  mixture, pi = last month (persistence)                                 -13.891
+      M-C  mixture, pi = last month @ A        -13.896
+      mixture over independence  (M-B - M-F)   +26.198
+      chain over persistence     (M-C - M-B)    -0.004   <- negative means A loses to doing nothing
+
+  (3) APPEARANCE: 6,589 genuinely new sets in ['2022-06'], ranked against negatives
+      negatives                         #neg      M-F      M-C     lift
+      1-node swap on a real set       32,945   0.2555   0.5948  +0.3392
+      block swap on a real set        32,945   0.2575   0.8217  +0.5642
+      frequency-drawn (reference only)  32,945   0.2443   0.9883  +0.7440
+      report the 1-node-swap row: same backbone, one mutation different.
+
+  (1) CORRESPONDENCE, by label granularity
+      labels               n   ceiling   M-A blk   M-B blk   M-A ARI   M-B ARI
+      who          6,022,076    0.9986    0.9925    0.9867    0.0642    0.5430
+      pango2       6,028,109    0.6196    0.6423    0.6220    0.1070    0.1966
+      ceiling = best possible with one cluster per distinct set
+      blk     = achieved with K blocks (majority label per block)
+      M-A blocks are per-month, so they cannot be reused across months
+
+==========================================================================
+K = 32
+==========================================================================
+  M-A  per-month independent mixtures ...
+  M-B  shared theta, free pi_t ...
+      iter 50  LL/seq = -5.0818
+      converged at iter 62
+  M-C  fitting A on the pi trajectory (11 transitions for 1024 parameters) ...
+      [warn] A is underdetermined: 1024 parameters from 11 transitions. Expect it to lose to persistence.
+
+  (2) HELD-OUT LOG-LIKELIHOOD per sequence, ['2022-06']
+      M-F  frequency baseline (K=1)            -40.089
+      M-B  mixture, pi = last month (persistence)                                 -13.004
+      M-C  mixture, pi = last month @ A        -13.599
+      mixture over independence  (M-B - M-F)   +27.085
+      chain over persistence     (M-C - M-B)    -0.595   <- negative means A loses to doing nothing
+
+  (3) APPEARANCE: 6,589 genuinely new sets in ['2022-06'], ranked against negatives
+      negatives                         #neg      M-F      M-C     lift
+      1-node swap on a real set       32,945   0.2555   0.5754  +0.3199
+      block swap on a real set        32,945   0.2575   0.8444  +0.5869
+      frequency-drawn (reference only)  32,945   0.2443   0.9869  +0.7426
+      report the 1-node-swap row: same backbone, one mutation different.
+
+  (1) CORRESPONDENCE, by label granularity
+      labels               n   ceiling   M-A blk   M-B blk   M-A ARI   M-B ARI
+      who          6,022,076    0.9986    0.9974    0.9979    0.0532    0.2832
+      pango2       6,028,109    0.6196    0.6930    0.6214    0.0902    0.2048
+      ceiling = best possible with one cluster per distinct set
+      blk     = achieved with K blocks (majority label per block)
+      M-A blocks are per-month, so they cannot be reused across months
+
+saved -> results/86_K.npz
+
+HOW TO READ THIS
+  (1) is the headline. M-A fits each month separately, so its block labels are
+      arbitrary per month; it is given the best possible cross-month label
+      matching (Hungarian) and still has to recover identity from set similarity
+      alone. M-B shares one theta, so identity holds by construction. If
+      ARI(M-B) >> ARI(M-A), temporal coupling recovered lineage identity that
+      similarity alone could not. If the gap is ~0, coupling bought nothing and
+      the correspondence problem is not solved by this model -- report that.
+
+  (2) tests whether blocks help at all: does K>1 beat K=1 on a future month.
+      M-C vs M-B(last month) isolates what A contributes over freezing pi.
+
+  (3) is the target that matters. Negatives are size-matched and drawn
+      proportional to node frequency, so a model that knows only marginal
+      frequencies scores ~0.5. Any AUC above that is joint structure. The
+      relevant number is M-C minus M-F, not M-C alone.
+
+  Run (1) BEFORE trusting (2) or (3). If the blocks are noise, a good AUC is
+  not evidence of lineage structure and cannot be interpreted as such.
+

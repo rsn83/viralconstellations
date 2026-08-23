@@ -1,0 +1,97 @@
+  2,000,000 rows ...
+  4,000,000 rows ...
+  6,000,000 rows ...
+  8,000,000 rows ...
+
+rows read 9,428,945   kept 8,354,525   dropped(unmapped) 0
+
+OVERALL sequence-weighted purity = 0.9977  on 8,354,525 sequences
+
+set size |S|          #seq    share    purity
+0                   32,403     0.4%    0.8310
+1                    8,514     0.1%    0.9376
+2                   32,077     0.4%    0.9964
+3                   25,665     0.3%    0.9976
+4                   75,800     0.9%    0.9994
+5                   96,155     1.2%    0.9998
+6                  203,901     2.4%    0.9999
+7                1,037,837    12.4%    0.9999
+8                1,070,358    12.8%    1.0000
+9                  938,475    11.2%    1.0000
+10+              4,833,340    57.9%    0.9974
+|S|>=2 pooled    8,313,608    99.5%    0.9984
+
+month           #seq    #sets    purity   top lineage     
+2020-03           17       11    1.0000   Alpha           
+2020-04           59       15    0.7288   Omicron         
+2020-05          112       25    0.7411   Omicron         
+2020-06           42       13    0.8571   Delta           
+2020-07           25       17    0.8800   Delta           
+2020-08           58       21    0.9655   Delta           
+2020-09           67       28    0.9851   Delta           
+2020-10          428       82    0.9673   Delta           
+2020-11        3,360      106    0.9994   Alpha           
+2020-12       23,645      449    0.9999   Alpha           
+2021-01       78,204    1,172    0.9997   Alpha           
+2021-02      104,882    1,568    0.9994   Alpha           
+2021-03      200,958    2,813    0.9993   Alpha           
+2021-04      225,741    3,773    0.9998   Alpha           
+2021-05      169,757    3,785    0.9996   Alpha           
+2021-06      168,415    3,625    0.9999   Delta           
+2021-07      338,938    5,953    0.9998   Delta           
+2021-08      522,256    9,069    0.9999   Delta           
+2021-09      533,122    9,746    1.0000   Delta           
+2021-10      495,588    9,910    1.0000   Delta           
+2021-11      615,928   10,928    1.0000   Delta           
+2021-12      736,281   21,857    0.9999   Delta           
+2022-01      833,010   26,267    0.9997   Omicron         
+2022-02      645,719   19,947    0.9986   Omicron         
+2022-03      591,705   13,727    0.9949   Omicron         
+2022-04      309,493    9,343    0.9937   Omicron         
+2022-05      231,822    9,408    0.9936   Omicron         
+2022-06      241,005   10,134    0.9970   Omicron         
+2022-07      256,511   10,842    0.9979   Omicron         
+2022-08      176,941    8,070    0.9980   Omicron         
+2022-09      139,739    7,391    0.9980   Omicron         
+2022-10      131,471    8,747    0.9976   Omicron         
+2022-11      118,046    9,012    0.9977   Omicron         
+2022-12      134,629   10,962    0.9973   Omicron         
+2023-01       69,909    8,574    0.9965   Omicron         
+2023-02       32,573    6,104    0.9965   Omicron         
+2023-03       13,701    3,468    0.9983   Omicron         
+2023-04        2,888    1,192    0.9986   Omicron         
+2023-05          922      433    0.9989   Omicron         
+2023-06          408      205    1.0000   Omicron         
+2023-07          409      202    0.9976   Omicron         
+2023-08          816      296    1.0000   Omicron         
+2023-09        1,265      373    0.9905   Omicron         
+2023-10        2,332      611    0.9957   Omicron         
+2023-11        6,604    1,226    0.9923   Omicron         
+2023-12       23,970    3,317    0.9905   Omicron         
+2024-01       29,547    4,009    0.9899   Omicron         
+2024-02       18,876    2,933    0.9828   Omicron         
+2024-03        9,012    2,260    0.9811   Omicron         
+2024-04        7,167    2,171    0.9847   Omicron         
+2024-05        9,792    3,097    0.9906   Omicron         
+2024-06       17,069    4,005    0.9951   Omicron         
+2024-07       23,486    4,664    0.9968   Omicron         
+2024-08       21,574    4,296    0.9972   Omicron         
+2024-09       15,569    3,238    0.9966   Omicron         
+2024-10        8,053    1,801    0.9969   Omicron         
+2024-11        4,893    1,315    0.9963   Omicron         
+2024-12        5,716    1,487    0.9942   Omicron         
+
+READ
+  purity = accuracy of the best possible classifier that sees ONLY the spike
+  mutation set. It is the ceiling for the correspondence test; report any ARI
+  next to the purity for the same window or the number cannot be interpreted.
+
+  Low purity at |S|<=1 is expected and is not a defect of the representation:
+  Pango is called on the whole genome, so lineages differing only outside spike
+  are indistinguishable here by construction.
+
+  The month column is the one to act on. If purity is low in 2020 and high from
+  mid-2021, run the correspondence experiment on the later window and report the
+  early window with its ceiling stated. If it stays low throughout, spike
+  underdetermines lineage in general -- a stronger and more important finding.
+

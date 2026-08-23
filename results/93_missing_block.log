@@ -1,0 +1,47 @@
+K = 8,  dominant block in 2022-05: block 1 (52.7% of that month)
+  its top mutations: 969K, 655Y, 954H, 614G, 679K, 796Y, 681H, 213G, 19I, 405N, 339D, 764K
+
+month       assigned to blk1   share   median log p(S|blk)   10th pct
+2021-06                    0
+2021-07                    2    0.0%                -22.55     -22.55
+2021-08                    3    0.0%                -28.60     -32.68
+2021-09                    8    0.0%                -18.90     -55.34
+2021-10                    7    0.0%                -19.76    -129.88
+2021-11                   17    0.0%                -25.68    -262.96
+2021-12                1,608    0.2%                 -4.72     -10.58
+2022-01               45,831    5.5%                 -4.28     -11.41
+2022-02              194,865   30.2%                 -3.89     -12.88
+2022-03              485,813   82.1%                 -3.66     -14.06
+2022-04              297,728   96.2%                 -3.83     -18.13
+2022-05              228,751   98.7%                 -7.06     -20.17
+2022-06              234,977   97.6%                -13.61     -23.84  <-- TEST
+
+========================================================================
+VERDICT
+========================================================================
+
+  reference (last 3 training months where block 1 was >20%): median log p = -4.85 +/- 1.57
+  test month 2022-06:                                 median log p = -13.61
+  drop = +8.76 nats   (5.6 sd)
+
+  -> HIDDEN BACKGROUND. Genomes assigned to block 1 in the test month fit
+     it clearly worse than in training. Something the model has no row for is
+     being absorbed into it. Reparameterising A cannot fix this; the model
+     needs a way to CREATE a block. GATE = Y.
+
+  mutations MOST over-represented in block 1's test-month genomes
+  relative to block 1's own fingerprint:
+
+    mutation      theta[k,n]   observed    excess
+    486V               0.012      0.538    +0.526
+    452R               0.012      0.529    +0.516
+    704L               0.081      0.260    +0.179
+    452Q               0.072      0.246    +0.174
+    3G                 0.003      0.061    +0.059
+    76I                0.001      0.044    +0.042
+    440K               0.852      0.888    +0.036
+    658S               0.001      0.031    +0.029
+
+    A coherent group of mutations here, all with large excess, is the
+    signature of an unmodelled lineage sitting inside this block. Scattered
+    single mutations with small excess are just drift.

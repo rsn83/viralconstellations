@@ -1,0 +1,74 @@
+V = 1,180   K = 8   seeds = 3
+  2021-06: 4,097 sets, 169,568 genomes
+  2021-07: 6,282 sets, 340,298 genomes
+  2021-08: 9,276 sets, 523,266 genomes
+  2021-09: 9,861 sets, 533,943 genomes
+  2021-10: 10,039 sets, 496,431 genomes
+  2021-11: 11,034 sets, 616,572 genomes
+  2021-12: 22,409 sets, 737,251 genomes
+  2022-01: 26,660 sets, 833,110 genomes
+  2022-02: 20,084 sets, 644,921 genomes
+  2022-03: 13,799 sets, 591,573 genomes
+  2022-04: 9,367 sets, 309,445 genomes
+  2022-05: 9,458 sets, 231,731 genomes
+test ['2022-06']: 240,709 genomes
+
+--- seed 0 ---
+  A-sep   per-month mixtures ...
+  pool ...
+      [pool] converged at iter 19
+  chain ...
+      [chain] iter 50  LL/obs = -6.58884
+      [chain] iter 100  LL/obs = -6.58862
+      [chain] iter 150  LL/obs = -6.58841
+      [chain] iter 200  LL/obs = -6.58813
+      [chain] iter 250  LL/obs = -6.58802
+      [chain] iter 300  LL/obs = -6.58799
+      [chain] iter 350  LL/obs = -6.58797
+      [chain] iter 400  LL/obs = -6.58796
+
+--- seed 1 ---
+  A-sep   per-month mixtures ...
+  pool ...
+  chain ...
+
+--- seed 2 ---
+  A-sep   per-month mixtures ...
+  pool ...
+  chain ...
+
+================================================================================
+RESULTS   K = 8,  3 seeds,  test 2022-06
+================================================================================
+
+  independence baseline (K=1):  held-out LL/genome = -40.089
+
+  model                                      held-out LL         ARI who      ARI pango2
+  A-sep   per-month, nothing shared                  n/a   0.080+/-0.002   0.106+/-0.015
+  B-pool  shared theta, pi_t free        -13.339+/-0.516   0.546+/-0.093   0.176+/-0.027
+  C-chain shared theta, pi_t = pi_1 A^(t-1) -14.001+/-0.431   0.509+/-0.142   0.184+/-0.033
+
+  blocks over independence      (B-pool - K=1)   +26.750 nats/genome
+  Markov transitions over pooled (C-chain - B-pool) -0.662 nats/genome
+
+  worst single-iteration change in tracked LL:
+    B-pool  +4.43e-08   (plain mixture, reference)
+    C-chain +1.13e-07
+    Small negatives appear in BOTH because a Beta(0.5,0.5) prior and
+    clipping are applied to theta, so the M-step maximises the
+    posterior while the printed quantity is the plain likelihood.
+    What matters is that C-chain is no worse than B-pool: the exact
+    (pi_1, A) M-step introduces no additional non-monotonicity.
+
+  saved -> results/91_exact.npz
+
+NOTE ON EXACTNESS
+  E-step, theta M-step and free-pi M-step are closed form. The (pi_1, A) M-step
+  maximises its objective by gradient ascent with the exact gradient, verified
+  against central finite differences, with backtracking so the objective never
+  decreases. Monotone EM above confirms it. A is estimated INSIDE EM from the
+  current responsibilities, not regressed afterward from a fitted trajectory.
+
+  If C-chain still loses to B-pool, the limitation is the data, not the fit:
+  A has K^2 parameters and there are only T-1 monthly transitions.
+
