@@ -149,7 +149,6 @@ def make_features(t, F, theta, Pi_t, pos, V, K):
         in_par = (theta[j] > .5).astype(float)
         f = np.column_stack([
             np.full(V, Pi_t[j]),                        # pi_parent
-            np.full(V, parent_size[j] / 50.0),          # parent_size (scaled)
             np.log(cur + 1e-6),                         # log_freq
             since / 12.0,                               # months_since_seen (years)
             peak,                                       # hist_peak
@@ -172,7 +171,10 @@ CONVERGENT_EARLY = {417, 452, 484, 501, 681}
 CONVERGENT_OMICRON = {346, 444, 450, 460, 486, 490, 493, 494}
 CONVERGENT_ALL = CONVERGENT_EARLY | CONVERGENT_OMICRON
 
-FEATS = ["pi_parent", "parent_size", "log_freq", "months_since_seen",
+# parent_size (theta[j].sum()) was removed: it is a proxy for how degenerate a
+# group is, not for biology. It took the largest weight at every K and drove the
+# full model to zero at K=24 by ranking near-empty groups first.
+FEATS = ["pi_parent", "log_freq", "months_since_seen",
          "hist_peak", "n_groups", "pos_mutability", "ever_seen",
          "max_other_group", "convergent"]
 
@@ -401,18 +403,18 @@ def main():
     ni = [i for i in range(len(FEATS)) if i != ci_conv]
     wn, bn, mun, sdn = fit_logistic(X[tr][:, ni], y[tr])
     s_noconv = predict(X[te][:, ni], wn, bn, mun, sdn)
-    print(f"\n  CONTROL -- full model WITHOUT the convergent feature:")
+    print(f"\n  CONTROL -- full model WITHOUT the convergent feature")
+    print(f"  (the published list flags 11% of candidates, so a positive weight")
+    print(f"  on it promotes tens of thousands at once and floods the top-k):")
     for k, hit, pr, rc in prec_recall_at_k(s_noconv, y[te]):
         print(f"  {k:>6}{int(hit):>7}{pr:>12.2%}{rc:>10.1%}{pr/base:>8.0f}x")
 
     # ---- CONTROL: group-only. No mutation-level information at all. ----
-    gi = [FEATS.index(f) for f in ("pi_parent", "parent_size")]
+    gi = [FEATS.index("pi_parent")]
     wg, bg, mug, sdg = fit_logistic(X[tr][:, gi], y[tr])
     s_grp = predict(X[te][:, gi], wg, bg, mug, sdg)
-    print(f"\n  CONTROL -- group-only (pi_parent, parent_size):")
-    print(f"  these two features are CONSTANT within a group, so this ranks")
-    print(f"  groups, not mutations. If it matches the full model, the full")
-    print(f"  model is picking groups too.")
+    print(f"\n  CONTROL -- group-only (pi_parent):")
+    print(f"  constant within a group, so this ranks groups, not mutations.")
     for k, hit, pr, rc in prec_recall_at_k(s_grp, y[te]):
         print(f"  {k:>6}{int(hit):>7}{pr:>12.2%}{rc:>10.1%}{pr/base:>8.0f}x")
 
