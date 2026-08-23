@@ -1,0 +1,94 @@
+K = 8   V = 1,180   months 2021-06..2022-11 (18)
+
+building monthly frequency table ...
+loaded 538 spike-changing birth events
+  266 (group, mutation) positives placed inside the window
+candidate rows 158,831   positives 191 (0.1203%)
+train months 0..10  (102,773 rows, 81 pos)
+test  months 11..     (56,058 rows, 110 pos)
+
+==================================================================
+FITTED WEIGHTS  (standardised; sign and magnitude are comparable)
+==================================================================
+  parent_size           -1.438  ############################
+  months_since_seen     -1.338  ##########################
+  log_freq              +0.943  ##################
+  ever_seen             +0.628  ############
+  pi_parent             +0.530  ##########
+  max_other_group       -0.501  ##########
+  n_groups              +0.227  ####
+  pos_mutability        -0.196  ###
+  hist_peak             -0.021  
+
+==================================================================
+HELD-OUT RANKING   (report these, not AUC)
+==================================================================
+
+  random baseline precision = 0.1962%
+
+       k   hits   precision    recall     lift
+      10      1      10.00%      0.9%      51x
+      50      5      10.00%      4.5%      51x
+     100      6       6.00%      5.5%      31x
+     500     40       8.00%     36.4%      41x
+
+  frequency-only baseline:
+      10      0       0.00%      0.0%       0x
+      50      0       0.00%      0.0%       0x
+     100      0       0.00%      0.0%       0x
+     500      0       0.00%      0.0%       0x
+
+  CONTROL -- group-only (pi_parent, parent_size):
+  these two features are CONSTANT within a group, so this ranks
+  groups, not mutations. If it matches the full model, the full
+  model is picking groups too.
+      10      0       0.00%      0.0%       0x
+      50      0       0.00%      0.0%       0x
+     100      0       0.00%      0.0%       0x
+     500      4       0.80%      3.6%       4x
+
+  CONTROL -- mutation-only (everything except the group features):
+      10      0       0.00%      0.0%       0x
+      50      0       0.00%      0.0%       0x
+     100      1       1.00%      0.9%       5x
+     500      4       0.80%      3.6%       4x
+
+  WITHIN-GROUP ranking -- for each group, rank only its own
+  candidates. Group identity carries no information here.
+    k/group   hits   precision    recall     lift
+          5      1       2.50%      0.9%      13x
+         10      1       1.25%      0.9%       6x
+         25      3       1.50%      2.7%       8x
+
+  history-only (months_since_seen, hist_peak, ever_seen):
+      10      0       0.00%      0.0%       0x
+      50      0       0.00%      0.0%       0x
+     100      0       0.00%      0.0%       0x
+     500      3       0.60%      2.7%       3x
+
+HOW TO READ
+  Precision@k against the random baseline is the number that matters. AUC at a
+  0.1% positive rate is misleading -- it can exceed 0.95 while the top 100
+  candidates contain nothing.
+
+  READ THE CONTROLS FIRST. pi_parent and parent_size are constant within a
+  group, so a model using only those ranks GROUPS, not mutations. If the
+  group-only control matches the full model, the headline lift means "we can
+  say which group is active", not "we can say which mutation is acquired" --
+  a much weaker claim, and not the project's target. The within-group ranking
+  removes group identity entirely and is the honest test of mutation choice.
+
+  The comparison to beat is frequency-only. If the full model does not clearly
+  exceed it, the history features are not carrying information and the
+  finite-sites finding is descriptive rather than predictive.
+
+  If history-only is close to the full model, then a mutation's past -- when it
+  was last seen, how high it ever got -- predicts its return better than its
+  current frequency, which is the predictive form of the infinite-to-finite
+  sites transition.
+
+  Labels are exact: each positive is a (parent group, mutation) pair taken from
+  a real Pango birth event, with the parent lineage assigned to the group whose
+  fingerprint best explains it. Only mutations the parent does not already carry
+  are scored as candidates.
+

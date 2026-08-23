@@ -1,0 +1,87 @@
+V = 1,180   K = 8   window = 12 months   horizon = h=2
+  (training ends 2 month(s) before each test month; persistence = copy the last TRAINING month)
+
+  2022-01  novelty   7.83  persist  -20.535  A  -21.685  best-with-K  -14.463  best-with-K+1  -13.970  [440K+446S+417N+346K]
+  2022-02  novelty   2.75  persist   -9.910  A   -9.807  best-with-K   -8.136  best-with-K+1   -7.264  [417N+440K+446S+346K]
+  2022-03  novelty  -3.69  persist   -7.489  A   -9.035  best-with-K   -5.557  best-with-K+1      nan  [-]
+  2022-04  novelty  -3.89  persist   -8.091  A   -9.195  best-with-K   -7.078  best-with-K+1      nan  [-]
+  2022-05  novelty   9.74  persist  -11.048  A  -13.253  best-with-K  -10.880  best-with-K+1   -8.549  [704L+452Q]
+  2022-06  novelty  16.30  persist  -17.627  A  -18.126  best-with-K  -17.580  best-with-K+1  -10.964  [486V+452R+704L+452Q]
+  2022-07  novelty  11.34  persist  -17.212  A  -17.487  best-with-K  -17.193  best-with-K+1  -10.327  [486V+452R]
+  2022-08  novelty  -4.09  persist   -6.780  A   -6.932  best-with-K   -6.328  best-with-K+1      nan  [-]
+  2022-09  novelty  -2.02  persist   -7.946  A   -8.506  best-with-K   -7.902  best-with-K+1      nan  [-]
+  2022-10  novelty   3.32  persist  -13.383  A  -13.986  best-with-K  -13.364  best-with-K+1  -13.012  [346T]
+  2022-11  novelty   8.31  persist  -14.545  A  -14.709  best-with-K  -14.447  best-with-K+1  -10.990  [460K+444T+346T]
+
+====================================================================================================
+CONTROL 1   does A fail only when the month contains something new?
+====================================================================================================
+
+test           #seq   novelty   persist     via A      gap
+2022-01     833,110      7.83   -20.535   -21.685   -1.150  <-- A loses
+2022-02     644,921      2.75    -9.910    -9.807   +0.103
+2022-03     591,573     -3.69    -7.489    -9.035   -1.545  <-- A loses
+2022-04     309,445     -3.89    -8.091    -9.195   -1.103  <-- A loses
+2022-05     231,731      9.74   -11.048   -13.253   -2.206  <-- A loses
+2022-06     240,709     16.30   -17.627   -18.126   -0.498  <-- A loses
+2022-07     256,433     11.34   -17.212   -17.487   -0.275  <-- A loses
+2022-08     176,780     -4.09    -6.780    -6.932   -0.152  <-- A loses
+2022-09     139,498     -2.02    -7.946    -8.506   -0.560  <-- A loses
+2022-10     132,012      3.32   -13.383   -13.986   -0.603  <-- A loses
+2022-11     121,177      8.31   -14.545   -14.709   -0.164  <-- A loses
+
+  correlation(novelty, gap):  Pearson r = +0.019 (p=0.955)   Spearman rho = -0.036
+  A NEGATIVE correlation means A loses more in months containing
+  something the groups cannot explain. That is the missing-latent
+  signature. A flat correlation means A is simply badly estimated.
+
+====================================================================================================
+CONTROL 2   CEILING -- could ANY dynamics have done better, with the
+            rows the model has?
+====================================================================================================
+
+  'best with K rows' is the highest score reachable by ANY choice of pi over the
+  existing rows -- pi fitted directly ON the test month with theta fixed. No
+  transition matrix, however parameterised, can exceed it.
+
+  'best with K+1 rows' adds one row built from the dominant group's test-month
+  excess. Both are ORACLES; they use the test month. They bound what is
+  achievable, they are not forecasting methods.
+
+test        persist         A    best K   best K+1  headroom  row worth   row = parent +        
+2022-01     -20.535   -21.685   -14.463    -13.970    +6.071     +0.493   blk4 + 440K+446S+417N+346K
+2022-02      -9.910    -9.807    -8.136     -7.264    +1.774     +0.873   blk2 + 417N+440K+446S+346K
+2022-03      -7.489    -9.035    -5.557        nan    +1.932       +nan   blk4 + -                 
+2022-04      -8.091    -9.195    -7.078        nan    +1.013       +nan   blk4 + -                 
+2022-05     -11.048   -13.253   -10.880     -8.549    +0.168     +2.331   blk1 + 704L+452Q         
+2022-06     -17.627   -18.126   -17.580    -10.964    +0.048     +6.615   blk1 + 486V+452R+704L+452Q
+2022-07     -17.212   -17.487   -17.193    -10.327    +0.019     +6.867   blk1 + 486V+452R         
+2022-08      -6.780    -6.932    -6.328        nan    +0.452       +nan   blk6 + -                 
+2022-09      -7.946    -8.506    -7.902        nan    +0.044       +nan   blk6 + -                 
+2022-10     -13.383   -13.986   -13.364    -13.012    +0.019     +0.352   blk6 + 346T              
+2022-11     -14.545   -14.709   -14.447    -10.990    +0.098     +3.456   blk6 + 460K+444T+346T    
+
+  mean headroom for better dynamics (best K  - persistence): +1.058
+  mean value of one extra row       (best K+1 - best K)    : +2.998
+
+  -> NOT the missing row. There IS substantial headroom over persistence using
+     only the existing rows, so a better-estimated A could have captured it.
+     Fix the parameterisation before adding birth.
+
+HOW TO READ
+
+  The injected row is an ORACLE: it uses the test month to decide which
+  mutations to raise. It is an upper bound on what a birth mechanism could
+  achieve, not a forecasting method. Do not report it as performance.
+
+  What it establishes is CAUSATION. The only thing that changed between the
+  two columns is the presence of one extra row. If A goes from losing to
+  winning, the missing row was the cause, and no reparameterisation of A --
+  growth rates, low rank, more months -- could have fixed it.
+
+  If the gap stays negative even with the row present, the story is wrong:
+  A is badly estimated, and the fix is fewer parameters, not birth.
+
+  Control 1 is the independent check. A missing-latent failure should be
+  concentrated in high-novelty months. An estimation failure should not care.
+

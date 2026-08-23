@@ -1,0 +1,59 @@
+dominant group in 2022-06: blk1  (234,977 of 240,709 sequences)
+mutations it carries but blk1 does not expect:
+    486V       blk1 says 0.012, observed 0.538
+    452R       blk1 says 0.012, observed 0.529
+    704L       blk1 says 0.081, observed 0.260
+    452Q       blk1 says 0.072, observed 0.246
+
+live groups (ever above 0.1% in any month): [1, 2, 3, 4, 5, 6]
+
+==============================================================================
+TEST 1   best convex mixture of existing fingerprints
+==============================================================================
+
+  weights: blk1=0.710  blk2=0.100  blk3=0.061  blk4=0.024  blk5=0.060  blk6=0.044
+  overall residual  ||obs - mix||_2 = 1.3692
+
+  mutation    observed  best mix  residual
+  486V           0.538     0.008    +0.529
+  452R           0.529     0.111    +0.417
+  704L           0.260     0.058    +0.202
+  452Q           0.246     0.052    +0.195
+
+==============================================================================
+TEST 2   per-mutation reach -- can ANY existing group supply it?
+==============================================================================
+
+  mutation    observed   max over groups   which   verdict
+  486V           0.538             0.012    blk1   UNREACHABLE -- no group has it
+  452R           0.529             0.973    blk6   reachable -- borrowable from another group
+  704L           0.260             0.081    blk1   UNREACHABLE -- no group has it
+  452Q           0.246             0.072    blk1   UNREACHABLE -- no group has it
+
+==============================================================================
+TEST 3   linear span -- the most generous case (weights may be any sign)
+==============================================================================
+
+  residual ||obs - span||_2 = 0.8947
+
+  mutation    observed  best span  residual
+  486V           0.538      0.012    +0.526
+  452R           0.529      0.153    +0.376
+  704L           0.260      0.080    +0.180
+  452Q           0.246      0.071    +0.175
+
+==============================================================================
+VERDICT
+==============================================================================
+
+  3 of 4 defining mutations are at <0.10 in EVERY existing group.
+    486V, 704L, 452Q
+
+  -> MIXED. Some mutations are borrowable from other groups, some are not. A
+     continuous latent gets you part of the way. The mutations no group has
+     still require raising a value the model has never produced.
+
+  Caveat: this tests reachability of the FINGERPRINT, not whether a decoder
+  trained with a smooth prior might generalise to produce it anyway. It is a
+  necessary condition for the continuous route, not a sufficient one.
+

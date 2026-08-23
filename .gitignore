@@ -32,3 +32,4 @@ outputs/*.png
 data/
 *.pkl
 *.pt
+results/*.npz

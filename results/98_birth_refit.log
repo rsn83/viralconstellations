@@ -1,0 +1,97 @@
+K = 8   V = 1,180   months 2020-06..2024-12 (55)
+
+building monthly frequency table ...
+
+refitting theta on the TRAINING months only (2020-06..2023-05) ...
+  refit done. theta now reflects 2020-06..2023-05 only; pi re-estimated per month with theta frozen.
+loaded 538 spike-changing birth events
+  1,012 (group, mutation) positives placed inside the window
+candidate rows 502,416   positives 664 (0.1322%)
+train months 0..35  (334,944 rows, 483 pos)
+test  months 36..     (167,472 rows, 181 pos)
+
+==================================================================
+FITTED WEIGHTS  (standardised; sign and magnitude are comparable)
+==================================================================
+  parent_size           -1.718  ##################################
+  log_freq              +1.229  ########################
+  months_since_seen     -0.781  ###############
+  pi_parent             +0.545  ##########
+  max_other_group       +0.527  ##########
+  hist_peak             -0.373  #######
+  pos_mutability        -0.256  #####
+  n_groups              -0.232  ####
+  ever_seen             -0.107  ##
+
+==================================================================
+HELD-OUT RANKING   (report these, not AUC)
+==================================================================
+
+  random baseline precision = 0.1081%
+
+       k   hits   precision    recall     lift
+      10      0       0.00%      0.0%       0x
+      50      1       2.00%      0.6%      19x
+     100      3       3.00%      1.7%      28x
+     500     15       3.00%      8.3%      28x
+
+  frequency-only baseline:
+      10      0       0.00%      0.0%       0x
+      50      0       0.00%      0.0%       0x
+     100      0       0.00%      0.0%       0x
+     500      0       0.00%      0.0%       0x
+
+  CONTROL -- group-only (pi_parent, parent_size):
+  these two features are CONSTANT within a group, so this ranks
+  groups, not mutations. If it matches the full model, the full
+  model is picking groups too.
+      10      1      10.00%      0.6%      93x
+      50      1       2.00%      0.6%      19x
+     100      1       1.00%      0.6%       9x
+     500      8       1.60%      4.4%      15x
+
+  CONTROL -- mutation-only (everything except the group features):
+      10      0       0.00%      0.0%       0x
+      50      3       6.00%      1.7%      56x
+     100      4       4.00%      2.2%      37x
+     500      6       1.20%      3.3%      11x
+
+  WITHIN-GROUP ranking -- for each group, rank only its own
+  candidates. Group identity carries no information here.
+    k/group   hits   precision    recall     lift
+          5      0       0.00%      0.0%       0x
+         10      0       0.00%      0.0%       0x
+         25      1       0.50%      0.6%       5x
+
+  history-only (months_since_seen, hist_peak, ever_seen):
+      10      0       0.00%      0.0%       0x
+      50      0       0.00%      0.0%       0x
+     100      0       0.00%      0.0%       0x
+     500      0       0.00%      0.0%       0x
+
+HOW TO READ
+  Precision@k against the random baseline is the number that matters. AUC at a
+  0.1% positive rate is misleading -- it can exceed 0.95 while the top 100
+  candidates contain nothing.
+
+  READ THE CONTROLS FIRST. pi_parent and parent_size are constant within a
+  group, so a model using only those ranks GROUPS, not mutations. If the
+  group-only control matches the full model, the headline lift means "we can
+  say which group is active", not "we can say which mutation is acquired" --
+  a much weaker claim, and not the project's target. The within-group ranking
+  removes group identity entirely and is the honest test of mutation choice.
+
+  The comparison to beat is frequency-only. If the full model does not clearly
+  exceed it, the history features are not carrying information and the
+  finite-sites finding is descriptive rather than predictive.
+
+  If history-only is close to the full model, then a mutation's past -- when it
+  was last seen, how high it ever got -- predicts its return better than its
+  current frequency, which is the predictive form of the infinite-to-finite
+  sites transition.
+
+  Labels are exact: each positive is a (parent group, mutation) pair taken from
+  a real Pango birth event, with the parent lineage assigned to the group whose
+  fingerprint best explains it. Only mutations the parent does not already carry
+  are scored as candidates.
+

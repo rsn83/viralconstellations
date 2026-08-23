@@ -201,15 +201,22 @@ def main():
     ap.add_argument("--window", type=int, default=12)
     ap.add_argument("--K", type=int, default=8)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--horizon", type=int, default=1,
+                    help="forecast h months ahead: train ends h months before the "
+                         "test month, and A is applied h times")
     args = ap.parse_args()
 
     names, V = load_vocab(args.vocab)
     tests = ym_range(args.first_test, args.last_test)
-    print(f"V = {V:,}   K = {args.K}   window = {args.window} months\n")
+    print(f"V = {V:,}   K = {args.K}   window = {args.window} months   "
+          f"horizon = h={args.horizon}")
+    print(f"  (training ends {args.horizon} month(s) before each test month; "
+          f"persistence = copy the last TRAINING month)\n")
 
     rows = []
     for te_m in tests:
-        tr_m = [ym_add(te_m, -i) for i in range(args.window, 0, -1)]
+        h = args.horizon
+        tr_m = [ym_add(te_m, -i) for i in range(args.window + h - 1, h - 1, -1)]
         recs = [load_month(args.data_dir, m) for m in tr_m]
         te_r = load_month(args.data_dir, te_m)
         if te_r is None or any(r is None for r in recs):
@@ -221,7 +228,10 @@ def main():
 
         theta, Pi = em_pool(Xs, ws, args.K, seed=args.seed)
         A = fit_A(Pi, vol)
-        pin = Pi[-1] @ A; pin /= pin.sum()
+        pin = Pi[-1].copy()
+        for _ in range(h):
+            pin = pin @ A
+        pin /= pin.sum()
         ll_p = score(Xte, wte, theta, Pi[-1])
         ll_A = score(Xte, wte, theta, pin)
         nov  = novelty(Xte, wte, Xs, ws, theta, Pi)
