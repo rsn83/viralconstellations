@@ -1,0 +1,64 @@
+V = 1,180   K = 8   train 2021-06..2022-05   test ['2022-06']
+  6,028,109 training sequences over 12 months
+  240,709 test sequences
+
+--- seed 0 ---
+  base    persistence  -13.870   via A  -14.083   ceiling  -13.857
+  shrink  persistence  -13.870   via A  -13.917   ceiling  -13.857   lam 0.25
+  drift   persistence  -34.318   via A  -34.318   ceiling  -34.318
+  both    persistence  -34.318   via A  -34.318   ceiling  -34.318   lam 0.00
+
+--- seed 1 ---
+  base    persistence  -12.640   via A  -13.895   ceiling  -12.131
+  shrink  persistence  -12.640   via A  -12.640   ceiling  -12.131   lam 0.00
+  drift   persistence  -34.313   via A  -34.314   ceiling  -34.313
+  both    persistence  -34.313   via A  -34.313   ceiling  -34.313   lam 0.00
+
+--- seed 2 ---
+  base    persistence  -13.508   via A  -13.849   ceiling  -13.492
+  shrink  persistence  -13.508   via A  -13.508   ceiling  -13.492   lam 0.00
+  drift   persistence  -34.320   via A  -34.320   ceiling  -34.319
+  both    persistence  -34.320   via A  -34.320   ceiling  -34.319   lam 1.00
+
+============================================================================================
+RESULTS   K = 8, 3 seeds, test 2022-06
+============================================================================================
+
+  independence baseline (K=1): -40.089
+
+  variant        persistence           via A         ceiling   A - pers  ceil - pers
+  base       -13.339+/-0.516 -13.942+/-0.101 -13.160+/-0.743     -0.603       +0.179
+  shrink     -13.339+/-0.516 -13.355+/-0.533 -13.160+/-0.743     -0.016       +0.179
+  drift      -34.317+/-0.003 -34.317+/-0.002 -34.317+/-0.003     +0.000       +0.001
+  both       -34.317+/-0.003 -34.317+/-0.003 -34.317+/-0.003     +0.000       +0.001
+
+  variant             ARI vs who
+  base             0.547+/-0.092
+  shrink           0.547+/-0.092
+  drift            0.000+/-0.000
+  both             0.000+/-0.000
+
+  fitted shrinkage lambda: 0.083 (0 = pure persistence, 1 = the free transition)
+
+  drift over fixed emissions (persistence forecast): -20.978
+  shrunk transition over persistence:                  -0.016
+
+HOW TO READ
+  'persistence' copies the last training month's mix. 'via A' pushes it through
+  the fitted transition. 'ceiling' fits the mix directly on the test month and
+  is the highest score any forecast could reach with those emissions -- no
+  transition model can exceed it.
+
+  ceiling - persistence is the total amount available to any forecast of the
+  mix. Compare it across variants: DRIFT CHANGES THE EMISSIONS, so it moves the
+  ceiling. Shrinkage does not -- it only changes how close A gets to it.
+
+  A fitted lambda near 0 means the data does not support movement and the
+  transition has collapsed to persistence. That is a cleaner statement of the
+  same finding than a transition that simply loses.
+
+  Predictions recorded before running: shrinkage never loses to persistence;
+  drift helps where backgrounds accumulate gradually and misses an abrupt
+  arrival; neither moves the turnover-month bound.
+
+  saved -> results/101_drift.npz
