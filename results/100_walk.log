@@ -1,0 +1,39 @@
+V = 1,180   K = 24   months 2020-06..2024-12 (55)   lookback = 6
+
+per-month co-occurrence ...
+  2020-06  2020-07  2020-08  2020-09  2020-10  2020-11  2020-12  2021-01  2021-02  2021-03  2021-04  2021-05  2021-06  2021-07  2021-08  2021-09  2021-10  2021-11  2021-12  2022-01  2022-02  2022-03  2022-04  2022-05  2022-06  2022-07  2022-08  2022-09  2022-10  2022-11  2022-12  2023-01  2023-02  2023-03  2023-04  2023-05  2023-06  2023-07  2023-08  2023-09  2023-10  2023-11  2023-12  2024-01  2024-02  2024-03  2024-04  2024-05  2024-06  2024-07  2024-08  2024-09  2024-10  2024-11  2024-12                              fingerprints: min 0 max 38, 9 empty groups
+  2020-11 (6/54)
+  2021-05 (12/54)
+  2021-11 (18/54)
+  2022-05 (24/54)
+  2022-11 (30/54)
+  2023-05 (36/54)
+  2023-11 (42/54)
+  2024-05 (48/54)
+  2024-11 (54/54)
+
+saved -> results/100_walk.npz   shape (54, 24, 1180, 8)
+
+feature         nonzero share  mean(nonzero)
+reach_1                 37.6%         1.0000
+reach_2                 38.6%         1.0000
+reach_3                 38.6%         1.0000
+min_hops                61.6%         0.4447
+walk_prob               38.6%         0.0024
+walk_prob_1             37.6%         0.0008
+co_parent               37.6%         0.0250
+recency                 37.3%         0.8674
+
+WHAT THESE ADD
+  Existing features answer 'is this mutation common / recent / present
+  elsewhere' -- marginal facts about the mutation alone. These answer 'is this
+  mutation CONNECTED to this particular parent through chains of observed
+  co-occurrence, and how recently were those chains formed'.
+
+  For BA.5 the question is whether 452R, which sits in Delta's sets, reaches
+  BA.2's fingerprint in two or three hops through sets sharing mutations with
+  both. No count-based feature can see that.
+
+  Reachability is computed exactly by propagating the random-walk matrix, not
+  by sampling. Only months <= t enter the window.
+

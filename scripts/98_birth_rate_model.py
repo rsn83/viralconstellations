@@ -256,6 +256,28 @@ def prec_recall_at_k(scores, y, ks=(10, 50, 100, 500)):
     return out
 
 
+def per_month_at_k(scores, y, months_of_row, ks=(1, 5, 10, 25)):
+    """Rank WITHIN each month and take the top k, then pool.
+
+    This is how a forecaster is actually used: each month you produce one
+    short list. Pooling every month and taking a global top-k is not the same
+    task -- the global list can be monopolised by a single month, which is
+    exactly what happens when pi_parent and log_freq both favour the dominant
+    group.
+    """
+    out = []
+    for k in ks:
+        hit = tot = 0
+        for m in np.unique(months_of_row):
+            sel = months_of_row == m
+            if sel.sum() < k: continue
+            o = np.argsort(-scores[sel])[:k]
+            hit += y[sel][o].sum(); tot += k
+        if tot:
+            out.append((k, hit, hit / tot, hit / max(y.sum(), 1), tot))
+    return out
+
+
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser()
@@ -267,6 +289,10 @@ def main():
     ap.add_argument("--K", type=int, default=0)
     ap.add_argument("--test-frac", type=float, default=.34,
                     help="last fraction of months held out, in time order")
+    ap.add_argument("--walk-npz", default="",
+                    help="structural features from script 100; concatenated "
+                         "onto the feature matrix and reported as their own "
+                         "ablation")
     ap.add_argument("--refit-groups", action="store_true",
                     help="refit theta/pi on the TRAINING months of this window "
                          "instead of reusing the fingerprints in --npz. Use this "
@@ -285,6 +311,17 @@ def main():
     K = theta.shape[0]
     months = months_in_range(args.months)
     print(f"K = {K}   V = {V:,}   months {months[0]}..{months[-1]} ({len(months)})")
+
+    WALK = None; WFEATS = []
+    if args.walk_npz:
+        wz = np.load(args.walk_npz, allow_pickle=True)
+        WALK = wz["W"]; WFEATS = [str(x) for x in wz["feats"]]
+        wm = [str(x) for x in wz["months"]]
+        if wm[0] != months[0]:
+            print(f"  [warn] walk features start at {wm[0]} but this run starts "
+                  f"at {months[0]} -- regenerate script 100 with the same "
+                  f"--months", file=sys.stderr)
+        print(f"loaded walk features {WALK.shape}: {', '.join(WFEATS)}")
 
     print("\nbuilding monthly frequency table ...", flush=True)
     F = monthly_freq(args.data_dir, months, V)
@@ -346,6 +383,8 @@ def main():
     rows_X, rows_y, rows_m = [], [], []
     for t in range(len(months) - 1):
         Xf, meta = make_features(t, F, theta, Pi[min(t, len(Pi) - 1)], pos, V, K)
+        if WALK is not None and t < WALK.shape[0]:
+            Xf = np.hstack([Xf, WALK[t].reshape(K * V, len(WFEATS))])
         P = pos_by_t.get(t, set())
         y = np.array([1.0 if ((j, n) in P) else 0.0 for (j, n, _) in meta])
         keep = np.array([ip == 0 for (_, _, ip) in meta])
@@ -355,6 +394,7 @@ def main():
     print(f"candidate rows {len(y):,}   positives {int(y.sum()):,} "
           f"({y.mean():.4%})")
 
+    ALL = FEATS + WFEATS
     cut = int(len(months) * (1 - args.test_frac))
     tr, te = mth < cut, mth >= cut
     print(f"train months 0..{cut-1}  ({tr.sum():,} rows, {int(y[tr].sum())} pos)")
@@ -367,7 +407,7 @@ def main():
     print("\n" + "=" * 66)
     print("FITTED WEIGHTS  (standardised; sign and magnitude are comparable)")
     print("=" * 66)
-    for f, wi in sorted(zip(FEATS, w), key=lambda kv: -abs(kv[1])):
+    for f, wi in sorted(zip(ALL, w), key=lambda kv: -abs(kv[1])):
         bar = "#" * int(abs(wi) * 20)
         print(f"  {f:<20}{wi:>+8.3f}  {bar}")
 
@@ -381,16 +421,50 @@ def main():
         print(f"  {k:>6}{int(hit):>7}{pr:>12.2%}{rc:>10.1%}{pr/base:>8.0f}x")
 
     # frequency-only baseline
-    fi = FEATS.index("log_freq")
+    fi = ALL.index("log_freq")
     s_freq = X[te][:, fi]
     print(f"\n  frequency-only baseline:")
     for k, hit, pr, rc in prec_recall_at_k(s_freq, y[te]):
         print(f"  {k:>6}{int(hit):>7}{pr:>12.2%}{rc:>10.1%}{pr/base:>8.0f}x")
 
     # ---- CONTROL: the published convergent-residue list, ALONE ----
-    ci_conv = FEATS.index("convergent")
+    ci_conv = ALL.index("convergent")
     s_conv = X[te][:, ci_conv] + 1e-6 * np.random.default_rng(0).random(te.sum())
     n_conv = int((X[te][:, ci_conv] > 0).sum())
+    # ---- per-month ranking: the operational setting ----
+    mte = mth[te]
+    print(f"\n  PER-MONTH RANKING -- rank within each of the "
+          f"{len(np.unique(mte))} test months separately,")
+    print(f"  then pool. This is how a forecaster is used: one short list per")
+    print(f"  month. The pooled ranking above can be monopolised by one month.")
+    print(f"  {'k/month':>9}{'hits':>7}{'slots':>7}{'precision':>12}"
+          f"{'recall':>10}{'lift':>8}")
+    for k, h, p, r, tot in per_month_at_k(s_te, y[te], mte):
+        print(f"  {k:>9}{int(h):>7}{tot:>7}{p:>12.2%}{r:>10.1%}{p/base:>7.0f}x")
+
+    if WFEATS:
+        wi_ = [ALL.index(f) for f in WFEATS]
+        ci_ = [i for i in range(len(ALL)) if i not in wi_]
+        ww, bw, muw, sdw = fit_logistic(X[tr][:, wi_], y[tr])
+        s_walk = predict(X[te][:, wi_], ww, bw, muw, sdw)
+        print(f"\n  ABLATION -- STRUCTURAL (walk) FEATURES ALONE:")
+        print(f"  position in the co-occurrence hypergraph relative to the")
+        print(f"  parent's fingerprint. No marginal counts at all.")
+        for k, hit, pr, rc in prec_recall_at_k(s_walk, y[te]):
+            print(f"  {k:>6}{int(hit):>7}{pr:>12.2%}{rc:>10.1%}{pr/base:>8.0f}x")
+        for k, h, p, r, tot in per_month_at_k(s_walk, y[te], mte):
+            pass
+        print(f"  per-month:")
+        for k, h, p, r, tot in per_month_at_k(s_walk, y[te], mte):
+            print(f"  {k:>6}{int(h):>7}{p:>12.2%}{r:>10.1%}{p/base:>8.0f}x")
+
+        cw, cb, cmu, csd = fit_logistic(X[tr][:, ci_], y[tr])
+        s_nowalk = predict(X[te][:, ci_], cw, cb, cmu, csd)
+        print(f"\n  ABLATION -- COUNT FEATURES ONLY (walk features removed):")
+        print(f"  per-month:")
+        for k, h, p, r, tot in per_month_at_k(s_nowalk, y[te], mte):
+            print(f"  {k:>6}{int(h):>7}{p:>12.2%}{r:>10.1%}{p/base:>8.0f}x")
+
     print(f"\n  CONTROL -- PUBLISHED CONVERGENT-RESIDUE LIST, ALONE:")
     print(f"  binary: is this mutation at 346/417/444/450/452/460/484/486/490/")
     print(f"  493/494/501/681. No fitting, no data -- just the literature.")
@@ -400,7 +474,7 @@ def main():
         print(f"  {k:>6}{int(hit):>7}{pr:>12.2%}{rc:>10.1%}{pr/base:>8.0f}x")
 
     # ---- and the model WITHOUT it, to see what the model adds ----
-    ni = [i for i in range(len(FEATS)) if i != ci_conv]
+    ni = [i for i in range(len(ALL)) if i != ci_conv]
     wn, bn, mun, sdn = fit_logistic(X[tr][:, ni], y[tr])
     s_noconv = predict(X[te][:, ni], wn, bn, mun, sdn)
     print(f"\n  CONTROL -- full model WITHOUT the convergent feature")
@@ -410,7 +484,7 @@ def main():
         print(f"  {k:>6}{int(hit):>7}{pr:>12.2%}{rc:>10.1%}{pr/base:>8.0f}x")
 
     # ---- CONTROL: group-only. No mutation-level information at all. ----
-    gi = [FEATS.index("pi_parent")]
+    gi = [ALL.index("pi_parent")]
     wg, bg, mug, sdg = fit_logistic(X[tr][:, gi], y[tr])
     s_grp = predict(X[te][:, gi], wg, bg, mug, sdg)
     print(f"\n  CONTROL -- group-only (pi_parent):")
@@ -419,7 +493,7 @@ def main():
         print(f"  {k:>6}{int(hit):>7}{pr:>12.2%}{rc:>10.1%}{pr/base:>8.0f}x")
 
     # ---- CONTROL: mutation-only. Everything except the two group features. ----
-    mi = [i for i in range(len(FEATS)) if i not in gi]
+    mi = [i for i in range(len(ALL)) if i not in gi]
     wm, bm, mum, sdm = fit_logistic(X[tr][:, mi], y[tr])
     s_mut = predict(X[te][:, mi], wm, bm, mum, sdm)
     print(f"\n  CONTROL -- mutation-only (everything except the group features):")
@@ -448,7 +522,7 @@ def main():
                   f"{hit/max(y[te].sum(),1):>10.1%}{pr/base:>8.0f}x")
 
     # history features only
-    hi = [FEATS.index(f) for f in ("months_since_seen", "hist_peak", "ever_seen")]
+    hi = [ALL.index(f) for f in ("months_since_seen", "hist_peak", "ever_seen")]
     wh, bh, muh, sdh = fit_logistic(X[tr][:, hi], y[tr])
     s_hist = predict(X[te][:, hi], wh, bh, muh, sdh)
     print(f"\n  history-only (months_since_seen, hist_peak, ever_seen):")
@@ -460,6 +534,11 @@ HOW TO READ
   Precision@k against the random baseline is the number that matters. AUC at a
   0.1% positive rate is misleading -- it can exceed 0.95 while the top 100
   candidates contain nothing.
+
+  READ THE PER-MONTH TABLE, NOT THE POOLED ONE. Pooling every test month and
+  taking a global top-500 lets a single month monopolise the list, which is
+  what happens when the strongest features both favour the dominant group.
+  A forecaster produces one short list per month; that is the per-month table.
 
   THE DECISIVE COMPARISON is the full model against the PUBLISHED CONVERGENT-
   RESIDUE LIST used alone. That list is a fixed set of positions taken from the
