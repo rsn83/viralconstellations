@@ -139,7 +139,7 @@ def theta_at(beta, gamma, t, drift):
 
 
 def em(Xs, ws, K, drift=False, iters=250, tol=1e-6, seed=0, prior=.5,
-       inner=12, lr=2.0, verbose=False):
+       inner=12, lr=2.0, verbose=False, init=None):
     """EM for the block mixture, with or without drifting emissions.
 
     Without drift the M-step for theta is closed form. With drift it has no
@@ -148,10 +148,18 @@ def em(Xs, ws, K, drift=False, iters=250, tol=1e-6, seed=0, prior=.5,
     """
     rng = np.random.default_rng(seed)
     T, V = len(Xs), Xs[0].shape[1]
-    mean = np.vstack(Xs).mean(0)
-    th0 = np.clip(rng.random((K, V)) * .4 + mean[None, :] * .6, .02, .98)
-    beta = np.log(th0 / (1 - th0)); gamma = np.zeros((K, V))
-    Pi = np.full((T, K), 1.0 / K)
+    if init is not None:
+        # warm start from a converged fixed-emission fit: beta already
+        # separates the rows, so only the slopes have to be learned. Fitting
+        # beta and gamma together from a random start collapses every row onto
+        # the pooled mean and EM cannot recover.
+        beta = init["beta"].copy(); Pi = init["Pi"].copy()
+    else:
+        mean = np.vstack(Xs).mean(0)
+        th0 = np.clip(rng.random((K, V)) * .4 + mean[None, :] * .6, .02, .98)
+        beta = np.log(th0 / (1 - th0))
+        Pi = np.full((T, K), 1.0 / K)
+    gamma = np.zeros((K, V))
     tv = (np.arange(T) - (T - 1) / 2.0) / max(T - 1, 1)     # centred, scaled
     prev = -np.inf
 
@@ -314,8 +322,10 @@ def main():
 
     for sd in range(args.seeds):
         print(f"\n--- seed {sd} ---", flush=True)
+        base_fit = em(Xs, ws, args.K, drift=False, seed=sd)
         for nm, drift, shrink in variants:
-            f = em(Xs, ws, args.K, drift=drift, seed=sd)
+            f = (base_fit if not drift
+                 else em(Xs, ws, args.K, drift=True, seed=sd, init=base_fit))
             beta, gamma, Pi, tv = f["beta"], f["gamma"], f["Pi"], f["tv"]
             # emission at the TEST month: one step past the last training month
             dt = (tv[-1] - tv[-2]) if T > 1 else 0.0
@@ -327,6 +337,10 @@ def main():
                 A, lam = fit_A_free(Pi, vol), float("nan")
             pin = Pi[-1] @ A; pin = pin / pin.sum()
 
+            spread = float(np.abs(th_te - th_te.mean(0, keepdims=True)).mean())
+            if spread < 1e-3:
+                print(f"  {nm:<7} [COLLAPSED: all rows identical, "
+                      f"mean |theta - mean| = {spread:.2e}]", flush=True)
             ll_pers = score(Xte, wte, th_te, Pi[-1])
             ll_A    = score(Xte, wte, th_te, pin)
             _, ll_c = best_pi(Xte, wte, th_te)

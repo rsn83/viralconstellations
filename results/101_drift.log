@@ -5,20 +5,20 @@ V = 1,180   K = 8   train 2021-06..2022-05   test ['2022-06']
 --- seed 0 ---
   base    persistence  -13.870   via A  -14.083   ceiling  -13.857
   shrink  persistence  -13.870   via A  -13.917   ceiling  -13.857   lam 0.25
-  drift   persistence  -34.318   via A  -34.318   ceiling  -34.318
-  both    persistence  -34.318   via A  -34.318   ceiling  -34.318   lam 0.00
+  drift   persistence  -12.769   via A  -12.990   ceiling  -12.757
+  both    persistence  -12.769   via A  -12.818   ceiling  -12.757   lam 0.25
 
 --- seed 1 ---
   base    persistence  -12.640   via A  -13.895   ceiling  -12.131
   shrink  persistence  -12.640   via A  -12.640   ceiling  -12.131   lam 0.00
-  drift   persistence  -34.313   via A  -34.314   ceiling  -34.313
-  both    persistence  -34.313   via A  -34.313   ceiling  -34.313   lam 0.00
+  drift   persistence  -11.759   via A  -13.048   ceiling  -11.247
+  both    persistence  -11.759   via A  -11.759   ceiling  -11.247   lam 0.00
 
 --- seed 2 ---
   base    persistence  -13.508   via A  -13.849   ceiling  -13.492
   shrink  persistence  -13.508   via A  -13.508   ceiling  -13.492   lam 0.00
-  drift   persistence  -34.320   via A  -34.320   ceiling  -34.319
-  both    persistence  -34.320   via A  -34.320   ceiling  -34.319   lam 1.00
+  drift   persistence  -12.469   via A  -12.886   ceiling  -12.452
+  both    persistence  -12.469   via A  -12.469   ceiling  -12.452   lam 0.00
 
 ============================================================================================
 RESULTS   K = 8, 3 seeds, test 2022-06
@@ -29,18 +29,18 @@ RESULTS   K = 8, 3 seeds, test 2022-06
   variant        persistence           via A         ceiling   A - pers  ceil - pers
   base       -13.339+/-0.516 -13.942+/-0.101 -13.160+/-0.743     -0.603       +0.179
   shrink     -13.339+/-0.516 -13.355+/-0.533 -13.160+/-0.743     -0.016       +0.179
-  drift      -34.317+/-0.003 -34.317+/-0.002 -34.317+/-0.003     +0.000       +0.001
-  both       -34.317+/-0.003 -34.317+/-0.003 -34.317+/-0.003     +0.000       +0.001
+  drift      -12.332+/-0.424 -12.974+/-0.067 -12.152+/-0.652     -0.642       +0.180
+  both       -12.332+/-0.424 -12.349+/-0.441 -12.152+/-0.652     -0.016       +0.180
 
   variant             ARI vs who
   base             0.547+/-0.092
   shrink           0.547+/-0.092
-  drift            0.000+/-0.000
-  both             0.000+/-0.000
+  drift            0.551+/-0.077
+  both             0.551+/-0.077
 
   fitted shrinkage lambda: 0.083 (0 = pure persistence, 1 = the free transition)
 
-  drift over fixed emissions (persistence forecast): -20.978
+  drift over fixed emissions (persistence forecast): +1.007
   shrunk transition over persistence:                  -0.016
 
 HOW TO READ
