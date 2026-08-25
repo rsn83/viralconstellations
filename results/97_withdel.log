@@ -1,0 +1,91 @@
+  2,000,000 rows ...
+  4,000,000 rows ...
+  6,000,000 rows ...
+  8,000,000 rows ...
+
+rows read 9,428,945   lineages seen 4,554
+lineages with >= 100 sequences: 1,879
+
+birth events with a resolvable observed parent: 1,387   (no parent found: 492)
+  of the no-parent cases, recombinants (X*): 209
+
+  849 of 1,387 children (61.2%) have the SAME spike fingerprint as their
+  parent -- they are Pango splits defined outside spike, not spike
+  birth events. Real spike births: 538
+
+======================================================================
+Q2   how many spike mutations does a child add to its parent?
+======================================================================
+
+  among the 538 events that DO change spike:
+
+  added      events    share  cumulative
+  1             409    76.0%       76.0%
+  2              63    11.7%       87.7%
+  3              19     3.5%       91.3%
+  4               8     1.5%       92.8%
+  5               4     0.7%       93.5%
+  6               5     0.9%       94.4%
+  7               2     0.4%       94.8%
+  8               4     0.7%       95.5%
+  9               6     1.1%       96.7%
+  10+            18     3.3%      100.0%
+
+  median 1   mean 2.08   max 27
+  a ONE-mutation birth rule covers 76.0% of real spike births;  one-or-two covers 87.7%
+
+======================================================================
+Q3   of the added mutations, how many were already circulating?
+======================================================================
+
+  Two senses of 'already circulating' matter and are different:
+    (a) the mutation had been OBSERVED somewhere before -- so it is in the
+        vocabulary and a candidate generator can propose it;
+    (b) the mutation is HIGH in some existing group's fingerprint -- so it can
+        be reached by mixing groups.
+  This test measures (a). Script 96 measures (b). F486V passes (a) and fails
+  (b): it existed at low frequency before BA.5 but no group carried it.
+
+
+  added mutations total          1,118
+    already seen elsewhere first 1,058  (94.6%)
+    first appearance ever        60  (5.4%)
+
+  events needing ONLY previously-seen mutations 497  (92.4%)
+  events needing ONLY first-ever mutations      31  (5.8%)
+  events needing BOTH                           10  (1.9%)
+
+======================================================================
+Q4   how much supervision survives a prevalence filter?
+======================================================================
+
+  min sequences      events
+                        all   spike births
+  10                  1,387            538
+  100                 1,387            538
+  1,000                 425            167
+  10,000                 96             50
+  100,000                18              8
+
+======================================================================
+WHAT THIS MEANS FOR A BIRTH MODEL
+======================================================================
+
+  Supervision available: 1,387 events, 167 of them reaching 1,000+
+  sequences. A logistic birth rate log lambda(j,n) = w . features(j,n) needs
+  roughly 10-20 events per feature to be fitted honestly, so that caps the
+  model at about 11 features if you restrict to established births,
+  or 92 if you use all of them.
+
+  The added-mutation distribution decides the candidate space. If most children
+  add one mutation, candidates are (parent, mutation) pairs: K x V, enumerable.
+  If most add several, the candidate space is combinatorial and needs either
+  multi-step proposals or a different formulation.
+
+  The borrow/novel split decides whether ONE mechanism suffices. Mutations
+  already circulating elsewhere can be proposed by copying a column from
+  another group. Mutations appearing for the first time cannot -- those need a
+  driver of their own (position mutability, structural exposure, whether the
+  site has varied before).
+
+  wrote 1,387 events -> data/processed/birth_events_withdel.tsv

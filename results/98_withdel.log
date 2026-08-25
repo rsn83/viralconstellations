@@ -1,0 +1,134 @@
+K = 24   V = 1,359   months 2020-06..2024-12 (55)
+
+building monthly frequency table ...
+loaded 538 spike-changing birth events
+  1,012 (group, mutation) positives placed inside the window
+candidate rows 1,738,476   positives 685 (0.0394%)
+train months 0..35  (1,158,984 rows, 503 pos)
+test  months 36..     (579,492 rows, 182 pos)
+
+==================================================================
+FITTED WEIGHTS  (standardised; sign and magnitude are comparable)
+==================================================================
+  log_freq              +1.301  ##########################
+  months_since_seen     -0.762  ###############
+  max_other_group       +0.504  ##########
+  hist_peak             -0.500  ##########
+  pi_parent             +0.432  ########
+  convergent            +0.427  ########
+  pos_mutability        -0.337  ######
+  ever_seen             -0.160  ###
+  n_groups              -0.131  ##
+
+==================================================================
+HELD-OUT RANKING   (report these, not AUC)
+==================================================================
+
+  random baseline precision = 0.0314%
+
+       k   hits   precision    recall     lift
+      10      0       0.00%      0.0%       0x
+      50      0       0.00%      0.0%       0x
+     100      0       0.00%      0.0%       0x
+     500      0       0.00%      0.0%       0x
+
+  frequency-only baseline:
+      10      0       0.00%      0.0%       0x
+      50      0       0.00%      0.0%       0x
+     100      0       0.00%      0.0%       0x
+     500      0       0.00%      0.0%       0x
+
+  PER-MONTH RANKING -- rank within each of the 18 test months separately,
+  then pool. This is how a forecaster is used: one short list per
+  month. The pooled ranking above can be monopolised by one month.
+    k/month   hits  slots   precision    recall    lift
+          1      0     18       0.00%      0.0%      0x
+          5      0     90       0.00%      0.0%      0x
+         10      0    180       0.00%      0.0%      0x
+         25      0    450       0.00%      0.0%      0x
+
+  CONTROL -- PUBLISHED CONVERGENT-RESIDUE LIST, ALONE:
+  binary: is this mutation at 346/417/444/450/452/460/484/486/490/
+  493/494/501/681. No fitting, no data -- just the literature.
+  55,656 of 579,492 test candidates (9.6%) are at a convergent residue.
+      10      0       0.00%      0.0%       0x
+      50      1       2.00%      0.5%      64x
+     100      1       1.00%      0.5%      32x
+     500      1       0.20%      0.5%       6x
+
+  CONTROL -- full model WITHOUT the convergent feature
+  (the published list flags 11% of candidates, so a positive weight
+  on it promotes tens of thousands at once and floods the top-k):
+      10      0       0.00%      0.0%       0x
+      50      0       0.00%      0.0%       0x
+     100      0       0.00%      0.0%       0x
+     500      0       0.00%      0.0%       0x
+
+  CONTROL -- group-only (pi_parent):
+  constant within a group, so this ranks groups, not mutations.
+      10      0       0.00%      0.0%       0x
+      50      0       0.00%      0.0%       0x
+     100      0       0.00%      0.0%       0x
+     500      0       0.00%      0.0%       0x
+
+  CONTROL -- mutation-only (everything except the group features):
+      10      0       0.00%      0.0%       0x
+      50      0       0.00%      0.0%       0x
+     100      0       0.00%      0.0%       0x
+     500      0       0.00%      0.0%       0x
+
+  WITHIN-GROUP ranking -- for each group, rank only its own
+  candidates. Group identity carries no information here.
+    k/group   hits   precision    recall     lift
+          5      0       0.00%      0.0%       0x
+         10      0       0.00%      0.0%       0x
+         25      0       0.00%      0.0%       0x
+
+  history-only (months_since_seen, hist_peak, ever_seen):
+      10      0       0.00%      0.0%       0x
+      50      0       0.00%      0.0%       0x
+     100      0       0.00%      0.0%       0x
+     500      0       0.00%      0.0%       0x
+
+HOW TO READ
+  Precision@k against the random baseline is the number that matters. AUC at a
+  0.1% positive rate is misleading -- it can exceed 0.95 while the top 100
+  candidates contain nothing.
+
+  READ THE PER-MONTH TABLE, NOT THE POOLED ONE. Pooling every test month and
+  taking a global top-500 lets a single month monopolise the list, which is
+  what happens when the strongest features both favour the dominant group.
+  A forecaster produces one short list per month; that is the per-month table.
+
+  THE DECISIVE COMPARISON is the full model against the PUBLISHED CONVERGENT-
+  RESIDUE LIST used alone. That list is a fixed set of positions taken from the
+  literature -- no fitting, no data. If it matches the full model, this work
+  rediscovers something already catalogued and the claim has to change. If the
+  full model clearly beats it, the model knows something the list does not:
+  which BACKGROUND acquires the mutation, and when.
+
+  Compare also the full model with and without the convergent feature. If
+  removing it costs nothing, the model was never using the published knowledge
+  and found the signal independently.
+
+  READ THE CONTROLS FIRST. pi_parent and parent_size are constant within a
+  group, so a model using only those ranks GROUPS, not mutations. If the
+  group-only control matches the full model, the headline lift means "we can
+  say which group is active", not "we can say which mutation is acquired" --
+  a much weaker claim, and not the project's target. The within-group ranking
+  removes group identity entirely and is the honest test of mutation choice.
+
+  The comparison to beat is frequency-only. If the full model does not clearly
+  exceed it, the history features are not carrying information and the
+  finite-sites finding is descriptive rather than predictive.
+
+  If history-only is close to the full model, then a mutation's past -- when it
+  was last seen, how high it ever got -- predicts its return better than its
+  current frequency, which is the predictive form of the infinite-to-finite
+  sites transition.
+
+  Labels are exact: each positive is a (parent group, mutation) pair taken from
+  a real Pango birth event, with the parent lineage assigned to the group whose
+  fingerprint best explains it. Only mutations the parent does not already carry
+  are scored as candidates.
+

@@ -1,0 +1,86 @@
+
+==============================================================================
+TEST MONTH 2022-06    11,166 distinct sets, 241,129 sequences
+==============================================================================
+    2022-05 done
+    2022-04 done
+    2022-03 done
+    2021-12 done
+
+  BY DISTINCT SET  -- how many new set-types are reachable
+    h    origin   new sets    1 mut    2 mut       3+
+    1   2022-05      8,051    59.9%    15.1%    25.0%
+    2   2022-04      9,191    46.7%    17.1%    36.2%
+    3   2022-03      9,679    34.8%    17.9%    47.2%
+    6   2021-12     11,028    14.0%    13.1%    72.9%
+
+  BY SEQUENCE  -- how much of the month those sets account for
+    h    origin   new share    1 mut    2 mut       3+
+    1   2022-05        5.9%    66.2%    14.4%    19.4%
+    2   2022-04       12.9%    59.4%    14.9%    25.6%
+    3   2022-03       21.4%    45.5%    16.5%    38.0%
+    6   2021-12       40.6%    43.3%     9.1%    47.6%
+
+==============================================================================
+TEST MONTH 2022-11    10,901 distinct sets, 121,512 sequences
+==============================================================================
+    2022-10 done
+    2022-09 done
+    2022-08 done
+    2022-05 done
+
+  BY DISTINCT SET  -- how many new set-types are reachable
+    h    origin   new sets    1 mut    2 mut       3+
+    1   2022-10      7,649    57.4%    15.5%    27.0%
+    2   2022-09      8,704    50.8%    17.9%    31.4%
+    3   2022-08      9,217    41.8%    19.8%    38.4%
+    6   2022-05     10,492    21.9%    20.5%    57.7%
+
+  BY SEQUENCE  -- how much of the month those sets account for
+    h    origin   new share    1 mut    2 mut       3+
+    1   2022-10        9.4%    64.6%    13.5%    21.8%
+    2   2022-09       16.0%    63.3%    14.6%    22.1%
+    3   2022-08       27.5%    56.3%    21.2%    22.4%
+    6   2022-05       77.3%    41.7%    28.0%    30.4%
+
+==============================================================================
+TEST MONTH 2024-01    6,071 distinct sets, 33,740 sequences
+==============================================================================
+    2023-12 done
+    2023-11 done
+    2023-10 done
+    2023-07 done
+
+  BY DISTINCT SET  -- how many new set-types are reachable
+    h    origin   new sets    1 mut    2 mut       3+
+    1   2023-12      4,395    39.8%    13.7%    46.6%
+    2   2023-11      5,084    32.5%    12.7%    54.8%
+    3   2023-10      5,446    23.0%    12.5%    64.5%
+    6   2023-07      5,944     6.6%     7.6%    85.8%
+
+  BY SEQUENCE  -- how much of the month those sets account for
+    h    origin   new share    1 mut    2 mut       3+
+    1   2023-12       16.2%    45.3%    13.5%    41.2%
+    2   2023-11       25.1%    44.8%    12.7%    42.5%
+    3   2023-10       36.8%    41.7%    11.8%    46.5%
+    6   2023-07       94.8%    40.7%    10.0%    49.3%
+
+
+HOW TO READ
+  'distance' is the fewest mutations that must be added to a set already
+  circulating h months earlier to produce the new set. Distance 1 means the new
+  set is one mutation from something already there; 4+ means it is not
+  reachable by small edits from anything in that month.
+
+  '3+' is everything not reachable by adding one or two mutations.
+  If the distribution shifts right as h grows, targets genuinely get further
+  away and the horizon decay has a data-level cause -- no model could fix it.
+
+  If it barely shifts, the targets are equally close at every horizon and the
+  decay is about the RATE being unlearnable from an earlier window, not about
+  the targets. That points at the fitting, not the data.
+
+  Compare 2022-06 with 2022-11. Drift decayed on the first (+4.07, +1.21,
+  -0.31) and held on the second (+3.97, +4.20, +2.05). If their distance
+  profiles differ in the same direction, that is the mechanism.
+

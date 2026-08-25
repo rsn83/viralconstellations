@@ -1,0 +1,60 @@
+existing vocabulary: 1,180 substitution nodes
+
+pass 1: counting deletion ranges ...
+  2,000,000
+  4,000,000
+  6,000,000
+  8,000,000
+
+  12,438 distinct spike deletion ranges seen
+  179 appear in >= 50 sequences -> given a node
+
+               range   sequences   known as
+         21765-21770   3,514,798   del69/70   Alpha, Omicron BA.1
+         21633-21641   3,046,429   del24-26   Omicron BA.2
+         22029-22034   2,833,194   del156/157 Delta
+         22194-22196   1,611,078   del211     Omicron BA.1
+         21987-21995   1,541,857   del143-145 Omicron BA.1
+         21992-21994   1,299,515   del144     Alpha, Omicron BA.1
+         23009-23011     180,991   
+         21653-21655      59,337   
+         22490-22490      33,215   
+         21765-21769      30,241   
+         22283-22291      11,899   
+         22196-22198       8,706   
+
+wrote data/processed/full_data_graphs_withdel/posres_vocab_withdel.tsv  (1,359 nodes)
+
+pass 2: rebuilding monthly sets ...
+  2,000,000
+  4,000,000
+  6,000,000
+  8,000,000
+
+  9,308,804 sequences, 8,300,663 carrying at least one deletion node (89.2%)
+  wrote 58 monthly files to data/processed/full_data_graphs_withdel
+
+======================================================================
+WHAT CHANGED
+======================================================================
+
+  distinct sets per month, with deletions:
+    2020-03       296 sets       30,131 sequences
+    2020-04       474 sets       35,440 sequences
+    2020-05       369 sets       18,346 sequences
+    2020-06       331 sets       17,237 sequences
+    2020-07       371 sets       20,188 sequences
+    2020-08       478 sets       21,810 sequences
+
+  Rerun with this vocabulary and out-dir:
+    96  is a new lineage reachable       -- deletions are what separate the
+                                            sublineages that currently merge
+    97  birth events                      -- 82% were recorded as "nothing
+                                            changed"; they should now appear
+    98  can the new row be named          -- previously scored against labels
+                                            that mostly did not exist
+
+  The profile HMM result is unaffected. Its degeneracy comes from the alignment
+  being given, and a deletion node keeps every sequence at a fixed set of
+  possible positions.
+

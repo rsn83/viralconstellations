@@ -1,0 +1,85 @@
+  2,000,000 rows ...
+  4,000,000 rows ...
+  6,000,000 rows ...
+  8,000,000 rows ...
+
+rows read 9,428,945   kept 6,275,983   with a spike deletion 5,932,590 (94.5%)
+
+==========================================================================
+1  WHICH SPIKE POSITIONS ARE DELETED
+==========================================================================
+
+    codon    sequences    share   known as
+      157    2,806,435    44.7%   del156/157 (Delta)
+      158    2,803,147    44.7%   
+      156    2,801,238    44.6%   del156/157 (Delta)
+       69    1,783,653    28.4%   del69/70 (Alpha, Omicron)
+       68    1,782,115    28.4%   
+       70    1,775,755    28.3%   del69/70
+      144    1,598,413    25.5%   del144 (Alpha, Omicron BA.1)
+      143    1,551,285    24.7%   del143-145 (Omicron BA.1)
+      142    1,549,899    24.7%   
+      145    1,544,620    24.6%   del143-145
+       25    1,453,268    23.2%   del24-26
+       26    1,453,141    23.2%   del24-26
+       24    1,451,260    23.1%   del24-26 (Omicron BA.2)
+       27    1,450,624    23.1%   del27 (Omicron)
+      212    1,414,050    22.5%   
+
+==========================================================================
+2  SEQUENCES OUR ENCODING CANNOT TELL APART
+==========================================================================
+
+  distinct substitution-sets                  101,542
+  ...that hide two or more deletion patterns  7,377
+  sequences inside those sets                 5,831,293  (92.9%)
+
+  worst offenders:
+     |subs|   sequences  distinct deletion patterns
+         28     753,079                          80
+          8     677,917                         144
+          9     645,574                         108
+         31     398,557                          71
+          7     396,036                         117
+         30     223,103                          56
+
+==========================================================================
+3  LINEAGES OUR ENCODING MUST MERGE
+==========================================================================
+
+  lineages with >= 100 sequences        421
+  groups sharing an identical substitution fingerprint 34
+
+  lineages sharing a fingerprint                  differ in deletions?
+  AY.103, AY.122, AY.122.1, AY.122.4, AY.13                         no
+  AY.100, AY.105, AY.107, AY.108, AY.109                            no
+  BA.2, BA.2.1, BA.2.10, BA.2.10.1, BA.2.14                         no
+  BA.1.1, BA.1.1.1, BA.1.1.10, BA.1.1.11, BA.1.1.12                    no
+  BA.1, BA.1.10, BA.1.12, BA.1.13, BA.1.14                          no
+  BA.1.17.2, BD.1                                                   no
+  BA.2.12.1, BG.5                                                   no
+  AY.4.2, AY.4.2.1, AY.4.2.3, AY.4.2.5                              no
+
+  of 34 clashing groups, 0 would be separated by adding deletions
+
+==========================================================================
+4  BIRTH EVENTS THAT INVOLVE A DELETION
+==========================================================================
+
+  events with both lineages seen            644
+  child's deletions differ from parent's    52  (8.1%)
+  ...of which we recorded ZERO added        20
+
+  The last line is the important one: those are births our encoding records as
+  'nothing changed', because the only change was a deletion. They enter the
+  appearance task as unpredictable by construction.
+
+WHAT TO CONCLUDE
+  Section 2 says how many sequences are indistinguishable to the model that
+  should not be. Section 3 says which lineages are forced into one block.
+  Section 4 says how much of the appearance task was impossible.
+
+  None of this touches the profile HMM result: that degeneracy comes from the
+  alignment being given, and a gap symbol keeps every sequence at 1,273
+  positions. The two are independent.
+

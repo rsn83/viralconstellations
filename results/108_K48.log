@@ -1,0 +1,144 @@
+K = 48   V = 1,359   months 2021-06..2022-06
+  2021-06 assigned  2021-07 assigned  2021-08 assigned  2021-09 assigned  2021-10 assigned  2021-11 assigned  2021-12 assigned  2022-01 assigned  2022-02 assigned  2022-03 assigned  2022-04 assigned  2022-05 assigned  2022-06 assigned                              
+blocks holding >= 2% of sequences: [1, 4, 22, 32, 35, 46, 47]
+
+==============================================================================
+1  LARGEST RESIDUAL CORRELATIONS INSIDE EACH BLOCK
+==============================================================================
+
+  For every pair, expected co-occurrence under independence-given-block is
+  n * p_a * p_b, using the block's OWN observed rates. The residual is
+  (observed - expected)/sqrt(expected). Under exact conditional independence
+  these are small; large positive values mean the pair arrives together inside
+  the block, which independence cannot represent.
+
+
+  block 1   share  3.1%   7 mutations vary inside it   median |residual| 6.8
+    pair                     observed   expected   residual
+    95I + 142D                 17,518      7,293     +119.7
+    222V + 1264L                1,838        221     +108.6
+    19R + 95I                  35,592     32,566      +16.8
+    95I + 1264L                   396        809      -14.5
+    95I + 222V                  1,291      1,889      -13.8
+    19R + 142D                 36,645     34,284      +12.7
+    142D + 950N                36,056     33,856      +12.0
+    95I + 950N                 30,289     32,159      -10.4
+
+  block 4   share  2.1%   4 mutations vary inside it   median |residual| 5.0
+    pair                     observed   expected   residual
+    13T + 1264L                 3,476        731     +101.5
+    95I + 142D                117,383    110,729      +20.0
+    142D + 1264L               25,665     24,682       +6.3
+    95I + 1264L                26,454     25,839       +3.8
+    13T + 142D                  3,234      3,131       +1.8
+    13T + 95I                   3,327      3,278       +0.9
+
+  block 22  share 41.0%   4 mutations vary inside it   median |residual| 34.5
+    pair                     observed   expected   residual
+    95I + 222V                  1,875     56,318     -229.4
+    95I + 142D                863,164    739,981     +143.2
+    142D + 950N             1,775,887  1,728,972      +35.7
+    142D + 222V                84,977     95,231      -33.2
+    95I + 950N              1,026,316  1,022,482       +3.8
+    222V + 950N               131,004    131,588       -1.6
+
+  block 32  share 21.4%   14 mutations vary inside it   median |residual| 6.8
+    pair                     observed   expected   residual
+    452R + 486V               132,182     13,393    +1026.4
+    486V + 68del21765-21770    129,613     13,594     +995.0
+    452Q + 704L               142,445     16,407     +983.9
+    452R + 68del21765-21770    127,393     13,439     +983.0
+    486V + 493R                    51    120,961     -347.6
+    452R + 493R                   912    119,578     -343.2
+    493R + 68del21765-21770      5,371    121,376     -333.0
+    486V + 704L                   123     15,301     -122.7
+
+  block 35  share  3.0%   31 mutations vary inside it   median |residual| 3.6
+    pair                     observed   expected   residual
+    371L + 373P                64,978     24,390     +259.9
+    373P + 375F                68,171     26,505     +255.9
+    371L + 375F                62,669     24,610     +242.6
+    339D + 375F                68,733     37,496     +161.3
+    339D + 373P                68,118     37,161     +160.6
+    212I + 211del22194-22196    120,242     76,346     +158.9
+    339D + 371L                63,271     34,505     +154.9
+    346K + 371L                40,767     19,470     +152.6
+
+  block 46  share 20.0%   8 mutations vary inside it   median |residual| 36.9
+    pair                     observed   expected   residual
+    440K + 446S               870,297    615,885     +324.2
+    417N + 446S               810,025    578,470     +304.4
+    417N + 440K               802,176    572,547     +303.5
+    346K + 701V                   283     67,101     -257.9
+    417N + 764K               814,670    718,574     +113.4
+    446S + 764K               864,894    772,965     +104.6
+    440K + 764K               855,710    765,050     +103.7
+    346K + 417N               480,935    428,842      +79.5
+
+  block 47  share  2.1%   31 mutations vary inside it   median |residual| 9.9
+    pair                     observed   expected   residual
+    212I + 211del22194-22196     26,021      5,205     +288.5
+    496S + 498R                 2,854        113     +256.4
+    371L + 373P                39,708     12,485     +243.6
+    373P + 375F                39,574     12,891     +235.0
+    440K + 446S                12,426      2,024     +231.1
+    371L + 375F                37,655     12,313     +228.4
+    477N + 478K                 3,286        194     +221.5
+    498R + 501Y                 3,306        218     +208.7
+
+==============================================================================
+2  SUMMARY
+==============================================================================
+
+  block       share   varying   median |res|   max |res|
+  blk1         3.1%         7            6.8       119.7
+  blk4         2.1%         4            5.0       101.5
+  blk22       41.0%         4           34.5       229.4
+  blk32       21.4%        14            6.8      1026.4
+  blk35        3.0%        31            3.6       259.9
+  blk46       20.0%         8           36.9       324.2
+  blk47        2.1%        31            9.9       288.5
+
+  'varying' counts mutations strictly between 2% and 98% inside the block. A
+  pure block has few: its sequences either all carry a mutation or none do. A
+  block covering two sub-lineages has many, and those are where independence
+  breaks.
+
+==============================================================================
+3  SPECIFIC PAIRS
+==============================================================================
+
+  486V + 452R
+    block       share    p(a)    p(b)   observed   expected   residual
+    blk1         3.1%   0.000   0.981          0          0       +0.0
+    blk4         2.1%   0.000   0.996          0          0       +0.0
+    blk22       41.0%   0.000   0.995          0          0       +0.0
+    blk32       21.4%   0.100   0.099    132,182     13,393    +1026.4
+    blk35        3.0%   0.000   0.002          2          0       +2.0
+    blk46       20.0%   0.000   0.002          0          0       -0.0
+    blk47        2.1%   0.000   0.012          0          0       -0.0
+
+  452Q + 704L
+    block       share    p(a)    p(b)   observed   expected   residual
+    blk1         3.1%   0.000   0.001          0          0       -0.0
+    blk4         2.1%   0.000   0.001          0          0       -0.0
+    blk22       41.0%   0.000   0.001          0          0       -0.1
+    blk32       21.4%   0.108   0.113    142,445     16,407     +983.9
+    blk35        3.0%   0.000   0.001          2          0       +2.0
+    blk46       20.0%   0.000   0.001          0          0       -0.0
+    blk47        2.1%   0.000   0.000          0          0       -0.0
+
+
+HOW TO READ
+  A large positive residual for a pair that defines a sub-lineage means the
+  block is covering two lineages at once and independence cannot represent it.
+  The direct fix is more blocks: split that block and the pair becomes
+  independent inside each half.
+
+  Small residuals everywhere mean the assumption holds where it is used, and
+  the model's failures lie elsewhere.
+
+  Caveat: residuals scale with block size, so a large block will show larger
+  values for the same degree of dependence. Compare the median column across
+  blocks rather than raw maxima.
+
