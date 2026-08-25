@@ -1,0 +1,18 @@
+V=1,359 max-K=48 train 2021-06..2022-05 test 2022-06  sigma=1.5  drift=True
+
+--- seed 0 ---
+  flat                         -16.354   components 13
+  flat + drift                 -13.150   components 13
+      split blk39 on 477N -> blk0
+      split blk32 on 452Q -> blk3
+      split blk46 on 446S -> blk5
+      split blk5 on 346K -> blk6
+      split blk5 on 371L -> blk7
+  flat + drift + split-merge   -12.432   components 18
+      birth: blk0 --981F--> blk1   dependence 46,654   gain 78,933,002
+      iter 50  LL/obs -9.53038  components 2
+      iter 100  LL/obs -9.44841  components 2
+  hierarchical + birth-death   -20.881   components 2   births 1
+
+--- seed 1 ---
+  flat                          -7.973   components 22

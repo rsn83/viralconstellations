@@ -1,0 +1,535 @@
+V=1,359 max-K=120 train 2021-06..2022-05 test 2022-06  sigma=1.5  drift=True
+
+--- seed 0 ---
+  flat                          -7.061   components 30
+  flat + drift                  -6.945   components 30
+      split blk32 on 440K -> blk0
+      split blk58 on 222V -> blk2
+      split blk46 on 701V -> blk3
+      split blk118 on 701V -> blk5
+      split blk58 on 95I -> blk6
+  flat + drift + split-merge    -6.866   components 35
+      birth: blk0 --981F--> blk1   dep 46,654  dLL +93,681,504  dPrior -15,900  cost 0  gain +93,665,604
+      birth: blk0 --679K--> blk2   dep 42,606  dLL +15,071,447  dPrior -1,424  cost 0  gain +15,070,023
+      birth: blk1 --440K--> blk3   dep 1,594  dLL +2,396,313  dPrior -34  cost 0  gain +2,396,279
+      birth: blk1 --477N--> blk4   dep 1,984  dLL +2,673,672  dPrior -138  cost 0  gain +2,673,534
+      birth: blk1 --496S--> blk5   dep 1,985  dLL +382,839  dPrior -202  cost 0  gain +382,637
+      birth: blk1 --376A--> blk6   dep 3,940  dLL +1,369,056  dPrior -400  cost 0  gain +1,368,656
+      birth: blk1 --19I--> blk7   dep 4,275  dLL +980,083  dPrior -452  cost 0  gain +979,631
+      birth: blk1 --373P--> blk8   dep 1,413  dLL +318,390  dPrior -471  cost 0  gain +317,919
+      birth: blk2 --452Q--> blk9   dep 1,133  dLL +1,986,196  dPrior -153  cost 0  gain +1,986,043
+      birth: blk2 --68del21765-21770--> blk10   dep 4,096  dLL +1,321,258  dPrior -427  cost 0  gain +1,320,831
+      birth: blk10 --484A--> blk11   dep 5,500  dLL +362,411  dPrior -1,434  cost 0  gain +360,976
+      birth: blk10 --346K--> blk12   dep 1,326  dLL +251,091  dPrior -861  cost 0  gain +250,230
+      birth: blk10 --26S--> blk13   dep 3,025  dLL +392,285  dPrior -631  cost 0  gain +391,655
+      birth: blk10 --982A--> blk14   dep 1,839  dLL +1,114,356  dPrior -652  cost 0  gain +1,113,703
+      birth: blk10 --310del22490-22490--> blk15   dep 1,309  dLL +322,408  dPrior -355  cost 0  gain +322,053
+      birth: blk1 --211del22194-22196--> blk16   dep 992  dLL +30,479  dPrior -259  cost 0  gain +30,220
+      birth: blk8 --95I--> blk17   dep 987  dLL +556,252  dPrior -299  cost 0  gain +555,953
+      birth: blk10 --68del21765-21770--> blk18   dep 734  dLL +218,566  dPrior -182  cost 0  gain +218,384
+      birth: blk10 --156del22029-22034--> blk19   dep 773  dLL +290,594  dPrior -243  cost 0  gain +290,351
+      birth: blk0 --142D--> blk20   dep 689  dLL +851,663  dPrior -1,282  cost 0  gain +850,382
+      birth: blk20 --145H--> blk21   dep 1,169  dLL +547,722  dPrior -209  cost 0  gain +547,514
+      birth: blk3 --346K--> blk22   dep 505  dLL +211,159  dPrior -208  cost 0  gain +210,951
+      birth: blk17 --477N--> blk23   dep 501  dLL +37,131  dPrior -170  cost 0  gain +36,961
+      birth: blk1 --417N--> blk24   dep 435  dLL +54,985  dPrior -378  cost 0  gain +54,607
+      birth: blk24 --679K--> blk25   dep 480  dLL +44,372  dPrior -550  cost 0  gain +43,823
+      birth: blk25 --19I--> blk26   dep 569  dLL +54,860  dPrior -465  cost 0  gain +54,395
+      birth: blk25 --405N--> blk27   dep 685  dLL +156,832  dPrior -1,509  cost 0  gain +155,323
+      birth: blk3 --371L--> blk28   dep 434  dLL +703,160  dPrior -227  cost 0  gain +702,933
+      birth: blk23 --405N--> blk29   dep 397  dLL +8,077  dPrior -1,967  cost 0  gain +6,110
+      birth: blk3 --339D--> blk30   dep 368  dLL +128,394  dPrior -371  cost 0  gain +128,023
+      birth: blk17 --440K--> blk31   dep 322  dLL +31,981  dPrior -184  cost 0  gain +31,796
+      birth: blk18 --339D--> blk32   dep 305  dLL +31,521  dPrior -519  cost 0  gain +31,002
+      birth: blk18 --212I--> blk33   dep 338  dLL +49,005  dPrior -589  cost 0  gain +48,416
+      birth: blk18 --27S--> blk34   dep 672  dLL +61,650  dPrior -617  cost 0  gain +61,034
+      birth: blk18 --158S--> blk35   dep 836  dLL +71,102  dPrior -1,073  cost 0  gain +70,029
+      birth: blk18 --950H--> blk36   dep 733  dLL +44,175  dPrior -1,080  cost 0  gain +43,095
+      birth: blk18 --67V--> blk37   dep 518  dLL +60,462  dPrior -654  cost 0  gain +59,808
+      birth: blk18 --253G--> blk38   dep 499  dLL +15,123  dPrior -684  cost 0  gain +14,439
+      birth: blk18 --19R--> blk39   dep 409  dLL +32,642  dPrior -577  cost 0  gain +32,065
+      birth: blk18 --76I--> blk40   dep 617  dLL +21,020  dPrior -896  cost 0  gain +20,123
+      birth: blk37 --452R--> blk41   dep 340  dLL +11,580  dPrior -1,657  cost 0  gain +9,923
+      birth: blk34 --679K--> blk42   dep 306  dLL +16,096  dPrior -618  cost 0  gain +15,478
+      birth: blk5 --446S--> blk43   dep 275  dLL +15,443  dPrior -188  cost 0  gain +15,255
+      birth: blk25 --95I--> blk44   dep 275  dLL +126,882  dPrior -202  cost 0  gain +126,680
+      birth: blk19 --310del22490-22491--> blk45   dep 274  dLL +29,132  dPrior -346  cost 0  gain +28,786
+      birth: blk10 --478K--> blk46   dep 266  dLL +83,655  dPrior -264  cost 0  gain +83,390
+      birth: blk18 --681R--> blk47   dep 259  dLL +12,718  dPrior -808  cost 0  gain +11,910
+      birth: blk18 --969K--> blk48   dep 365  dLL +3,926  dPrior -874  cost 0  gain +3,052
+      birth: blk18 --614G--> blk49   dep 285  dLL +19,317  dPrior -3  cost 0  gain +19,314
+      birth: blk49 --80A--> blk50   dep 507  dLL +10,288  dPrior -1,874  cost 0  gain +8,415
+      birth: blk24 --446S--> blk51   dep 241  dLL +19,751  dPrior -355  cost 0  gain +19,396
+      birth: blk18 --310del22490-22490--> blk52   dep 221  dLL +3,515  dPrior -1,487  cost 0  gain +2,028
+      birth: blk18 --376A--> blk53   dep 1,175  dLL +34,616  dPrior -587  cost 0  gain +34,029
+      birth: blk44 --68del21765-21770--> blk54   dep 205  dLL +47,476  dPrior -162  cost 0  gain +47,314
+      birth: blk44 --373P--> blk55   dep 192  dLL +29,242  dPrior -409  cost 0  gain +28,833
+      birth: blk31 --145D--> blk56   dep 187  dLL +31,364  dPrior -453  cost 0  gain +30,911
+      birth: blk30 --375F--> blk57   dep 170  dLL +9,608  dPrior -140  cost 0  gain +9,468
+      birth: blk17 --211del22194-22196--> blk58   dep 165  dLL +19,897  dPrior -285  cost 0  gain +19,612
+      birth: blk4 --701V--> blk59   dep 165  dLL +45,546  dPrior -291  cost 0  gain +45,255
+      birth: blk32 --446S--> blk60   dep 161  dLL +5,324  dPrior -2,022  cost 0  gain +3,302
+      birth: blk8 --142del21987-21995--> blk61   dep 149  dLL +77,364  dPrior -559  cost 0  gain +76,805
+      birth: blk53 --501Y--> blk62   dep 146  dLL +1,776  dPrior -1,240  cost 0  gain +536
+      birth: blk51 --67V--> blk63   dep 139  dLL +8,999  dPrior -2,314  cost 0  gain +6,684
+      birth: blk18 --142del21987-21995--> blk64   dep 135  dLL +4,292  dPrior -1,184  cost 0  gain +3,108
+      birth: blk30 --212I--> blk65   dep 133  dLL +17,439  dPrior -291  cost 0  gain +17,148
+      birth: blk48 --704L--> blk66   dep 126  dLL +4,191  dPrior -773  cost 0  gain +3,417
+      birth: blk48 --679K--> blk67   dep 211  dLL +6,770  dPrior -1,053  cost 0  gain +5,717
+      birth: blk26 --501Y--> blk68   dep 120  dLL +39,146  dPrior -831  cost 0  gain +38,315
+      birth: blk53 --493R--> blk69   dep 113  dLL +3,166  dPrior -521  cost 0  gain +2,645
+      birth: blk39 --157del22031-22035--> blk70   dep 107  dLL +6,071  dPrior -302  cost 0  gain +5,769
+      birth: blk25 --856K--> blk71   dep 106  dLL +16,276  dPrior -563  cost 0  gain +15,713
+      birth: blk25 --446S--> blk72   dep 212  dLL +10,872  dPrior -1,068  cost 0  gain +9,804
+      birth: blk25 --496S--> blk73   dep 224  dLL +1,890  dPrior -1,612  cost 0  gain +278
+      birth: blk72 --211del22194-22196--> blk74   dep 186  dLL +16,976  dPrior -1,924  cost 0  gain +15,052
+      birth: blk72 --969K--> blk75   dep 161  dLL +6,840  dPrior +13  cost 0  gain +6,853
+      birth: blk18 --142del21987-21994--> blk76   dep 104  dLL +3,198  dPrior -1,088  cost 0  gain +2,110
+      birth: blk73 --417N--> blk77   dep 103  dLL +14,157  dPrior +101  cost 0  gain +14,257
+      birth: blk73 --27S--> blk78   dep 223  dLL +7,682  dPrior -3,203  cost 0  gain +4,478
+      birth: blk77 --339D--> blk79   dep 190  dLL +14,190  dPrior +688  cost 0  gain +14,878
+      birth: blk73 --67V--> blk80   dep 182  dLL +4,874  dPrior -258  cost 0  gain +4,616
+      birth: blk73 --446S--> blk81   dep 101  dLL +3,372  dPrior -439  cost 0  gain +2,934
+      birth: blk0 --95I--> blk82   dep 101  dLL +30,182  dPrior -155  cost 0  gain +30,027
+      birth: blk62 --679K--> blk83   dep 101  dLL +281  dPrior -184  cost 0  gain +97
+      birth: blk32 --375F--> blk84   dep 99  dLL +4,079  dPrior -462  cost 0  gain +3,617
+      birth: blk16 --446S--> blk85   dep 99  dLL +3,618  dPrior -1,850  cost 0  gain +1,768
+      birth: blk43 --212I--> blk86   dep 96  dLL +5,204  dPrior -355  cost 0  gain +4,849
+      birth: blk10 --142D--> blk87   dep 95  dLL +1,019  dPrior -883  cost 0  gain +136
+      birth: blk1 --346K--> blk88   dep 94  dLL +16,275  dPrior -199  cost 0  gain +16,076
+      birth: blk11 --493R--> blk89   dep 92  dLL +11,433  dPrior -1,132  cost 0  gain +10,301
+      birth: blk54 --446S--> blk90   dep 92  dLL +14,002  dPrior -246  cost 0  gain +13,756
+      birth: blk37 --145D--> blk91   dep 91  dLL +4,917  dPrior -191  cost 0  gain +4,726
+      birth: blk91 --655Y--> blk92   dep 155  dLL +4,228  dPrior -948  cost 0  gain +3,280
+      birth: blk23 --501Y--> blk93   dep 90  dLL +421  dPrior -263  cost 0  gain +158
+      birth: blk58 --417N--> blk94   dep 89  dLL +4,498  dPrior -182  cost 0  gain +4,316
+      birth: blk24 --145D--> blk95   dep 89  dLL +2,869  dPrior -232  cost 0  gain +2,637
+      birth: blk84 --969K--> blk96   dep 87  dLL +886  dPrior -751  cost 0  gain +135
+      birth: blk16 --339D--> blk97   dep 86  dLL +6,676  dPrior +517  cost 0  gain +7,192
+      birth: blk31 --212I--> blk98   dep 85  dLL +3,580  dPrior -537  cost 0  gain +3,043
+      birth: blk18 --25del21635-21639--> blk99   dep 82  dLL +1,255  dPrior -1,047  cost 0  gain +208
+      birth: blk18 --142D--> blk100   dep 84  dLL +3,517  dPrior -2,189  cost 0  gain +1,328
+      birth: blk100 --19I--> blk101   dep 161  dLL +661  dPrior -558  cost 0  gain +103
+      birth: blk69 --655Y--> blk102   dep 79  dLL +8,548  dPrior -9  cost 0  gain +8,538
+      birth: blk80 --655Y--> blk103   dep 73  dLL +5,785  dPrior -449  cost 0  gain +5,336
+      birth: blk103 --212G--> blk104   dep 181  dLL +11,639  dPrior -2,088  cost 0  gain +9,551
+      birth: blk103 --145D--> blk105   dep 117  dLL +22,294  dPrior -4,523  cost 0  gain +17,771
+      iter 50  LL/obs -4.39291  components 106
+      birth: blk48 --405N--> blk106   dep 269  dLL +471  dPrior -125  cost 0  gain +346
+      birth: blk25 --376A--> blk107   dep 121  dLL +5,178  dPrior -2,491  cost 0  gain +2,688
+      birth: blk43 --478K--> blk108   dep 101  dLL +12,061  dPrior -268  cost 0  gain +11,792
+      birth: blk42 --440K--> blk109   dep 85  dLL +721  dPrior -440  cost 0  gain +281
+      birth: blk107 --68del21765-21770--> blk110   dep 82  dLL +4,256  dPrior -419  cost 0  gain +3,837
+      birth: blk67 --339D--> blk111   dep 76  dLL +28,383  dPrior -1,685  cost 0  gain +26,699
+      birth: blk111 --373P--> blk112   dep 98  dLL +6,198  dPrior -1,415  cost 0  gain +4,782
+      birth: blk39 --158G--> blk113   dep 74  dLL +1,388  dPrior -498  cost 0  gain +891
+      birth: blk68 --478K--> blk114   dep 71  dLL +9,413  dPrior -517  cost 0  gain +8,895
+      birth: blk41 --981F--> blk115   dep 70  dLL +2,843  dPrior -982  cost 0  gain +1,861
+      birth: blk55 --446S--> blk116   dep 68  dLL +4,775  dPrior -867  cost 0  gain +3,907
+      birth: blk23 --493R--> blk117   dep 67  dLL +591  dPrior -443  cost 0  gain +148
+      birth: blk28 --211del22194-22196--> blk118   dep 67  dLL +33,046  dPrior -240  cost 0  gain +32,805
+      birth: blk53 --484A--> blk119   dep 66  dLL +1,583  dPrior -812  cost 0  gain +771
+      death: 1 component(s) returned
+      birth: blk22 --211del22194-22196--> blk96   dep 64  dLL +13,514  dPrior -1,097  cost 0  gain +12,418
+      death: 1 component(s) returned
+      birth: blk48 --408S--> blk106   dep 140  dLL -1,690  dPrior +1,711  cost 0  gain +21
+      death: 1 component(s) returned
+      birth: blk7 --704L--> blk106   dep 124  dLL +7,901  dPrior -627  cost 0  gain +7,274
+      iter 100  LL/obs -4.28593  components 120
+      iter 150  LL/obs -4.26458  components 120
+      iter 200  LL/obs -4.25236  components 120
+      iter 250  LL/obs -4.24307  components 120
+      iter 300  LL/obs -4.23017  components 120
+  hierarchical + birth-death    -7.650   components 120   births 122
+
+============================================================================
+LADDER  max-K=120  1 seeds  test 2022-06
+============================================================================
+
+  model                                   held-out    components     gain
+  flat                            -7.061+/-0.000            30.0   +0.000
+  flat + drift                    -6.945+/-0.000            30.0   +0.116
+  flat + drift + split-merge      -6.866+/-0.000            35.0   +0.195
+  hierarchical + birth-death      -7.650+/-0.000           120.0   -0.588
+
+  THE TREE (births accepted against the prior):
+    blk0 --981F--> blk1   gain 93,665,604
+        blk1 --440K--> blk3   gain 2,396,279
+            blk3 --346K--> blk22   gain 210,951
+                blk22 --211del22194-22196--> blk96   gain 12,418
+            blk3 --371L--> blk28   gain 702,933
+                blk28 --211del22194-22196--> blk118   gain 32,805
+            blk3 --339D--> blk30   gain 128,023
+                blk30 --375F--> blk57   gain 9,468
+                blk30 --212I--> blk65   gain 17,148
+        blk1 --477N--> blk4   gain 2,673,534
+            blk4 --701V--> blk59   gain 45,255
+        blk1 --496S--> blk5   gain 382,637
+            blk5 --446S--> blk43   gain 15,255
+                blk43 --212I--> blk86   gain 4,849
+                blk43 --478K--> blk108   gain 11,792
+        blk1 --376A--> blk6   gain 1,368,656
+        blk1 --19I--> blk7   gain 979,631
+            blk7 --704L--> blk106   gain 7,274
+        blk1 --373P--> blk8   gain 317,919
+            blk8 --95I--> blk17   gain 555,953
+                blk17 --477N--> blk23   gain 36,961
+                    blk23 --405N--> blk29   gain 6,110
+                    blk23 --501Y--> blk93   gain 158
+                    blk23 --493R--> blk117   gain 148
+                blk17 --440K--> blk31   gain 31,796
+                    blk31 --145D--> blk56   gain 30,911
+                    blk31 --212I--> blk98   gain 3,043
+                blk17 --211del22194-22196--> blk58   gain 19,612
+                    blk58 --417N--> blk94   gain 4,316
+            blk8 --142del21987-21995--> blk61   gain 76,805
+        blk1 --211del22194-22196--> blk16   gain 30,220
+            blk16 --446S--> blk85   gain 1,768
+            blk16 --339D--> blk97   gain 7,192
+        blk1 --417N--> blk24   gain 54,607
+            blk24 --679K--> blk25   gain 43,823
+                blk25 --19I--> blk26   gain 54,395
+                    blk26 --501Y--> blk68   gain 38,315
+                        blk68 --478K--> blk114   gain 8,895
+                blk25 --405N--> blk27   gain 155,323
+                blk25 --95I--> blk44   gain 126,680
+                    blk44 --68del21765-21770--> blk54   gain 47,314
+                        blk54 --446S--> blk90   gain 13,756
+                    blk44 --373P--> blk55   gain 28,833
+                        blk55 --446S--> blk116   gain 3,907
+                blk25 --856K--> blk71   gain 15,713
+                blk25 --446S--> blk72   gain 9,804
+                    blk72 --211del22194-22196--> blk74   gain 15,052
+                    blk72 --969K--> blk75   gain 6,853
+                blk25 --496S--> blk73   gain 278
+                    blk73 --417N--> blk77   gain 14,257
+                        blk77 --339D--> blk79   gain 14,878
+                    blk73 --27S--> blk78   gain 4,478
+                    blk73 --67V--> blk80   gain 4,616
+                        blk80 --655Y--> blk103   gain 5,336
+                            blk103 --212G--> blk104   gain 9,551
+                            blk103 --145D--> blk105   gain 17,771
+                    blk73 --446S--> blk81   gain 2,934
+                blk25 --376A--> blk107   gain 2,688
+                    blk107 --68del21765-21770--> blk110   gain 3,837
+            blk24 --446S--> blk51   gain 19,396
+                blk51 --67V--> blk63   gain 6,684
+            blk24 --145D--> blk95   gain 2,637
+        blk1 --346K--> blk88   gain 16,076
+    blk0 --679K--> blk2   gain 15,070,023
+        blk2 --452Q--> blk9   gain 1,986,043
+        blk2 --68del21765-21770--> blk10   gain 1,320,831
+            blk10 --484A--> blk11   gain 360,976
+                blk11 --493R--> blk89   gain 10,301
+            blk10 --346K--> blk12   gain 250,230
+            blk10 --26S--> blk13   gain 391,655
+            blk10 --982A--> blk14   gain 1,113,703
+            blk10 --310del22490-22490--> blk15   gain 322,053
+            blk10 --68del21765-21770--> blk18   gain 218,384
+                blk18 --339D--> blk32   gain 31,002
+                    blk32 --446S--> blk60   gain 3,302
+                    blk32 --375F--> blk84   gain 3,617
+                        blk84 --969K--> blk96   gain 135
+                blk18 --212I--> blk33   gain 48,416
+                blk18 --27S--> blk34   gain 61,034
+                    blk34 --679K--> blk42   gain 15,478
+                        blk42 --440K--> blk109   gain 281
+                blk18 --158S--> blk35   gain 70,029
+                blk18 --950H--> blk36   gain 43,095
+                blk18 --67V--> blk37   gain 59,808
+                    blk37 --452R--> blk41   gain 9,923
+                        blk41 --981F--> blk115   gain 1,861
+                    blk37 --145D--> blk91   gain 4,726
+                        blk91 --655Y--> blk92   gain 3,280
+                blk18 --253G--> blk38   gain 14,439
+                blk18 --19R--> blk39   gain 32,065
+                    blk39 --157del22031-22035--> blk70   gain 5,769
+                    blk39 --158G--> blk113   gain 891
+                blk18 --76I--> blk40   gain 20,123
+                blk18 --681R--> blk47   gain 11,910
+                blk18 --969K--> blk48   gain 3,052
+                    blk48 --704L--> blk66   gain 3,417
+                    blk48 --679K--> blk67   gain 5,717
+                        blk67 --339D--> blk111   gain 26,699
+                            blk111 --373P--> blk112   gain 4,782
+                    blk48 --405N--> blk106   gain 346
+                    blk48 --408S--> blk106   gain 21
+                blk18 --614G--> blk49   gain 19,314
+                    blk49 --80A--> blk50   gain 8,415
+                blk18 --310del22490-22490--> blk52   gain 2,028
+                blk18 --376A--> blk53   gain 34,029
+                    blk53 --501Y--> blk62   gain 536
+                        blk62 --679K--> blk83   gain 97
+                    blk53 --493R--> blk69   gain 2,645
+                        blk69 --655Y--> blk102   gain 8,538
+                    blk53 --484A--> blk119   gain 771
+                blk18 --142del21987-21995--> blk64   gain 3,108
+                blk18 --142del21987-21994--> blk76   gain 2,110
+                blk18 --25del21635-21639--> blk99   gain 208
+                blk18 --142D--> blk100   gain 1,328
+                    blk100 --19I--> blk101   gain 103
+            blk10 --156del22029-22034--> blk19   gain 290,351
+                blk19 --310del22490-22491--> blk45   gain 28,786
+            blk10 --478K--> blk46   gain 83,390
+            blk10 --142D--> blk87   gain 136
+    blk0 --142D--> blk20   gain 850,382
+        blk20 --145H--> blk21   gain 547,514
+    blk0 --95I--> blk82   gain 30,027
+
+  BIRTH ATTEMPTS (seed 0) -- every proposal, accepted or not
+     parent    mutation       dep           dLL    dPrior      cost          gain  verdict
+          0        981F    46,654   +93,681,504   -15,900         0   +93,665,604  accept
+          0        679K    42,606   +15,071,447    -1,424         0   +15,070,023  accept
+          1        440K     1,594    +2,396,313       -34         0    +2,396,279  accept
+          1        477N     1,984    +2,673,672      -138         0    +2,673,534  accept
+          1        496S     1,985      +382,839      -202         0      +382,637  accept
+          1        376A     3,940    +1,369,056      -400         0    +1,368,656  accept
+          1         19I     4,275      +980,083      -452         0      +979,631  accept
+          1        373P     1,413      +318,390      -471         0      +317,919  accept
+          2        452Q     1,133    +1,986,196      -153         0    +1,986,043  accept
+          268del21765-21770     4,096    +1,321,258      -427         0    +1,320,831  accept
+         10        484A     5,500      +362,411    -1,434         0      +360,976  accept
+         10        346K     1,326      +251,091      -861         0      +250,230  accept
+         10         26S     3,025      +392,285      -631         0      +391,655  accept
+         10        982A     1,839    +1,114,356      -652         0    +1,113,703  accept
+         10310del22490-22490     1,309      +322,408      -355         0      +322,053  accept
+          1211del22194-22196       992       +30,479      -259         0       +30,220  accept
+          8         95I       987      +556,252      -299         0      +555,953  accept
+          7        376A       829      -142,738      -267         0      -143,005  reject
+          7        375F       805      -127,529      -294         0      -127,823  reject
+          7        373P       791       -91,653      -299         0       -91,952  reject
+          7        371F       761      -271,677      -285         0      -271,962  reject
+         1068del21765-21770       734      +218,566      -182         0      +218,384  accept
+         10156del22029-22034       773      +290,594      -243         0      +290,351  accept
+          0        142D       689      +851,663    -1,282         0      +850,382  accept
+         20        145H     1,169      +547,722      -209         0      +547,514  accept
+          7        417N       636      -331,562      -318         0      -331,880  reject
+          7        339D       577      -273,061      -358         0      -273,419  reject
+          6        477N       568       -46,104      -406         0       -46,510  reject
+          6        478K       562       -49,032      -420         0       -49,452  reject
+          6        484A       533       -55,346      -402         0       -55,748  reject
+          7        440K       511      -391,257      -288         0      -391,545  reject
+          3        346K       505      +211,159      -208         0      +210,951  accept
+          6        493R       503       -59,483      -399         0       -59,882  reject
+         17        477N       501       +37,131      -170         0       +36,961  accept
+          7        408S       457      -459,420      -249         0      -459,669  reject
+          1        417N       435       +54,985      -378         0       +54,607  accept
+         24        679K       480       +44,372      -550         0       +43,823  accept
+         25         19I       569       +54,860      -465         0       +54,395  accept
+         25        405N       685      +156,832    -1,509         0      +155,323  accept
+          3        371L       434      +703,160      -227         0      +702,933  accept
+          6        440K       423       -88,994      -448         0       -89,442  reject
+         23        405N       397        +8,077    -1,967         0        +6,110  accept
+          3        339D       368      +128,394      -371         0      +128,023  accept
+         17        440K       322       +31,981      -184         0       +31,796  accept
+         18        339D       305       +31,521      -519         0       +31,002  accept
+         18        212I       338       +49,005      -589         0       +48,416  accept
+         18         27S       672       +61,650      -617         0       +61,034  accept
+         18        158S       836       +71,102    -1,073         0       +70,029  accept
+         18        950H       733       +44,175    -1,080         0       +43,095  accept
+         18         67V       518       +60,462      -654         0       +59,808  accept
+         18        253G       499       +15,123      -684         0       +14,439  accept
+         18         19R       409       +32,642      -577         0       +32,065  accept
+         18         76I       617       +21,020      -896         0       +20,123  accept
+         37        452R       340       +11,580    -1,657         0        +9,923  accept
+         1824del21633-21641       333        -3,160      -763         0        -3,923  reject
+         18         19I       312        -7,917      -547         0        -8,463  reject
+         34        679K       306       +16,096      -618         0       +15,478  accept
+          6        505H       302       -26,100      -472         0       -26,572  reject
+          6        501Y       281       -33,813      -479         0       -34,292  reject
+          5        446S       275       +15,443      -188         0       +15,255  accept
+         25         95I       275      +126,882      -202         0      +126,680  accept
+         19310del22490-22491       274       +29,132      -346         0       +28,786  accept
+         10        478K       266       +83,655      -264         0       +83,390  accept
+         18        681R       259       +12,718      -808         0       +11,910  accept
+         18        969K       365        +3,926      -874         0        +3,052  accept
+         18        614G       285       +19,317        -3         0       +19,314  accept
+         49         80A       507       +10,288    -1,874         0        +8,415  accept
+         49        969K     1,077       -10,201    -1,018         0       -11,219  reject
+         49        679K     1,045        -7,136      -952         0        -8,088  reject
+         49        505H     1,034        -3,967    -1,592         0        -5,560  reject
+         49        498R     1,032        -6,441    -1,451         0        -7,892  reject
+         49        484A     1,027        -6,709    -1,403         0        -8,112  reject
+         49        796Y     1,026        -8,329      -998         0        -9,327  reject
+         49        655Y     1,017       -11,862      -791         0       -12,653  reject
+         49        493R     1,007        -7,916    -1,472         0        -9,388  reject
+          6        498R       468       -43,463      -495         0       -43,958  reject
+         24        446S       241       +19,751      -355         0       +19,396  accept
+         18310del22490-22490       221        +3,515    -1,487         0        +2,028  accept
+         18        376A     1,175       +34,616      -587         0       +34,029  accept
+         4468del21765-21770       205       +47,476      -162         0       +47,314  accept
+         48        375F       203                                                  thin-side
+         48        373P       197                                                  thin-side
+         48        376A       197                                                  thin-side
+         44        373P       192       +29,242      -409         0       +28,833  accept
+         48        371F       189                                                  thin-side
+         31        145D       187       +31,364      -453         0       +30,911  accept
+         30        375F       170        +9,608      -140         0        +9,468  accept
+         17211del22194-22196       165       +19,897      -285         0       +19,612  accept
+          4        701V       165       +45,546      -291         0       +45,255  accept
+         32        446S       161        +5,324    -2,022         0        +3,302  accept
+          8142del21987-21995       149       +77,364      -559         0       +76,805  accept
+         53        501Y       146        +1,776    -1,240         0          +536  accept
+         46         95I       140        -3,454      -197         0        -3,651  reject
+         51         67V       139        +8,999    -2,314         0        +6,684  accept
+         46        142D       138       -13,636      -181         0       -13,817  reject
+         18142del21987-21995       135        +4,292    -1,184         0        +3,108  accept
+         47156del22029-22034       134           -90    -1,259         0        -1,349  reject
+         47        158G       134          -147    -1,262         0        -1,409  reject
+         30        212I       133       +17,439      -291         0       +17,148  accept
+         53        505H       127          +764    -1,707         0          -943  reject
+         53        498R       127          +979    -1,541         0          -562  reject
+         48        704L       126        +4,191      -773         0        +3,417  accept
+         48        679K       211        +6,770    -1,053         0        +5,717  accept
+         48         19I       240          -332      -816         0        -1,148  reject
+         48        505H       240          -233      -852         0        -1,085  reject
+         48        969K       239          -542      -846         0        -1,388  reject
+         48        142D       235          -652      -698         0        -1,350  reject
+         48        493R       232           -71      -758         0          -828  reject
+         48        484A       225           -91      -694         0          -785  reject
+         48        498R       224           +76      -385         0          -309  reject
+         48        954H       221          +188      -361         0          -173  reject
+         26        501Y       120       +39,146      -831         0       +38,315  accept
+         47        478K       114        -4,240      -602         0        -4,842  reject
+         53        493R       113        +3,166      -521         0        +2,645  accept
+         47        452R       112        -2,084      -553         0        -2,638  reject
+         1868del21765-21770       110        +1,025    -1,891         0          -866  reject
+         39157del22031-22035       107        +6,071      -302         0        +5,769  accept
+         55        142D       107        +1,466    -1,719         0          -252  reject
+         25        856K       106       +16,276      -563         0       +15,713  accept
+         25        446S       212       +10,872    -1,068         0        +9,804  accept
+         25211del22194-22196       268        -1,167      -328         0        -1,496  reject
+         25142del21987-21995       261          -510      -583         0        -1,093  reject
+         25        145D       261          -510      -583         0        -1,093  reject
+         25        496S       224        +1,890    -1,612         0          +278  accept
+         25        213P       203        +1,460    -2,888         0        -1,428  reject
+         72211del22194-22196       186       +16,976    -1,924         0       +15,052  accept
+         2568del21765-21770       174          +513    -1,624         0        -1,111  reject
+         72        969K       161        +6,840       +13         0        +6,853  accept
+         25        408S       128        +1,650    -7,455         0        -5,805  reject
+         18144del21992-21993       106          +504    -1,758         0        -1,254  reject
+         18142del21987-21994       104        +3,198    -1,088         0        +2,110  accept
+         73        417N       103       +14,157      +101         0       +14,257  accept
+         73         27S       223        +7,682    -3,203         0        +4,478  accept
+         77        371L       191                                                  thin-side
+         77        373P       191                                                  thin-side
+         77        375F       191                                                  thin-side
+         77        339D       190       +14,190      +688         0       +14,878  accept
+         73         67V       182        +4,874      -258         0        +4,616  accept
+         23        498R       102          -478      -760         0        -1,238  reject
+         73        446S       101        +3,372      -439         0        +2,934  accept
+          0         95I       101       +30,182      -155         0       +30,027  accept
+         62        679K       101          +281      -184         0           +97  accept
+         32        375F        99        +4,079      -462         0        +3,617  accept
+         16        446S        99        +3,618    -1,850         0        +1,768  accept
+         60        498R        97                                                  thin-side
+         60        501Y        97                                                  thin-side
+         60        505H        97                                                  thin-side
+         60        614G        97                                                  thin-side
+         43        212I        96        +5,204      -355         0        +4,849  accept
+         55        212I        96          +851    -1,099         0          -248  reject
+         10        142D        95        +1,019      -883         0          +136  accept
+         87        371F       408          -548    -1,944         0        -2,492  reject
+         87        373P       408          -548    -1,944         0        -2,492  reject
+         87        375F       408          -548    -1,944         0        -2,492  reject
+         87        376A       408          -652    -1,945         0        -2,596  reject
+         87        339D       400          -661    -1,878         0        -2,539  reject
+         87         19I       371          +274    -2,361         0        -2,087  reject
+         87         27S       364          +269    -2,457         0        -2,188  reject
+         8724del21633-21641       364          +269    -2,457         0        -2,188  reject
+         60        547K        95                                                  thin-side
+         60        496S        94                                                  thin-side
+         60        655Y        94                                                  thin-side
+          1        346K        94       +16,275      -199         0       +16,076  accept
+         11        493R        92       +11,433    -1,132         0       +10,301  accept
+         54        446S        92       +14,002      -246         0       +13,756  accept
+         37        145D        91        +4,917      -191         0        +4,726  accept
+         91        655Y       155        +4,228      -948         0        +3,280  accept
+         75         27S        91          -222    -1,649         0        -1,871  reject
+         7524del21633-21641        91          -222    -1,649         0        -1,871  reject
+         23        501Y        90          +421      -263         0          +158  accept
+         75         19I        89          -276    -1,562         0        -1,838  reject
+         58        417N        89        +4,498      -182         0        +4,316  accept
+         24        145D        89        +2,869      -232         0        +2,637  accept
+         84        969K        87          +886      -751         0          +135  accept
+         16        339D        86        +6,676      +517         0        +7,192  accept
+         31        212I        85        +3,580      -537         0        +3,043  accept
+         1825del21635-21639        82        +1,255    -1,047         0          +208  accept
+         18156del22029-22034        89        +1,626    -1,807         0          -181  reject
+         18        142D        84        +3,517    -2,189         0        +1,328  accept
+        100         19I       161          +661      -558         0          +103  accept
+         19         95I        80        -3,831      -201         0        -4,032  reject
+         60        493R        79          -338      -942         0        -1,280  reject
+         69        655Y        79        +8,548        -9         0        +8,538  accept
+         91        547K        76          +437    -2,145         0        -1,708  reject
+         91        212V        76           -17    -2,291         0        -2,308  reject
+         37142del21987-21995        75        +1,313    -1,396         0           -84  reject
+         91        614G        74          +735    -1,508         0          -774  reject
+         91        856K        73          +367    -2,107         0        -1,740  reject
+         80        655Y        73        +5,785      -449         0        +5,336  accept
+        103        212G       181       +11,639    -2,088         0        +9,551  accept
+        103        145D       117       +22,294    -4,523         0       +17,771  accept
+        105        371F       102          +638    -1,214         0          -576  reject
+        105        405N       102          +638    -1,214         0          -576  reject
+        105        417T        96                                                  thin-side
+        105        764K        81          +431      -867         0          -436  reject
+         91        954H        73          +363    -2,097         0        -1,733  reject
+         29        417T        72                                                  thin-side
+          7        405N       328      -121,033      -342         0      -121,375  reject
+         48        477N       284           +25      -168         0          -143  reject
+         48        405N       269          +471      -125         0          +346  accept
+         48        213G       199          -225      -888         0        -1,113  reject
+         25        376A       121        +5,178    -2,491         0        +2,688  accept
+         43        478K       101       +12,061      -268         0       +11,792  accept
+         42        440K        85          +721      -440         0          +281  accept
+         42        375F        88          -896    -1,429         0        -2,325  reject
+         42        376A        87          -856    -1,417         0        -2,274  reject
+        10768del21765-21770        82        +4,256      -419         0        +3,837  accept
+         67        339D        76       +28,383    -1,685         0       +26,699  accept
+        111        373P        98        +6,198    -1,415         0        +4,782  accept
+         19        142D        76        -4,477      -217         0        -4,693  reject
+         42        373P        75        -1,335    -1,556         0        -2,892  reject
+         39        158G        74        +1,388      -498         0          +891  accept
+         91        213P        72          -127    -2,531         0        -2,658  reject
+         91336del22568-22569        72           -23    -1,660         0        -1,683  reject
+         68        478K        71        +9,413      -517         0        +8,895  accept
+         42        405N        71          -706    -1,108         0        -1,814  reject
+         75        213G        71        -2,317      -594         0        -2,911  reject
+         41        981F        70        +2,843      -982         0        +1,861  accept
+        105        954H        69          +581    -1,307         0          -726  reject
+         75        142D        69        -3,308    -1,594         0        -4,902  reject
+         3786del21818-21818        68          +994    -1,981         0          -987  reject
+         55        446S        68        +4,775      -867         0        +3,907  accept
+         23        493R        67          +591      -443         0          +148  accept
+        105        796Y        67          +294    -1,086         0          -793  reject
+         28211del22194-22196        67       +33,046      -240         0       +32,805  accept
+         29         19I        66                                                  thin-side
+         29         27S        66                                                  thin-side
+         2924del21633-21641        66                                                  thin-side
+        105         27S        66          +531      -842         0          -311  reject
+        10524del21633-21641        66          +531      -842         0          -311  reject
+         53        484A        66        +1,583      -812         0          +771  accept
+         22211del22194-22196        64       +13,514    -1,097         0       +12,418  accept
+         48        417N       160        -2,141    +1,913         0          -228  reject
+         48        440K       153        -3,945    +1,911         0        -2,034  reject
+         48        408S       140        -1,690    +1,711         0           +21  accept
+         49         19I       976       -14,777      -843         0       -15,619  reject
+         49        954H       963       -16,675      -770         0       -17,445  reject
+         49         27S       936       -12,482    -1,026         0       -13,507  reject
+         4924del21633-21641       936       -12,102    -1,023         0       -13,125  reject
+         48        339D       161        -3,084      -386         0        -3,470  reject
+         48        408S       139       -12,467    -1,347         0       -13,814  reject
+          7        764K       130        -4,825      -555         0        -5,380  reject
+          7        704L       124        +7,901      -627         0        +7,274  accept
+
+NOTE
+  Components are not fixed: max-K is a ceiling on the pool, not the number
+  fitted. A birth is accepted only when the gain in expected complete-data
+  log-likelihood exceeds the prior penalty for one more component, and a
+  component whose responsibility falls below the floor is returned to the pool.
+  So the number of components reported above was chosen by the data.
+
+  sigma controls how far a child may sit from its parent. Smaller sigma means
+  tighter children and, indirectly, fewer accepted births -- worth sweeping,
+  since it is the one quantity here that is set rather than fitted.
+

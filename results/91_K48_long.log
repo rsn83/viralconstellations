@@ -1,0 +1,89 @@
+V = 1,359   K = 48   seeds = 1
+  2020-06: 331 sets, 17,237 genomes
+  2020-07: 371 sets, 20,188 genomes
+  2020-08: 478 sets, 21,810 genomes
+  2020-09: 601 sets, 31,710 genomes
+  2020-10: 1,056 sets, 53,889 genomes
+  2020-11: 1,411 sets, 66,914 genomes
+  2020-12: 2,205 sets, 84,986 genomes
+  2021-01: 3,784 sets, 143,460 genomes
+  2021-02: 4,595 sets, 165,265 genomes
+  2021-03: 6,325 sets, 248,865 genomes
+  2021-04: 6,534 sets, 246,099 genomes
+  2021-05: 5,803 sets, 177,597 genomes
+  2021-06: 4,807 sets, 171,178 genomes
+  2021-07: 6,952 sets, 340,587 genomes
+  2021-08: 10,069 sets, 523,673 genomes
+  2021-09: 10,581 sets, 534,281 genomes
+  2021-10: 10,727 sets, 496,845 genomes
+  2021-11: 11,744 sets, 617,292 genomes
+  2021-12: 24,581 sets, 737,813 genomes
+  2022-01: 30,069 sets, 833,784 genomes
+  2022-02: 22,073 sets, 646,009 genomes
+  2022-03: 14,811 sets, 591,915 genomes
+  2022-04: 9,968 sets, 309,557 genomes
+  2022-05: 10,063 sets, 231,920 genomes
+  2022-06: 11,166 sets, 241,129 genomes
+  2022-07: 12,175 sets, 256,691 genomes
+  2022-08: 9,032 sets, 177,006 genomes
+  2022-09: 8,445 sets, 139,884 genomes
+  2022-10: 10,229 sets, 132,417 genomes
+  2022-11: 10,901 sets, 121,512 genomes
+  2022-12: 14,063 sets, 144,516 genomes
+  2023-01: 12,364 sets, 98,399 genomes
+  2023-02: 11,009 sets, 82,095 genomes
+  2023-03: 9,536 sets, 70,361 genomes
+  2023-04: 6,343 sets, 35,834 genomes
+  2023-05: 4,379 sets, 22,729 genomes
+test ['2023-06']: 11,988 genomes
+
+--- seed 0 ---
+  A-sep   per-month mixtures ...
+  pool ...
+      [pool] iter 50  LL/obs = -6.10904
+      [pool] converged at iter 91
+  chain ...
+      [chain] iter 50  LL/obs = -7.13818
+      [chain] iter 100  LL/obs = -7.10650
+      [chain] iter 150  LL/obs = -7.05111
+      [chain] iter 200  LL/obs = -7.04507
+      [chain] iter 250  LL/obs = -7.04474
+      [chain] iter 300  LL/obs = -7.04065
+      [chain] iter 350  LL/obs = -7.04031
+      [chain] iter 400  LL/obs = -7.04016
+
+================================================================================
+RESULTS   K = 48,  1 seeds,  test 2023-06
+================================================================================
+
+  independence baseline (K=1):  held-out LL/genome = -84.130
+
+  model                                      held-out LL
+  A-sep   per-month, nothing shared                  n/a
+  B-pool  shared theta, pi_t free        -15.564+/-0.000
+  C-chain shared theta, pi_t = pi_1 A^(t-1) -17.181+/-0.000
+
+  blocks over independence      (B-pool - K=1)   +68.566 nats/genome
+  Markov transitions over pooled (C-chain - B-pool) -1.617 nats/genome
+
+  worst single-iteration change in tracked LL:
+    B-pool  +9.22e-08   (plain mixture, reference)
+    C-chain +2.21e-06
+    Small negatives appear in BOTH because a Beta(0.5,0.5) prior and
+    clipping are applied to theta, so the M-step maximises the
+    posterior while the printed quantity is the plain likelihood.
+    What matters is that C-chain is no worse than B-pool: the exact
+    (pi_1, A) M-step introduces no additional non-monotonicity.
+
+  saved -> results/91_K48_long.npz
+
+NOTE ON EXACTNESS
+  E-step, theta M-step and free-pi M-step are closed form. The (pi_1, A) M-step
+  maximises its objective by gradient ascent with the exact gradient, verified
+  against central finite differences, with backtracking so the objective never
+  decreases. Monotone EM above confirms it. A is estimated INSIDE EM from the
+  current responsibilities, not regressed afterward from a fitted trajectory.
+
+  If C-chain still loses to B-pool, the limitation is the data, not the fit:
+  A has K^2 parameters and there are only T-1 monthly transitions.
+

@@ -1,0 +1,90 @@
+V=1,359 K=48 train 2021-06..2022-05 test 2022-06  drift=True  half-life=1.0
+
+--- seed 0 ---
+  warm start (fixed emissions): rows used 14/48
+  baseline      held-out  -12.298   best-mixture  -12.280   rows used  14/48
+      split blk39 on 493R -> blk0   (residual score 2670)
+      iter 50  LL/obs -5.78188
+      split blk32 on 452Q -> blk3   (residual score 1012)
+      split blk0 on 373P -> blk5   (residual score 1531)
+      iter 100  LL/obs -5.54781
+      split blk46 on 446S -> blk6   (residual score 890)
+      iter 150  LL/obs -5.30826
+      split blk22 on 95I -> blk7   (residual score 373)
+      split blk6 on 701V -> blk8   (residual score 239)
+      iter 200  LL/obs -5.26078
+      iter 250  LL/obs -5.24063
+  split-merge   held-out  -11.352   best-mixture  -11.329   rows used  20/48
+  growth pi     held-out  -12.583   best-mixture  -12.288   rows used  13/48
+      iter 50  LL/obs -6.13805
+      iter 100  LL/obs -6.05842
+      iter 150  LL/obs -6.01903
+      iter 200  LL/obs -5.99424
+      iter 250  LL/obs -5.97666
+  both          held-out  -12.583   best-mixture  -12.288   rows used  13/48
+
+--- seed 1 ---
+  warm start (fixed emissions): rows used 23/48
+  baseline      held-out   -7.029   best-mixture   -6.200   rows used  23/48
+  split-merge   held-out   -6.824   best-mixture   -5.950   rows used  29/48
+  growth pi     held-out  -10.141   best-mixture   -6.222   rows used  23/48
+  both          held-out  -10.141   best-mixture   -6.222   rows used  23/48
+
+--- seed 2 ---
+  warm start (fixed emissions): rows used 22/48
+  baseline      held-out  -11.312   best-mixture  -10.948   rows used  22/48
+  split-merge   held-out   -6.746   best-mixture   -5.891   rows used  28/48
+  growth pi     held-out  -12.324   best-mixture  -11.055   rows used  21/48
+  both          held-out  -12.324   best-mixture  -11.055   rows used  21/48
+
+============================================================================
+RESULTS  K=48  3 seeds  test 2022-06
+============================================================================
+
+  variant               held-out    best mixture   rows used   mixture gap
+  baseline       -10.213+/-2.287  -9.809+/-2.610        19.7        +0.404
+  split-merge     -8.307+/-2.154  -7.723+/-2.550        25.7        +0.584
+  growth pi      -11.682+/-1.095  -9.855+/-2.618        19.0        +1.827
+  both           -11.682+/-1.095  -9.855+/-2.618        19.0        +1.827
+
+  split-merge over baseline: +1.906
+  growth pi over baseline: -1.470
+  both over baseline: -1.470
+
+============================================================================
+THE TREE SPLIT-MERGE LEARNED  (unsupervised)
+============================================================================
+
+  Each split records which block it came from, so the splits form a tree. No
+  lineage labels were used -- the split mutation is chosen as the one carrying
+  the most within-block dependence.
+
+  blk22 --95I--> blk7   (residual 373)
+  blk32 --452Q--> blk3   (residual 1,012)
+  blk39 --493R--> blk0   (residual 2,670)
+      blk0 --373P--> blk5   (residual 1,531)
+  blk46 --446S--> blk6   (residual 890)
+      blk6 --701V--> blk8   (residual 239)
+
+  depth reached: 6 splits
+
+  largest fitted growth rates r_k (log advantage per month):
+    blk32   +24.264   x34503512512.40 per month
+    blk47   +12.906   x402727.66 per month
+    blk46    +8.902   x7346.22 per month
+    blk39    +6.350   x572.57 per month
+    blk16    +2.578   x13.17 per month
+
+HOW TO READ
+  'rows used' is how many of the K blocks ever held above 0.1% of a month. At
+  K=48 the baseline used 19 and left 29 at their initialisation value. If
+  split-merge raises this, EM was abandoning capacity it had been given.
+
+  'mixture gap' is the best possible mixture minus what the model actually
+  produced. It bounds every rule for forecasting the mixture. Growth pi should
+  close it and cannot exceed it -- which is the point of running it.
+
+  r_k is each block's growth advantage per month. Check the largest against
+  published estimates for the variant that block corresponds to; that is
+  external validation available nowhere else in this project.
+

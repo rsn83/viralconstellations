@@ -1,0 +1,91 @@
+  min-count 3: kept 43,841 of 166,445 rows (26.3%), 97.59% of sequences
+V=1,359 K=48 train 2021-06..2022-05 test 2022-06  drift=True  half-life=1.0
+
+--- seed 0 ---
+  warm start (fixed emissions): rows used 13/48
+  baseline      held-out   -7.192   best-mixture   -6.346   rows used  22/48
+      split blk39 on 477N -> blk0   (residual score 2573)
+      iter 50  LL/obs -5.40293
+      split blk32 on 452Q -> blk3   (residual score 1009)
+      split blk46 on 446S -> blk5   (residual score 963)
+      iter 100  LL/obs -5.10799
+      split blk5 on 346K -> blk6   (residual score 475)
+      iter 150  LL/obs -5.04162
+      split blk5 on 371L -> blk7   (residual score 446)
+      split blk22 on 95I -> blk8   (residual score 371)
+      iter 200  LL/obs -4.87561
+      iter 250  LL/obs -4.85962
+  split-merge   held-out   -6.960   best-mixture   -6.071   rows used  28/48
+  growth pi     held-out  -10.523   best-mixture   -6.367   rows used  22/48
+      iter 50  LL/obs -5.75433
+      iter 100  LL/obs -5.67495
+      iter 150  LL/obs -5.63626
+      iter 200  LL/obs -5.61233
+      iter 250  LL/obs -5.59566
+  both          held-out  -10.523   best-mixture   -6.367   rows used  22/48
+
+--- seed 1 ---
+  warm start (fixed emissions): rows used 22/48
+  baseline      held-out   -7.192   best-mixture   -6.346   rows used  22/48
+  split-merge   held-out   -6.960   best-mixture   -6.071   rows used  28/48
+  growth pi     held-out  -10.523   best-mixture   -6.367   rows used  22/48
+  both          held-out  -10.523   best-mixture   -6.367   rows used  22/48
+
+--- seed 2 ---
+  warm start (fixed emissions): rows used 20/48
+  baseline      held-out  -11.868   best-mixture  -11.843   rows used  23/48
+  split-merge   held-out   -7.078   best-mixture   -6.216   rows used  31/48
+  growth pi     held-out  -12.207   best-mixture  -11.841   rows used  22/48
+  both          held-out  -12.207   best-mixture  -11.841   rows used  22/48
+
+============================================================================
+RESULTS  K=48  3 seeds  test 2022-06
+============================================================================
+
+  variant               held-out    best mixture   rows used   mixture gap
+  baseline        -8.750+/-2.204  -8.179+/-2.591        22.3        +0.572
+  split-merge     -7.000+/-0.055  -6.119+/-0.069        29.0        +0.880
+  growth pi      -11.084+/-0.794  -8.192+/-2.580        22.0        +2.892
+  both           -11.084+/-0.794  -8.192+/-2.580        22.0        +2.892
+
+  split-merge over baseline: +1.751
+  growth pi over baseline: -2.334
+  both over baseline: -2.334
+
+============================================================================
+THE TREE SPLIT-MERGE LEARNED  (unsupervised)
+============================================================================
+
+  Each split records which block it came from, so the splits form a tree. No
+  lineage labels were used -- the split mutation is chosen as the one carrying
+  the most within-block dependence.
+
+  blk9 --701V--> blk6   (residual 162)
+  blk16 --701V--> blk4   (residual 210)
+  blk25 --95I--> blk3   (residual 370)
+  blk27 --452Q--> blk2   (residual 879)
+  blk46 --156del22029-22034--> blk0   (residual 1,070)
+  blk46 --95I--> blk5   (residual 207)
+
+  depth reached: 6 splits
+
+  largest fitted growth rates r_k (log advantage per month):
+    blk27   +17.224   x30232141.73 per month
+    blk21    +9.914   x20205.42 per month
+    blk45    +9.483   x13132.33 per month
+    blk11    +7.141   x1262.37 per month
+    blk16    +4.865   x129.69 per month
+
+HOW TO READ
+  'rows used' is how many of the K blocks ever held above 0.1% of a month. At
+  K=48 the baseline used 19 and left 29 at their initialisation value. If
+  split-merge raises this, EM was abandoning capacity it had been given.
+
+  'mixture gap' is the best possible mixture minus what the model actually
+  produced. It bounds every rule for forecasting the mixture. Growth pi should
+  close it and cannot exceed it -- which is the point of running it.
+
+  r_k is each block's growth advantage per month. Check the largest against
+  published estimates for the variant that block corresponds to; that is
+  external validation available nowhere else in this project.
+

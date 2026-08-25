@@ -1,0 +1,24 @@
+V=1,359 max-K=120 train 2021-06..2022-05 test 2022-06  sigma=1.5  drift=True
+
+--- seed 0 ---
+  flat                          -7.061   components 30
+  flat + drift                  -6.945   components 30
+      split blk32 on 440K -> blk0
+      split blk58 on 222V -> blk2
+      split blk46 on 701V -> blk3
+      split blk118 on 701V -> blk5
+      split blk58 on 95I -> blk6
+  flat + drift + split-merge    -6.866   components 35
+      birth: blk0 --981F--> blk1   dep 46,654  dLL +93,681,504  dPrior -15,900  cost 0  gain +93,665,604
+      birth: blk0 --679K--> blk2   dep 42,606  dLL +15,071,447  dPrior -1,424  cost 0  gain +15,070,023
+      birth: blk1 --440K--> blk3   dep 1,613  dLL +2,396,313  dPrior -34  cost 0  gain +2,396,279
+      birth: blk1 --477N--> blk4   dep 1,904  dLL +2,451,781  dPrior -137  cost 0  gain +2,451,645
+      birth: blk1 --496S--> blk5   dep 1,983  dLL +439,768  dPrior -209  cost 0  gain +439,558
+      birth: blk1 --376A--> blk6   dep 3,916  dLL +1,361,152  dPrior -409  cost 0  gain +1,360,744
+      birth: blk1 --498R--> blk7   dep 4,353  dLL +823,264  dPrior -436  cost 0  gain +822,828
+      birth: blk1 --371L--> blk8   dep 1,344  dLL +289,921  dPrior -298  cost 0  gain +289,623
+      birth: blk2 --704L--> blk9   dep 1,119  dLL +2,022,863  dPrior -152  cost 0  gain +2,022,711
+      birth: blk2 --68del21765-21770--> blk10   dep 4,151  dLL +1,146,843  dPrior -444  cost 0  gain +1,146,399
+      birth: blk10 --969K--> blk11   dep 5,524  dLL +378,124  dPrior -1,378  cost 0  gain +376,746
+      birth: blk10 --346K--> blk12   dep 1,336  dLL +142,411  dPrior -759  cost 0  gain +141,652
+      birth: blk10 --26S--> blk13   dep 3,084  dLL +461,359  dPrior -726  cost 0  gain +460,632

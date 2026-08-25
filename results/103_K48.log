@@ -1,0 +1,104 @@
+V=1,359 K=48 train 2021-06..2022-05 test 2022-06  h=1  tree=False  no-A=True  half-life=1.0mo
+
+--- seed 0 ---
+  fixed        persistence  -16.181  via A  -16.181  ceiling  -16.162
+  drift        persistence  -12.531  via A  -12.531  ceiling  -12.513
+  chain        persistence  -16.058  via A  -16.058  ceiling  -16.038
+  chain-trend  persistence  -15.103  via A  -15.103  ceiling  -15.083
+
+--- seed 1 ---
+  fixed        persistence   -7.887  via A   -7.887  ceiling   -7.060
+  drift        persistence   -7.042  via A   -7.042  ceiling   -6.215
+  chain        persistence   -7.825  via A   -7.825  ceiling   -6.998
+  chain-trend  persistence   -7.523  via A   -7.523  ceiling   -6.696
+
+--- seed 2 ---
+  fixed        persistence  -12.069  via A  -12.069  ceiling  -11.705
+  drift        persistence  -11.404  via A  -11.404  ceiling  -11.040
+  chain        persistence  -12.058  via A  -12.058  ceiling  -11.694
+  chain-trend  persistence  -11.931  via A  -11.931  ceiling  -11.567
+
+====================================================================================
+RESULTS  K=48  3 seeds  test 2022-06
+====================================================================================
+
+  emission          persistence           via A         ceiling   ceil-pers
+  fixed         -12.046+/-3.386 -12.046+/-3.386 -11.643+/-3.716      +0.403
+  drift         -10.326+/-2.367 -10.326+/-2.367  -9.923+/-2.690      +0.403
+  chain         -11.980+/-3.361 -11.980+/-3.361 -11.577+/-3.692      +0.403
+  chain-trend   -11.519+/-3.108 -11.519+/-3.108 -11.115+/-3.439      +0.403
+
+  drift over fixed: +1.720
+  chain over fixed: +0.066
+  chain-trend over fixed: +0.527
+
+====================================================================================
+WHICH ROWS FILL IN
+====================================================================================
+
+  row     first month above 1%  share (last)  size first  size last   change
+  blk32                2022-01         0.922        28.6       28.9     +0.3
+  blk47                2022-02         0.065        22.0       21.8     -0.2
+  blk16                2022-02         0.007         7.7        7.6     -0.1
+  blk46                2021-12         0.003        29.4       33.3     +3.9
+  blk39                2021-12         0.001        21.7       22.4     +0.7
+  blk18                2021-06         0.001         3.9        3.5     -0.3
+  blk22                2021-06         0.000         9.3        9.8     +0.5
+  blk42                2021-06         0.000         9.3        9.3     +0.0
+  blk1                 2021-06         0.000         6.5        6.6     +0.1
+  blk44                2021-06         0.000         5.6        5.5     -0.1
+  blk20                  never         0.000        56.7       56.7     +0.0
+  blk4                 2021-09         0.000        12.2       12.3     +0.1
+  blk45                2021-06         0.000        11.3       11.3     +0.0
+  blk12                  never         0.000        11.0       11.0     +0.0
+  blk2                   never         0.000         8.5        8.5     -0.0
+  blk24                  never         0.000        26.2       26.2     +0.0
+  blk7                   never         0.000        57.0       57.0     -0.0
+  blk33                  never         0.000       679.5      679.5     +0.0
+  blk31                  never         0.000       679.5      679.5     +0.0
+  blk37                  never         0.000       679.5      679.5     +0.0
+  blk35                  never         0.000       679.5      679.5     +0.0
+  blk36                  never         0.000       679.5      679.5     +0.0
+  blk30                  never         0.000       679.5      679.5     +0.0
+  blk38                  never         0.000       679.5      679.5     +0.0
+  blk40                  never         0.000       679.5      679.5     +0.0
+  blk41                  never         0.000       679.5      679.5     +0.0
+  blk43                  never         0.000       679.5      679.5     +0.0
+  blk34                  never         0.000       679.5      679.5     +0.0
+  blk29                  never         0.000       679.5      679.5     +0.0
+  blk0                   never         0.000       679.5      679.5     +0.0
+  blk27                  never         0.000       679.5      679.5     +0.0
+  blk3                   never         0.000       679.5      679.5     +0.0
+  blk5                   never         0.000       679.5      679.5     +0.0
+  blk6                   never         0.000       679.5      679.5     +0.0
+  blk8                   never         0.000       679.5      679.5     +0.0
+  blk9                   never         0.000       679.5      679.5     +0.0
+  blk10                  never         0.000       679.5      679.5     +0.0
+  blk11                  never         0.000       679.5      679.5     +0.0
+  blk13                  never         0.000       679.5      679.5     +0.0
+  blk14                  never         0.000       679.5      679.5     +0.0
+  blk15                  never         0.000       679.5      679.5     +0.0
+  blk17                  never         0.000       679.5      679.5     +0.0
+  blk19                  never         0.000       679.5      679.5     +0.0
+  blk21                  never         0.000       679.5      679.5     +0.0
+  blk25                  never         0.000       679.5      679.5     +0.0
+  blk26                  never         0.000       679.5      679.5     +0.0
+  blk28                  never         0.000       679.5      679.5     +0.0
+  blk23                  never         0.000       679.5      679.5     +0.0
+
+  observed mutations per sequence: 8.9 -> 28.6
+  model expected size (weighted):  8.9 -> 28.2
+
+HOW TO READ
+  'ceiling' is the mix fitted on the test month -- the highest score any
+  forecast could reach with those emissions. Changing the EMISSION moves it;
+  changing the transition cannot.
+
+  A plain chain forecasts the next fingerprint as the last one, so it should
+  fit the past better and forecast no better than fixed emissions. chain-trend
+  keeps a slope to extrapolate. If the plain chain wins anyway, that prediction
+  was wrong and worth knowing.
+
+  With --no-A the forecast is persistence, so the 'via A' column equals
+  'persistence' by construction.
+

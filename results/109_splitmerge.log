@@ -1,0 +1,30 @@
+V=1,359 K=48 train 2021-06..2022-05 test 2022-06  drift=True  half-life=1.0
+
+--- seed 0 ---
+  baseline      held-out  -21.068   best-mixture  -21.068   rows used   1/48
+      split blk32 on 547K -> blk0   (residual score 46931)
+      iter 50  LL/obs -9.97568
+      split blk0 on 493R -> blk1   (residual score 37474)
+      split blk1 on 440K -> blk2   (residual score 1710)
+      iter 100  LL/obs -7.62683
+      split blk1 on 477N -> blk3   (residual score 2235)
+      iter 150  LL/obs -6.92852
+      split blk1 on 371L -> blk4   (residual score 1561)
+      split blk4 on 95I -> blk5   (residual score 1520)
+      iter 200  LL/obs -6.83348
+      iter 250  LL/obs -6.60122
+  split-merge   held-out  -14.669   best-mixture  -14.653   rows used   7/48
+  growth pi     held-out  -21.068   best-mixture  -21.068   rows used   1/48
+      split blk32 on 547K -> blk0   (residual score 46931)
+      iter 50  LL/obs -10.26021
+      split blk0 on 493R -> blk1   (residual score 46158)
+      iter 100  LL/obs -7.90976
+      split blk1 on 440K -> blk2   (residual score 1701)
+      iter 150  LL/obs -7.57879
+      iter 200  LL/obs -7.47232
+      iter 250  LL/obs -7.45546
+  both          held-out  -14.934   best-mixture  -14.746   rows used   4/48
+
+--- seed 1 ---
+  baseline      held-out  -21.068   best-mixture  -21.068   rows used   1/48
+  split-merge   held-out  -14.668   best-mixture  -14.652   rows used   7/48
