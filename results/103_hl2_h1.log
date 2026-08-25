@@ -1,0 +1,54 @@
+V=1,180 K=8 train 2021-06..2022-05 test 2022-06  h=1  tree=False  no-A=True  half-life=2.0mo
+
+--- seed 0 ---
+  drift        persistence  -11.945  via A  -11.945  ceiling  -11.933
+
+--- seed 1 ---
+  drift        persistence   -9.965  via A   -9.965  ceiling   -9.449
+
+--- seed 2 ---
+  drift        persistence  -11.431  via A  -11.431  ceiling  -11.414
+
+--- seed 3 ---
+  drift        persistence  -12.273  via A  -12.273  ceiling  -12.260
+
+--- seed 4 ---
+  drift        persistence  -11.429  via A  -11.429  ceiling  -11.412
+
+====================================================================================
+RESULTS  K=8  5 seeds  test 2022-06
+====================================================================================
+
+  emission          persistence           via A         ceiling   ceil-pers
+  drift         -11.409+/-0.790 -11.409+/-0.790 -11.294+/-0.977      +0.115
+
+====================================================================================
+WHICH ROWS FILL IN
+====================================================================================
+
+  row     first month above 1%  share (last)  size first  size last   change
+  blk1                 2022-01         0.986        27.4       27.6     +0.2
+  blk4                 2021-06         0.009         6.8        5.5     -1.4
+  blk2                 2021-12         0.003        26.6       30.9     +4.3
+  blk3                 2021-12         0.002        21.0       22.6     +1.6
+  blk5                 2021-06         0.000         8.0        9.0     +1.0
+  blk6                   never         0.000         7.0        7.0     +0.0
+  blk0                   never         0.000       590.0      590.0     +0.0
+  blk7                   never         0.000       590.0      590.0     +0.0
+
+  observed mutations per sequence: 7.9 -> 27.6
+  model expected size (weighted):  7.7 -> 27.4
+
+HOW TO READ
+  'ceiling' is the mix fitted on the test month -- the highest score any
+  forecast could reach with those emissions. Changing the EMISSION moves it;
+  changing the transition cannot.
+
+  A plain chain forecasts the next fingerprint as the last one, so it should
+  fit the past better and forecast no better than fixed emissions. chain-trend
+  keeps a slope to extrapolate. If the plain chain wins anyway, that prediction
+  was wrong and worth knowing.
+
+  With --no-A the forecast is persistence, so the 'via A' column equals
+  'persistence' by construction.
+

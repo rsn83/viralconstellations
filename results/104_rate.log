@@ -1,0 +1,68 @@
+dominant background: blk6
+
+========================================================================================
+1  MONTHLY FREQUENCY DURING TRAINING  (%)  -- is it climbing?
+========================================================================================
+
+  whole population
+  mutation    21-06  21-07  21-08  21-09  21-10  21-11  21-12  22-01  22-02  22-03  22-04  22-05   | 22-06
+  486V         0.00   0.00   0.00   0.00   0.00   0.00   0.00   0.01   0.00   0.01   0.24   6.07   | 52.54
+  452R        70.37  90.40  93.92  94.67  94.94  97.10  52.40   3.07   0.18   0.06   0.37   6.13   | 51.65
+  493R         0.01   0.00   0.02   0.00   0.01   0.13  40.98  87.31  93.55  95.24  92.37  87.69   | 41.15
+  452Q         0.21   0.11   0.04   0.03   0.03   0.02   0.01   0.01   0.01   0.27   6.17  30.18   | 24.05
+  704L         0.10   0.08   0.07   0.11   0.09   0.12   0.06   0.08   0.16   0.63   7.52  31.98   | 25.38
+
+  within the dominant background
+  mutation    21-06  21-07  21-08  21-09  21-10  21-11  21-12  22-01  22-02  22-03  22-04  22-05   | 22-06
+  486V         0.00   0.00 100.00 100.00 100.00 100.00 100.00  97.22 100.00 100.00  99.86  99.72   | 99.90
+  452R         0.00   0.00  50.00 100.00 100.00 100.00 100.00  88.89  93.75  92.68  98.85  98.44   | 98.72
+  493R         0.00   0.00   0.00   0.00   0.00   0.00   0.00   0.00   0.00   0.00   0.14   0.06    | 0.01
+  452Q         0.00   0.00   0.00   0.00   0.00   0.00   0.00   0.00   0.00   0.00   0.00   0.02    | 0.01
+  704L         0.00   0.00   0.00   0.00   0.00   0.00   0.00   0.00   0.00   0.00   0.00   0.12    | 0.07
+
+========================================================================================
+2  SLOPE FITTED ON DIFFERENT WINDOWS, AND WHERE IT EXTRAPOLATES
+========================================================================================
+
+  mutation  window       slope/mo forecast at 2022-06    actual    ratio
+  486V      all            +1.016             100.00%    99.90%      1.0x
+            last 6         -0.222              99.85%    99.90%      1.0x
+            last 3         -1.676              97.92%    99.90%      1.0x
+
+  452R      all            +0.817              99.97%    98.72%      1.0x
+            last 6         -0.525              91.32%    98.72%      1.1x
+            last 3         +0.804              99.51%    98.72%      1.0x
+
+  493R      all            +0.153               0.04%     0.01%      0.3x
+            last 6         +0.484               0.11%     0.01%      0.1x
+            last 3         +0.895               0.26%     0.01%      0.0x
+
+  452Q      all            +0.031               0.01%     0.01%      0.5x
+            last 6         +0.116               0.02%     0.01%      0.4x
+            last 3         +0.405               0.03%     0.01%      0.2x
+
+  704L      all            +0.096               0.02%     0.07%      3.2x
+            last 6         +0.355               0.05%     0.07%      1.4x
+            last 3         +1.242               0.27%     0.07%      0.3x
+
+========================================================================================
+4  EVERY MUTATION THAT ROSE SHARPLY IN THE TEST MONTH
+========================================================================================
+
+  none rose by more than 5 points
+
+HOW TO READ
+  Column 'ratio' in section 2 is how far short the extrapolation falls. A ratio
+  near 1 means the slope was right; 30 means the rise was thirtyfold faster
+  than the fit expected.
+
+  Compare the 'all' and 'last 3' slopes. If the recent slope is much steeper,
+  the signal IS in the training window and a whole-window fit is diluting it --
+  weighting recent months, or sharing a rate across mutations, should recover
+  it. If the two slopes are similar and both far too shallow, the rise happened
+  after training ended and no rate model can reach it from this window.
+
+  'months to reach' in section 4 is how long the recent slope would need to
+  arrive at the observed level. A number near 1 means the timing is roughly
+  right; a large number means the model would be that many months late.
+

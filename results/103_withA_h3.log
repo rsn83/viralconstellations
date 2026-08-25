@@ -1,0 +1,65 @@
+V=1,180 K=8 train 2021-06..2022-03 test 2022-06  h=3  tree=False  no-A=False
+  training ends 3 months before the test month; persistence copies 2022-03
+
+--- seed 0 ---
+  fixed        persistence  -20.178  via A  -20.178  ceiling  -19.977  lam 0.00
+  drift        persistence  -20.107  via A  -20.107  ceiling  -19.906  lam 0.00
+  chain        persistence  -20.172  via A  -20.172  ceiling  -19.970  lam 0.00
+  chain-trend  persistence  -20.096  via A  -20.096  ceiling  -19.895  lam 0.00
+
+--- seed 1 ---
+  fixed        persistence  -21.067  via A  -21.067  ceiling  -20.860  lam 0.00
+  drift        persistence  -21.038  via A  -21.038  ceiling  -20.833  lam 0.00
+  chain        persistence  -21.062  via A  -21.062  ceiling  -20.855  lam 0.00
+  chain-trend  persistence  -21.022  via A  -21.022  ceiling  -20.817  lam 0.00
+
+--- seed 2 ---
+  fixed        persistence  -20.239  via A  -20.239  ceiling  -20.042  lam 0.00
+  drift        persistence  -20.116  via A  -20.116  ceiling  -19.920  lam 0.00
+  chain        persistence  -20.232  via A  -20.232  ceiling  -20.034  lam 0.00
+  chain-trend  persistence  -20.111  via A  -20.111  ceiling  -19.914  lam 0.00
+
+====================================================================================
+RESULTS  K=8  3 seeds  test 2022-06
+====================================================================================
+
+  emission          persistence           via A         ceiling   ceil-pers
+  fixed         -20.495+/-0.405 -20.495+/-0.405 -20.293+/-0.402      +0.202
+  drift         -20.420+/-0.437 -20.420+/-0.437 -20.220+/-0.434      +0.201
+  chain         -20.488+/-0.406 -20.488+/-0.406 -20.286+/-0.403      +0.202
+  chain-trend   -20.410+/-0.433 -20.410+/-0.433 -20.209+/-0.430      +0.201
+
+  drift over fixed: +0.074
+  chain over fixed: +0.007
+  chain-trend over fixed: +0.085
+
+====================================================================================
+WHICH ROWS FILL IN
+====================================================================================
+
+  row     first month above 1%  share (last)  size first  size last   change
+  blk1                 2022-01         0.821        27.2       27.3     +0.0
+  blk2                 2021-12         0.156        26.8       30.4     +3.6
+  blk3                 2021-12         0.018        21.3       22.2     +0.9
+  blk4                 2021-06         0.004         7.7        4.8     -2.9
+  blk5                 2021-06         0.000         7.9        9.3     +1.3
+  blk6                   never         0.000         7.0        7.1     +0.0
+  blk0                   never         0.000       590.0      590.0     +0.0
+  blk7                   never         0.000       590.0      590.0     +0.0
+
+  observed mutations per sequence: 7.9 -> 27.5
+  model expected size (weighted):  7.9 -> 27.6
+
+HOW TO READ
+  'ceiling' is the mix fitted on the test month -- the highest score any
+  forecast could reach with those emissions. Changing the EMISSION moves it;
+  changing the transition cannot.
+
+  A plain chain forecasts the next fingerprint as the last one, so it should
+  fit the past better and forecast no better than fixed emissions. chain-trend
+  keeps a slope to extrapolate. If the plain chain wins anyway, that prediction
+  was wrong and worth knowing.
+
+  With --no-A the forecast is persistence, so the 'via A' column equals
+  'persistence' by construction.
+

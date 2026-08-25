@@ -1,0 +1,18 @@
+V=1,180 K=8 train 2021-06..2022-04 test 2022-06  h=2  tree=False  no-A=True
+  training ends 2 months before the test month; persistence copies 2022-04
+
+--- seed 0 ---
+  fixed        persistence  -17.473  via A  -17.473  ceiling  -17.430
+Traceback (most recent call last):
+  File "/Users/verizonisamerica/Downloads/projects/viralconstellations/scripts/103_chain_tree.py", line 403, in <module>
+    main()
+  File "/Users/verizonisamerica/Downloads/projects/viralconstellations/scripts/103_chain_tree.py", line 328, in main
+    else em(Xs, ws, args.K, m, tree=args.tree, seed=sd,
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/verizonisamerica/Downloads/projects/viralconstellations/scripts/103_chain_tree.py", line 172, in em
+    S_t.append(Rw.T @ X); n_t.append(Rw.sum(0)[:, None])
+                                     ^^^^^^^^^
+  File "/opt/anaconda3/envs/viralconst/lib/python3.11/site-packages/numpy/core/_methods.py", line 47, in _sum
+    def _sum(a, axis=None, dtype=None, out=None, keepdims=False,
+    
+KeyboardInterrupt

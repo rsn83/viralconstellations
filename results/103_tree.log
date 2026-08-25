@@ -1,0 +1,10 @@
+V=1,180 K=8 train 2021-06..2022-05 test 2022-06  tree=True  no-A=False
+
+--- seed 0 ---
+  fixed        persistence  -13.753  via A  -13.774  ceiling  -13.742  lam 0.25
+  drift        persistence  -12.818  via A  -12.845  ceiling  -12.807  lam 0.25
+  chain        persistence  -13.643  via A  -13.663  ceiling  -13.631  lam 0.25
+  chain-trend  persistence  -12.883  via A  -12.908  ceiling  -12.871  lam 0.25
+
+--- seed 1 ---
+  fixed        persistence  -13.753  via A  -13.773  ceiling  -13.741  lam 0.25

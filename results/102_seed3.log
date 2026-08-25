@@ -1,0 +1,87 @@
+K = 8   V = 1,180   train 2021-06..2022-05   test 2022-06
+
+fitting fixed emissions ...
+fitting drifting emissions (warm start) ...
+
+==============================================================================
+Q1  DOES THE EXPECTED SET SIZE GROW?
+==============================================================================
+
+  observed mutations per sequence: 7.9 at 2021-06  ->  27.6 at 2022-05
+
+  row     share (last)   size at 2021-06   size at 2022-05    change
+  blk5           0.901              28.3              28.5      +0.2
+  blk2           0.094              19.8              25.0      +5.2
+  blk1           0.005               7.3               4.4      -3.0
+  blk7           0.000               7.7               7.5      -0.2
+  blk6           0.000               8.7               8.7      -0.0
+  blk4           0.000               4.7               4.8      +0.1
+  blk3           0.000              12.1              12.1      +0.0
+  blk0           0.000              11.2              11.3      +0.1
+
+  population-weighted expected size: 8.0 -> 28.0   (+20.0)
+  rows whose fingerprint grew: 5 of 8
+
+  -> drift IS carrying the accumulation. The rise in mutations per sequence is
+     represented inside the backgrounds, not only by mass moving to larger ones.
+
+==============================================================================
+Q2  WHICH MUTATIONS HAVE THE LARGEST SLOPES?
+==============================================================================
+
+  row    mutation     theta first  theta last   change  convergent
+  blk5   547K               1.000       0.002   -0.998            
+  blk5   981F               1.000       0.002   -0.998            
+  blk5   856K               1.000       0.002   -0.997            
+  blk5   213G               0.000       0.997   +0.997            
+  blk5   67V                1.000       0.003   -0.997            
+  blk5   19I                0.000       0.997   +0.997            
+  blk5   405N               0.000       0.997   +0.997            
+  blk5   496S               1.000       0.003   -0.997            
+  blk5   95I                1.000       0.003   -0.997            
+  blk5   145D               1.000       0.004   -0.996            
+  blk5   27S                0.000       0.996   +0.996            
+  blk5   142D               0.000       0.996   +0.996            
+  blk5   376A               0.000       0.996   +0.996            
+  blk5   371L               1.000       0.005   -0.995            
+  blk5   408S               0.000       0.994   +0.994            
+
+  0 of the top 15 are at residues the literature reports recurring
+    486V   in blk2   0.000 -> 0.001 (forecast next month 0.001)
+    486V   in blk5   0.001 -> 0.012 (forecast next month 0.016)
+    452R   in blk2   0.008 -> 0.006 (forecast next month 0.006)
+    452R   in blk5   0.001 -> 0.014 (forecast next month 0.017)
+    704L   in blk2   0.007 -> 0.020 (forecast next month 0.022)
+    704L   in blk5   0.000 -> 0.209 (forecast next month 0.409)
+    452Q   in blk2   0.002 -> 0.002 (forecast next month 0.002)
+    452Q   in blk5   0.000 -> 0.196 (forecast next month 0.390)
+
+==============================================================================
+Q3  WHERE DID THE HELD-OUT GAIN COME FROM?
+==============================================================================
+
+  total held-out gain, drift over fixed: +14.433
+
+  mutation     contribution   share of gain  convergent
+  981F               +0.765            5.3%            
+  547K               +0.760            5.3%            
+  856K               +0.759            5.3%            
+  376A               +0.756            5.2%            
+  405N               +0.736            5.1%            
+  142D               +0.723            5.0%            
+  27S                +0.720            5.0%            
+  213G               +0.718            5.0%            
+  67V                +0.711            4.9%            
+  19I                +0.693            4.8%            
+  95I                +0.690            4.8%            
+  145D               +0.679            4.7%            
+  496S               +0.644            4.5%            
+  371F               +0.639            4.4%            
+  371L               +0.622            4.3%            
+
+  top 5 mutations account for 25.3% of the total absolute movement
+
+  Concentrated in a few mutations means drift found something specific. Spread
+  thinly means it is a general sharpening of the emissions rather than tracking
+  a particular lineage.
+
