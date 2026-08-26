@@ -1,0 +1,27 @@
+  [2021-12] fitted, K=120
+  [2022-03] fitted, K=120
+  [2022-06] fitted, K=120
+  [2022-09] fitted, K=120
+
+==============================================================================
+MIXTURE GAP BY HORIZON   anchors=4  seeds=1  mean K=120
+==============================================================================
+
+    h    persist     growth     loglin     oracle       gap  best rule closes
+    1    -5.9231    -5.6674    -5.7889    -5.4759    0.4472              57%
+    2    -8.2455    -7.6952    -8.0037    -6.9772    1.2683              43%
+    3   -14.4866   -13.7175   -14.1564   -12.0536    2.4331              32%
+    6   -41.6767   -40.9411   -41.4535   -38.1765    3.5002              21%
+
+  gap    = oracle - persist. The most any weight rule could ever buy.
+           Oracle is fitted ON the test month: a ceiling, never a result.
+  closes = how much of that gap the better of growth/loglin actually captures.
+
+  gap flat in h                 -> weights are not the bottleneck; the loss at
+                                   longer horizons is in the profiles.
+  gap grows, closes is high     -> model the weights, using the winning rule.
+  gap grows, closes near zero   -> the missing mass sits in backgrounds absent
+                                   from the training window. That is a proposal
+                                   problem: no mixture law over existing
+                                   components can reach it.
+

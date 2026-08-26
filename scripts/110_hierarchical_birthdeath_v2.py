@@ -844,7 +844,7 @@ def fit(Xs, ws, V, max_K, seed=0, iters=200, inner=8, lr=2.0, sigma=1.5,
 
 def fit_flat(Xs, ws, V, K, seed=0, drift=False, split_merge=False,
              iters=200, inner=8, lr=2.0, half_life=1.0, prior=.5,
-             names=None, verbose=False, init_beta=None):
+             names=None, verbose=False, init_beta=None, return_gamma=False):
     """Flat mixture: K independent components, optionally with drifting
     emissions and scheduled split-merge. These are the ladder's lower rungs, so
     every rung is fitted by the same code on the same data."""
@@ -951,7 +951,10 @@ def fit_flat(Xs, ws, V, K, seed=0, drift=False, split_merge=False,
     dt = tv[-1] - tv[-2] if T > 1 else 0.
     th_next = np.clip(sig(beta + gamma * (tv[-1] + dt)) if drift else sig(beta),
                       1e-4, 1 - 1e-4)
-    return th_next, Pi[-1], int((Pi.max(0) > 1e-3).sum()), ll, splits, beta
+    out = (th_next, Pi[-1], int((Pi.max(0) > 1e-3).sum()), ll, splits, beta)
+    # gamma is needed to evaluate the signatures at horizons beyond h=1;
+    # returned only on request so existing 6-tuple unpacking still works.
+    return out + (gamma, tv) if return_gamma else out
 
 
 
