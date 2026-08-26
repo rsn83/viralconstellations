@@ -1,0 +1,43 @@
+train 2021-06..2022-05   test 2022-06
+nodes 1,359   positions 218   positions carrying more than one node 173
+(only those positions can produce an impossible pair under the current emission)
+
+  K=13  bernoulli per node         params     17,667   train   -5.409   held-out  -15.747
+  K=13  factored, psi tied         params      4,193   train   -7.398   held-out  -18.662
+  K=13  factored, psi per block    params     20,501   train   -5.223   held-out  -15.588
+  K=24  bernoulli per node         params     32,616   train   -4.684   held-out  -13.645
+  K=24  factored, psi tied         params      6,591   train   -6.894   held-out  -17.625
+  K=24  factored, psi per block    params     37,848   train   -4.708   held-out  -13.402
+  K=48  bernoulli per node         params     65,232   train   -4.465   held-out  -15.112
+  K=48  factored, psi tied         params     11,823   train   -6.355   held-out  -10.799
+  K=48  factored, psi per block    params     75,696   train   -4.246   held-out  -11.095
+
+========================================================================================
+  EMISSION FAMILY COMPARISON   test 2022-06
+========================================================================================
+
+      K  emission                        params      train   held-out  vs bernoulli
+     13  bernoulli per node              17,667     -5.409    -15.747              
+     13  factored, psi tied               4,193     -7.398    -18.662        -2.915
+     13  factored, psi per block         20,501     -5.223    -15.588        +0.159
+     24  bernoulli per node              32,616     -4.684    -13.645              
+     24  factored, psi tied               6,591     -6.894    -17.625        -3.980
+     24  factored, psi per block         37,848     -4.708    -13.402        +0.243
+     48  bernoulli per node              65,232     -4.465    -15.112              
+     48  factored, psi tied              11,823     -6.355    -10.799        +4.313
+     48  factored, psi per block         75,696     -4.246    -11.095        +4.017
+
+  Same K, same data, same initialisation, no drift on either side. The only
+  difference is the emission family.
+
+  What to look for:
+    tied psi beats bernoulli with FEWER parameters
+        -> the current emission was spending capacity on residue identity that
+           is really shared chemistry, and putting mass on impossible pairs.
+    untied beats tied
+        -> which residue appears is lineage-specific after all, and the tying
+           assumption is wrong.
+    neither beats bernoulli
+        -> mutual exclusion was not costing anything; keep the simpler model
+           and fix the deletion encoding directly instead.
+

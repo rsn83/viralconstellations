@@ -1,0 +1,42 @@
+train 2021-06..2022-05   test 2022-06   V=1,359   min-count 3
+  K=13   occupied 13   drift -7.441  no-drift -8.147  worth +0.706   mean|gamma| 2.5675
+  K=24   occupied 24   drift -6.948  no-drift -7.246  worth +0.298   mean|gamma| 1.2853
+  K=48   occupied 48   drift -6.864  no-drift -14.672  worth +7.808   mean|gamma| 1.4867
+  K=96   occupied 96   drift -6.796  no-drift -6.874  worth +0.078   mean|gamma| 3.3116
+
+======================================================================================
+  IS THE DRIFT REAL, OR IS IT COMPOSITION?
+======================================================================================
+
+      K  occupied     drift  no drift    worth   mean|g|   max|g|   purity  mid/blk
+     13        13    -7.441    -8.147   +0.706    2.5675     8.39    0.997      9.1
+     24        24    -6.948    -7.246   +0.298    1.2853     8.29    0.998      5.0
+     48        48    -6.864   -14.672   +7.808    1.4867     9.01    0.999      2.9
+     96        96    -6.796    -6.874   +0.078    3.3116    12.20    0.999      2.1
+
+  from K=13 to K=96:
+    mean |gamma| on middling entries   x1.29   (2.5675 -> 3.3116)
+    what drift is worth                x0.11   (+0.706 -> +0.078)
+    block purity                       0.997 -> 0.999
+
+  worth   = held-out with drift minus held-out without it, same K, same warm
+            start. What letting entries move actually buys at that K.
+  mean|g| = average slope magnitude, over entries at middling frequency only,
+            weighted by how much population each block holds.
+  purity  = mean distance of entries from 0.5, doubled. 1 means every entry is
+            pinned at 0 or 1, i.e. the block is one clean signature.
+
+  mean|g| is the statistic that discriminates; 'worth' is a supporting check
+  and its ratio is only meaningful when it is sizeable at the smallest K.
+
+  Both shrink toward zero as K grows
+      -> the drift was composition. Few blocks means each is a bag of
+         lineages, and gamma reports the replacement inside the bag as if the
+         bag itself were changing. Add blocks and there is nothing left to
+         absorb. pi is then the only real time process, and theta is
+         downstream of it.
+
+  mean|g| holds up at large K, and drift still pays there
+      -> the drift is intrinsic. Blocks really do change from within, and
+         theta and pi are two separate processes on two separate clocks.
+

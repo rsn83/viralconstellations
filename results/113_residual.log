@@ -1,0 +1,80 @@
+train 2021-06..2022-05   test 2022-06   V=1,359   min-count 3
+
+====================================================================================
+K requested 13   occupied 13   held-out -7.441   blocks examined 9
+====================================================================================
+   block      weight  mid-freq    max|R|     null   ratio   worst pair
+       5      70,464        10     216.5      2.5    85.8   477N + 478K
+      11      46,694         9     136.7      1.6    85.1   373P + 375F
+       3     126,089        26     268.4      4.7    56.6   212I + 211del22194-22196
+       6     372,736         3     142.3      2.6    55.6   346K + 701V
+       2     160,219         7     100.3      2.5    40.6   27S + 24del21633-21641
+       8      22,781        12      89.6      2.7    32.6   440K + 446S
+       4   1,076,458        16     219.6      7.7    28.4   346K + 701V
+       1   3,058,196         8     229.2     15.1    15.2   95I + 142D
+
+====================================================================================
+K requested 24   occupied 24   held-out -6.948   blocks examined 20
+====================================================================================
+   block      weight  mid-freq    max|R|     null   ratio   worst pair
+      20   1,875,102         3     935.0      9.7    96.1   145H + 222V
+       5      69,874        10     216.0      2.6    82.1   477N + 478K
+       2      61,574         8     124.1      1.8    69.9   417T + 440K
+       3      78,181        11     115.3      2.1    53.8   417N + 446S
+      17      22,400        18     127.4      2.7    47.5   142D + 213G
+      14     361,134         3     140.7      3.0    46.3   346K + 701V
+      16      98,017        17     136.9      3.2    42.8   95I + 493R
+       7      46,304         9     135.0      3.4    40.2   373P + 375F
+
+====================================================================================
+K requested 48   occupied 48   held-out -6.864   blocks examined 37
+====================================================================================
+   block      weight  mid-freq    max|R|     null   ratio   worst pair
+       5      62,601        10     219.6      2.8    77.9   477N + 478K
+      13      45,007         6     152.0      2.0    77.5   158G + 156del22029-22034
+      43      29,870         2      44.7      0.7    64.4   346K + 701V
+      47      15,958        17     105.8      1.9    56.3   145D + 142del21987-21995
+      32     955,368         6     429.9     10.5    41.0   142D + 222V
+      12      25,570        10      95.5      2.5    38.8   212I + 211del22194-22196
+      46     514,234         3      52.9      1.4    37.1   212I + 211del22194-22196
+       2      45,444         8      71.7      2.0    35.8   339D + 373P
+
+====================================================================================
+K requested 96   occupied 96   held-out -6.796   blocks examined 59
+====================================================================================
+   block      weight  mid-freq    max|R|     null   ratio   worst pair
+      79      18,814         8      87.4      2.1    41.4   212I + 211del22194-22196
+      59      29,944         2      44.8      1.2    38.8   346K + 701V
+      32       8,192         8      83.8      2.2    37.8   212I + 211del22194-22196
+      90      26,222         3      40.0      1.1    36.9   346K + 701V
+      43      50,094         3      50.2      1.6    32.3   95I + 142D
+      83      16,448         8      99.8      3.1    32.2   212I + 211del22194-22196
+      24      18,598         4      46.6      1.6    28.6   310del22490-22490 + 310del22490-22491
+      74      32,309         2      17.1      0.6    27.7   142D + 950N
+
+====================================================================================
+  DOES SPLITTING CLEAN THE RESIDUALS?
+====================================================================================
+
+      K  occupied   held-out   worst ratio  median ratio   worst pair
+     13        13     -7.441          85.8          40.6   477N + 478K
+     24        24     -6.948          96.1          29.7   145H + 222V
+     48        48     -6.864          77.9          21.1   477N + 478K
+     96        96     -6.796          41.4          10.8   212I + 211del22194-22196
+
+  ratio = max|R| in the block, divided by the largest |R| that independent
+  coins of the same size and frequencies produce. A ratio near 1 IS the model
+  being right. A ratio of 20 is a pair the emission cannot represent.
+
+  Falling ratios with K, while held-out still improves
+      -> splitting is doing the job. Product-Bernoulli is adequate.
+         Do not add pairwise terms.
+
+  Ratio stuck high in a heavy block, at a K where held-out has stopped
+  improving
+      -> splitting has run out and the correlation is still there. That pair,
+         in that block, is the evidence for changing the emission family.
+
+  Both halves are required. A high ratio at a K where held-out is still rising
+  only means the model has not finished splitting yet.
+

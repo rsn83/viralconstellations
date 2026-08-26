@@ -620,6 +620,12 @@ def _dendrogram_tree(beta_occ, wts, max_nodes):
     n = len(beta_occ)
     if n < 3:
         return None
+    # The leaves ARE the fitted components and cannot be dropped, so the
+    # smallest tree that can hold them is a root plus n leaves. If even that
+    # does not fit, there is no tree to build -- fall back to the star, which
+    # stops allocating when it runs out of slots.
+    if max_nodes < n + 1:
+        return None
     th = 1.0 / (1.0 + np.exp(-np.clip(beta_occ, -30, 30)))
     Z = linkage(pdist(th, metric="cosine"), method="average")
 
@@ -636,13 +642,11 @@ def _dendrogram_tree(beta_occ, wts, max_nodes):
     # nodes formed by the tightest merges (lowest height) and reattach their
     # children upward. Those are the merges the data supports least strongly as
     # a distinct ancestor.
-    internal = sorted(height, key=lambda k: height[k])
+    internal = sorted((h for h in height if h != root), key=lambda k: height[k])
     n_nodes = 2 * n - 1
     dropped = set()
     while n_nodes > max_nodes and internal:
-        d = internal.pop(0)
-        if d == root: continue
-        dropped.add(d); n_nodes -= 1
+        dropped.add(internal.pop(0)); n_nodes -= 1
 
     # Flatten dropped nodes: a node's effective children are its children with
     # dropped ones replaced by their own children, recursively.
