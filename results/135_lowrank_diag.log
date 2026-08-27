@@ -1,0 +1,51 @@
+train 2021-06..2022-05   h=1:2022-06   h=6:2022-11
+48 blocks, 1,359 mutations, 65,232 free emission parameters as it stands
+
+  reference: full-rank emission scores -3.7587 on the same objective
+
+  rank   4:    6,987 params   train LL/obs at SVD init   -6.5931  after fitting   -3.4685   steps accepted 3000/3000
+  rank   8:   12,615 params   train LL/obs at SVD init   -5.4324  after fitting   -3.1222   steps accepted 3000/3000
+  rank  16:   23,871 params   train LL/obs at SVD init   -4.2984  after fitting   -3.0191   steps accepted 3000/3000
+  rank  32:   46,383 params   train LL/obs at SVD init   -3.7876  after fitting   -2.9990   steps accepted 3000/3000
+
+==============================================================================
+  LOW-RANK EMISSION   48 blocks, same responsibilities
+==============================================================================
+
+  variant            h1 seen     h1 unseen        h1 all       h6 seen     h6 unseen        h6 all
+  full rank           -5.613       -20.750        -6.864        -8.658       -36.133       -30.489
+  rank 4             -14.867       -29.098       -16.043       -22.985       -49.123       -43.753
+  rank 8             -13.146       -29.294       -14.481       -20.305       -47.162       -41.644
+  rank 16            -12.782       -28.571       -14.087       -19.651       -46.793       -41.217
+  rank 32            -12.719       -28.499       -14.023       -19.664       -46.689       -41.137
+
+  change from full rank
+  rank 4              -9.254        -8.348        -9.179       -14.326       -12.990       -13.265
+  rank 8              -7.534        -8.544        -7.617       -11.647       -11.029       -11.156
+  rank 16             -7.169        -7.821        -7.223       -10.993       -10.660       -10.728
+  rank 32             -7.106        -7.749        -7.159       -11.006       -10.556       -10.648
+
+  The unseen columns are the point. A free number per (block, mutation) makes
+  the blocks isolated corners in a space of a thousand dimensions, so a set
+  three edits away has nothing near it. Sharing a low-dimensional structure
+  across mutations puts the blocks on a surface, and a combination that is not
+  any block can still be close to the surface.
+
+  Read the SVD-init and after-fitting columns first. The truncated SVD of the
+  fitted logits is where each rank STARTS, so if a high rank starts close to
+  the full-rank reference and ends up far from it, the optimiser is at fault
+  and the ranks say nothing about the model. If instead even a high rank
+  starts far away, the fitted emission genuinely is not low rank and the idea
+  is dead on this data.
+
+  unseen improves while seen barely moves
+      -> the surface exists and the isolated-corners geometry was the
+         constraint. Worth building into the fitting rather than refitting the
+         emission afterwards.
+  both get worse as rank falls
+      -> the profiles genuinely need their full dimensionality, and there is
+         no low-dimensional structure to exploit.
+  seen degrades and unseen improves
+      -> the same trade the smoothing prior gives, and no better; the surface
+         is not buying anything that blurring did not.
+

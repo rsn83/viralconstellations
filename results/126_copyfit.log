@@ -1,0 +1,48 @@
+train 2021-06..2022-05   h=1:2022-06   h=6:2022-11
+switch rate 0.005   copy rounds 6
+
+
+  blocks fitted WITHOUT copying
+      h    part   single block     copying
+      1    seen         -5.613      -6.860
+      1  unseen        -20.750     -18.710
+      1     all         -6.864      -7.840
+      6    seen         -8.658      -8.919
+      6  unseen        -36.133     -34.000
+      6     all        -30.489     -28.848
+
+  refitting with copying...
+      copy-refine 1/6  LL/obs -5.68135
+      copy-refine 2/6  LL/obs -5.68755
+      copy-refine 3/6  LL/obs -5.68744
+      copy-refine 4/6  LL/obs -5.68681
+      copy-refine 5/6  LL/obs -5.68615
+      copy-refine 6/6  LL/obs -5.68556
+
+  blocks fitted WITH copying
+      h    part   single block     copying
+      1    seen         -5.482      -6.675
+      1  unseen        -20.733     -18.415
+      1     all         -6.742      -7.645
+      6    seen         -8.634      -8.886
+      6  unseen        -36.182     -34.332
+      6     all        -30.523     -29.105
+
+  change from refitting (copying score in both)
+      h    part      before       after     delta
+      1    seen      -6.860      -6.675    +0.186
+      1  unseen     -18.710     -18.415    +0.295
+      1     all      -7.840      -7.645    +0.195
+      6    seen      -8.919      -8.886    +0.034
+      6  unseen     -34.000     -34.332    -0.332
+      6     all     -28.848     -29.105    -0.257
+
+  The 'single block' column is the ordinary mixture likelihood and the
+  'copying' column allows switches. Refitting should help the copying column:
+  blocks formed under copying no longer need to cover a whole observed
+  pattern, so they can specialise on stretches of positions.
+
+  If refitting makes the copying column worse, the blocks were already as good
+  as they get for this purpose and the gain from copying is purely a scoring
+  effect.
+

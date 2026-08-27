@@ -1,0 +1,36 @@
+train 2021-06..2022-05   h=1:2022-06   h=6:2022-11
+one fit, 48 blocks. Only the way a sequence is assembled from them changes below.
+
+==================================================================
+  2022-06   h=1   unseen share 8.3%
+==================================================================
+      switch        seen      unseen         all
+       0.000      -5.613     -20.750      -6.864
+       0.001      -5.673     -18.423      -6.727
+       0.005      -6.860     -18.710      -7.839
+       0.020      -8.691     -20.164      -9.639
+       0.100     -11.086     -23.766     -12.134
+        best      +0.000      +2.327      +0.137
+
+==================================================================
+  2022-11   h=6   unseen share 79.5%
+==================================================================
+      switch        seen      unseen         all
+       0.000      -8.658     -36.133     -30.489
+       0.001      -8.499     -34.376     -29.060
+       0.005      -8.919     -34.000     -28.848
+       0.020     -10.387     -34.371     -29.444
+       0.100     -14.608     -35.192     -30.963
+        best      +0.159      +2.133      +1.641
+
+
+  switch = 0 must reproduce the ordinary mixture exactly; if it does not, the
+  forward recursion is wrong and nothing below it means anything.
+
+  unseen improves as the switch rate rises
+      -> novel sets really are assemblies of existing blocks, and the single-
+         block assumption was the constraint. Fit with copying.
+  unseen does not improve
+      -> the novelty is not recombination of known blocks, and the deficit
+         lies somewhere else again.
+

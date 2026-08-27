@@ -1,0 +1,42 @@
+train 2021-06..2022-05   h=1:2022-06   h=6:2022-11
+48 blocks, 1,359 mutations, 65,232 free emission parameters as it stands
+
+  fitted rank 4: 6,987 parameters
+  fitted rank 8: 12,615 parameters
+  fitted rank 16: 23,871 parameters
+  fitted rank 32: 46,383 parameters
+
+==============================================================================
+  LOW-RANK EMISSION   48 blocks, same responsibilities
+==============================================================================
+
+  variant            h1 seen     h1 unseen        h1 all       h6 seen     h6 unseen        h6 all
+  full rank           -5.613       -20.750        -6.864        -8.658       -36.133       -30.489
+  rank 4             -14.958       -28.856       -16.107       -23.267       -48.972       -43.691
+  rank 8             -13.417       -29.336       -14.733       -20.582       -47.282       -41.797
+  rank 16            -13.060       -28.873       -14.367       -19.925       -47.021       -41.455
+  rank 32            -12.784       -28.590       -14.091       -19.628       -46.716       -41.151
+
+  change from full rank
+  rank 4              -9.345        -8.106        -9.243       -14.609       -12.838       -13.202
+  rank 8              -7.805        -8.586        -7.869       -11.924       -11.149       -11.308
+  rank 16             -7.447        -8.122        -7.503       -11.266       -10.888       -10.966
+  rank 32             -7.172        -7.840        -7.227       -10.970       -10.583       -10.662
+
+  The unseen columns are the point. A free number per (block, mutation) makes
+  the blocks isolated corners in a space of a thousand dimensions, so a set
+  three edits away has nothing near it. Sharing a low-dimensional structure
+  across mutations puts the blocks on a surface, and a combination that is not
+  any block can still be close to the surface.
+
+  unseen improves while seen barely moves
+      -> the surface exists and the isolated-corners geometry was the
+         constraint. Worth building into the fitting rather than refitting the
+         emission afterwards.
+  both get worse as rank falls
+      -> the profiles genuinely need their full dimensionality, and there is
+         no low-dimensional structure to exploit.
+  seen degrades and unseen improves
+      -> the same trade the smoothing prior gives, and no better; the surface
+         is not buying anything that blurring did not.
+

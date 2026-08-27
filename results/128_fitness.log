@@ -1,0 +1,51 @@
+train 2021-06..2022-05   48 blocks
+127 block-month transitions above weight 0.001; 94 for fitting, 33 held out (last 3 transitions)
+
+      lambda   R2 fitted   R2 held out   nonzero f
+           1       0.154        -0.671         415
+          10       0.060        -0.230         333
+         100       0.012        -0.133         198
+        1000       0.002        -0.109         115
+       10000       0.000        -0.106          68
+
+  best held-out R2 -0.106 at lambda 10000
+
+  A shuffled control: the same regression with the targets permuted,
+  which is what a fit to noise scores.
+    shuffled held-out R2: mean -0.210  max -0.035   (real -0.106)
+
+  mutations with the largest FITTED effect on how fast a block grows
+     rank      mutation         f       rank      mutation         f
+        1          440K     0.000          1          570D    -0.000
+        2          764K     0.000          2          982A    -0.000
+        3          417N     0.000          3          716I    -0.000
+        4          969K     0.000          4         1118H    -0.000
+        5          796Y     0.000          5144del21992-21994    -0.000
+        6          679K     0.000          6          145H    -0.000
+        7          954H     0.000          7          452R    -0.000
+        8          493R     0.000          8          222V    -0.000
+        9          339D     0.000          9          484K    -0.000
+       10          373P     0.000         10          142D    -0.000
+       11          484A     0.000         11           18F    -0.000
+       12          375F     0.000         12         1027I    -0.000
+       13          477N     0.000         13         1176F    -0.000
+       14          478K     0.000         14          138Y    -0.000
+       15          655Y     0.000         15          158G    -0.000
+
+  Left column is the largest positive effects, right the largest negative.
+
+  held-out R2 clearly above the shuffled control, and the top of f populated
+  by mutations known to matter
+      -> block growth is predictable from block contents. A shared f can give
+         a rate to a block that has not been seen growing, which is the one
+         thing reweighting existing blocks cannot do. The joint model is worth
+         building.
+  held-out R2 at or below the shuffled control
+      -> growth is not a function of composition at this granularity, and
+         coupling pi to theta this way will not help. Worth an afternoon to
+         have ruled out.
+
+  Caveat that no R2 removes: composition and growth are both read off the same
+  fitted blocks, so f is a statement about this partition, not about mutations
+  in the abstract. A block that grew is partly WHY the model made that block.
+

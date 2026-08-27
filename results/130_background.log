@@ -1,0 +1,42 @@
+  window 2020-05..2021-04 -> 2021-05..2021-10   48 blocks   1879 rows   782 strata
+  window 2020-11..2021-10 -> 2021-11..2022-04   48 blocks   4909 rows   881 strata
+  window 2021-06..2022-05 -> 2022-06..2022-11   48 blocks   6392 rows   1504 strata
+  window 2021-12..2022-11 -> 2022-12..2023-05   48 blocks   1816 rows   574 strata
+  window 2022-06..2023-05 -> 2023-06..2023-11   48 blocks   598 rows   299 strata
+
+==============================================================================
+  DOES THE BACKGROUND MATTER, AND DOES IT TRANSFER?
+==============================================================================
+
+  exposure floor 2,000   strata are (month, mutation) pairs with at least two eligible backgrounds
+  and both outcomes present
+
+  held-out window      strata    rows   LL fitted   LL null     gain
+  ..2021-04               782    1879     -0.4210   -0.4589  +0.0380
+  ..2021-10               881    4909     -1.2853   -1.2597  -0.0255
+  ..2022-05              1504    6392     -1.2698   -1.2760  +0.0063
+  ..2022-11               574    1816     -1.0933   -1.0517  -0.0416
+  ..2023-05               299     598     -0.4724   -0.4767  +0.0042
+
+  mean gain over exposure alone: -0.0037
+
+  LL null uses the exposure offset only -- the background contributes nothing,
+  and a mutation is assumed to land wherever there are most sequences to see
+  it. LL fitted adds the estimated background effects.
+
+  gain clearly positive, on held-out windows
+      -> which background a mutation lands on is not simply a matter of how
+         many sequences that background holds. There is a mechanism, and it
+         transfers to windows it was not fitted on.
+  gain around zero
+      -> appearance is explained by exposure alone. Given how many sequences a
+         background holds, which mutations land on it is close to arbitrary,
+         and no amount of modelling the existing components will change that.
+         That is a real answer to the question the block-level tests could not
+         address for want of data.
+
+  A caveat the number cannot remove: components are refitted per window, so a
+  component index does not mean the same thing across windows. The transfer
+  test is therefore conservative -- it asks whether background effects
+  generalise even under relabelling.
+

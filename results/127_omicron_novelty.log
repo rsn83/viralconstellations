@@ -1,0 +1,23 @@
+train 2020-11..2021-10   min-count 3
+distinct training sets 10,775   mutations ever seen 792 of 1,359 in the vocabulary
+
+  month      h   seen set  new combo  new mutation  median dist  p90 dist
+  2021-11    1      97.3%       2.7%          0.1%            1         1
+  2021-12    2      69.8%      29.4%          0.8%            3         8
+  2022-01    3      54.0%      43.8%          2.2%            4         9
+  2022-04    6      56.7%      42.2%          1.0%            4        10
+
+  new combo    every mutation was seen in training, this arrangement was not.
+               Reachable by the model in principle; if scored badly that is
+               calibration, and smoothing theta is the lever.
+  new mutation at least one mutation never seen in training. Unreachable at
+               any setting of theta, because an unobserved mutation has no
+               data behind it. Only a theta built from properties of the
+               mutation reaches these.
+  dist         symmetric difference to the nearest training set. A median of 1
+               or 2 means the novelty is a small edit away from something
+               familiar and a well-calibrated model should score it well. A
+               median in the tens means the later months are a different
+               population, and neither smoothing nor features will rescue it --
+               the blocks themselves are missing.
+

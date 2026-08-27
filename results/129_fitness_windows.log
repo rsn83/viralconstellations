@@ -1,0 +1,59 @@
+  window 2020-05..2021-04   48 blocks   136 transitions
+  window 2020-11..2021-10   48 blocks   191 transitions
+  window 2021-06..2022-05   48 blocks   127 transitions
+  window 2021-12..2022-11   48 blocks   166 transitions
+  window 2022-06..2023-05   48 blocks   219 transitions
+
+pooled: 839 block-month transitions from 5 windows
+
+  leave-one-window-out
+
+      lambda     win 0     win 1     win 2     win 3     win 4      mean   nonzero f
+           1    -0.153    -0.234    -0.016    -0.035    -0.167    -0.121       1,284
+          10    -0.125    -0.172    -0.014    -0.022     0.017    -0.063         521
+         100    -0.127    -0.074    -0.023    -0.021     0.008    -0.047         389
+        1000    -0.112    -0.046    -0.030    -0.017    -0.001    -0.041         222
+       10000    -0.105    -0.041    -0.031    -0.015    -0.002    -0.039         116
+
+  best mean leave-one-window-out R2 -0.039 at lambda 10000
+
+  A shuffled control: the same regression with the targets permuted,
+  which is what a fit to noise scores.
+    shuffled held-out R2: mean -0.045  max -0.011   (real -0.039)
+
+  mutations with the largest FITTED effect on how fast a block grows
+     rank      mutation         f       rank      mutation         f
+        1          486V     0.000          1          493R    -0.000
+        268del21765-21770     0.000          2           95I    -0.000
+        3144del21992-21994     0.000          3          981F    -0.000
+        4          452R     0.000          4142del21987-21995    -0.000
+        5         1118H     0.000          5          145D    -0.000
+        6          570D     0.000          6          856K    -0.000
+        7          716I     0.000          7          547K    -0.000
+        8          982A     0.000          8          496S    -0.000
+        9           19I     0.000          9           67V    -0.000
+       10          460K     0.000         10          371L    -0.000
+       11           27S     0.000         11211del22194-22196    -0.000
+       1224del21633-21641     0.000         12          212I    -0.000
+       13          346T     0.000         13          478K    -0.000
+       14          405N     0.000         14          339D    -0.000
+       15          376A     0.000         15          346K    -0.000
+
+  Left column is the largest positive effects, right the largest negative.
+
+  R2 is measured by holding out a WHOLE window, so a positive number means f
+  transferred from one set of sweeps to a different one.
+
+  positive and above the shuffled control
+      -> an advantage carried by mutations, not merely a label for whichever
+         lineage was winning. A shared f can then give a rate to a block never
+         seen growing, which is the one thing reweighting existing blocks
+         cannot do.
+  around zero, with the top of f reading as a marker list for one lineage
+      -> f has learned WHICH lineage was replacing which, not why. That does
+         not transfer, and coupling pi to theta this way will not help.
+
+  Caveat that no R2 removes: composition and growth are both read off the same
+  fitted blocks, so f is a statement about this partition, not about mutations
+  in the abstract. A block that grew is partly WHY the model made that block.
+
