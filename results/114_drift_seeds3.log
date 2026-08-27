@@ -1,0 +1,45 @@
+train 2021-06..2022-05   test 2022-06   V=1,359   min-count 3
+  K=13   occupied 13    drift -7.681  no-drift -7.996 +/-0.215  worth +0.315 +/-0.629   mean|gamma| 3.5525 +/-0.7574
+  K=24   occupied 24    drift -6.991  no-drift -8.311 +/-1.436  worth +1.320 +/-1.395   mean|gamma| 1.3164 +/-0.1271
+  K=48   occupied 48    drift -6.861  no-drift -9.604 +/-3.584  worth +2.743 +/-3.582   mean|gamma| 1.8602 +/-0.5491
+  K=96   occupied 96    drift -6.864  no-drift -8.270 +/-1.941  worth +1.406 +/-1.885   mean|gamma| 2.2328 +/-0.8353
+
+======================================================================================
+  IS THE DRIFT REAL, OR IS IT COMPOSITION?
+======================================================================================
+
+      K   occ     drift  no drift     +/-    worth     +/-   mean|g|     +/-  max|g|  purity
+     13    13    -7.681    -7.996   0.215   +0.315   0.629    3.5525  0.7574   11.06   0.997
+     24    24    -6.991    -8.311   1.436   +1.320   1.395    1.3164  0.1271    7.67   0.998
+     48    48    -6.861    -9.604   3.584   +2.743   3.582    1.8602  0.5491    8.79   0.999
+     96    96    -6.864    -8.270   1.941   +1.406   1.885    2.2328  0.8353   10.53   0.999
+
+  A 'worth' smaller than its own spread is not a difference, and a no-drift
+  column that is not monotone in K is a bad fit, not a property of the model.
+
+  from K=13 to K=96:
+    mean |gamma| on middling entries   x0.63   (3.5525 -> 2.2328)
+    what drift is worth                x4.46   (+0.315 -> +1.406)
+    block purity                       0.997 -> 0.999
+
+  worth   = held-out with drift minus held-out without it, same K, same warm
+            start. What letting entries move actually buys at that K.
+  mean|g| = average slope magnitude, over entries at middling frequency only,
+            weighted by how much population each block holds.
+  purity  = mean distance of entries from 0.5, doubled. 1 means every entry is
+            pinned at 0 or 1, i.e. the block is one clean signature.
+
+  mean|g| is the statistic that discriminates; 'worth' is a supporting check
+  and its ratio is only meaningful when it is sizeable at the smallest K.
+
+  Both shrink toward zero as K grows
+      -> the drift was composition. Few blocks means each is a bag of
+         lineages, and gamma reports the replacement inside the bag as if the
+         bag itself were changing. Add blocks and there is nothing left to
+         absorb. pi is then the only real time process, and theta is
+         downstream of it.
+
+  mean|g| holds up at large K, and drift still pays there
+      -> the drift is intrinsic. Blocks really do change from within, and
+         theta and pi are two separate processes on two separate clocks.
+

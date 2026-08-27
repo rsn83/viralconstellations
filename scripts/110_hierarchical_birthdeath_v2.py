@@ -121,6 +121,18 @@ class HierMixture:
     def __init__(self, V, max_K, sigma=1.5, rng=None, hier_drift=False):
         self.V, self.max_K, self.sigma = V, max_K, sigma
         self.hier_drift = hier_drift
+        # chain time model. theta_t is a fitted K x T x V table rather than a
+        # parametric function of t; chain_post/A/e carry it past the window.
+        self.time_model = "slope"
+        self.beta_prior = 1.0        # Beta(a,a) on theta; 1.0 = off
+        # per-position floor: every sequence is allowed to differ from its
+        # block at a few positions. theta' = (1-eps)*theta + eps*p_bar
+        self.floor_eps = 0.0
+        self.p_bar = None
+        self.theta_t = None          # (max_K, T, V) fitted per-month levels
+        self.chain_post = None       # (max_K, V, S) state posterior at month T
+        self.chain_A = None          # (S, S) shared transitions
+        self.chain_e = None          # (S,)   shared levels
         self.rng = rng or np.random.default_rng(0)
         self.parent = np.full(max_K, -1, dtype=int)
         self.delta = np.zeros((max_K, V))
@@ -146,13 +158,49 @@ class HierMixture:
             g += self.gamma[j]; j = self.parent[j]
         return g
 
-    def theta(self, t=0.0, drift=True):
-        """(K_alive, V) profiles at time t, and the index of each."""
+    def theta(self, t=0.0, drift=True, ti=None):
+        """(K_alive, V) profiles at time t, and the index of each.
+
+        Under the chain time model theta is not a formula in t: each month has
+        its own fitted level, and months past the training window are reached
+        by carrying the last month's state posterior forward through the shared
+        transition matrix. `ti` is the month index when inside the window, and
+        a float number of months ahead when beyond it."""
         ks = np.flatnonzero(self.alive)
+        if self.time_model == "chain" and self.theta_t is not None:
+            if ti is None:
+                # no index given means "one month past the window", which is
+                # what every forecasting call wants. Defaulting to 0 silently
+                # served the FIRST training month instead.
+                ti = self.theta_t.shape[1]
+            if isinstance(ti, (int, np.integer)) and 0 <= ti < self.theta_t.shape[1]:
+                return np.clip(self.theta_t[ks, int(ti), :], 1e-4, 1 - 1e-4), ks
+            h = max(1, int(round(float(ti) - (self.theta_t.shape[1] - 1))))
+            P = np.linalg.matrix_power(self.chain_A, h)
+            th = (self.chain_post[ks] @ P) @ self.chain_e
+            return np.clip(th, 1e-4, 1 - 1e-4), ks
         B = np.stack([self.beta(k) for k in ks])
         if drift:
             B = B + np.stack([self.slope(k) for k in ks]) * t
-        return np.clip(sig(B), 1e-4, 1 - 1e-4), ks
+        th = np.clip(sig(B), 1e-4, 1 - 1e-4)
+        if self.floor_eps > 0 and self.p_bar is not None:
+            # A sequence three edits from its block currently pays log(1e-4)
+            # for each of those edits -- about nine nats apiece, thirty for the
+            # set. That is the whole of the deficit on novel sets. Allowing a
+            # small chance that any position differs from the block caps the
+            # cost of one mismatch at log(eps * p_bar) instead. Unlike a
+            # background COMPONENT, which competes for the entire sequence and
+            # was measured to buy almost nothing, this acts per position and so
+            # is only paid where a mismatch actually occurs.
+            # blend toward one half, NOT toward the pooled marginal. For a
+            # rare mutation the pooled marginal is itself tiny, so blending
+            # toward it caps a mismatch at about 8.5 nats instead of 9.2 --
+            # almost nothing. Blending toward one half caps it at log(eps/2),
+            # which at eps=0.02 is 4.6 nats, while costing only about eps/2 on
+            # the positions that DO match.
+            th = (1.0 - self.floor_eps) * th + self.floor_eps * 0.5
+            th = np.clip(th, 1e-6, 1 - 1e-6)
+        return th, ks
 
     def depth(self, k):
         d = 0; j = self.parent[k]
@@ -187,7 +235,7 @@ def e_step(Xs, ws, model, Pi, tv, drift):
     Sd = [np.zeros((K, V)) for _ in range(T)]
     ll = tot = 0.0
     for t, (X, w) in enumerate(zip(Xs, ws)):
-        th, _ = model.theta(tv[t], drift)
+        th, _ = model.theta(tv[t], drift, ti=t)
         lp = loglik_matrix(X, th) + np.log(Pi[t] + EPS)[None, :]
         mx = lp.max(1, keepdims=True)
         P = np.exp(lp - mx); Z = P.sum(1, keepdims=True)
@@ -196,6 +244,95 @@ def e_step(Xs, ws, model, Pi, tv, drift):
         S += Sd[t]; N[t] = Rw.sum(0); n += Rw.sum(0)[:, None]
         ll += float((w * (np.log(Z).ravel() + mx.ravel())).sum()); tot += w.sum()
     return S, Sd, n, N, ll / tot, ks
+
+
+# ------------------------------------------------------------------ chain M-step
+def _chain_fit(num, den, S=3, iters=25, A=None, e=None):
+    """Forward-backward over the monthly series of every (block, mutation).
+
+    One series is: how many sequences in this block carried this mutation each
+    month, out of how many were in the block. A hidden state per month says
+    which level the mutation sits at; the transition matrix and the levels are
+    shared across every series, because twelve points cannot support a private
+    transition matrix. What is private is which state a series is in.
+
+    This replaces sig(beta + gamma t). A slope forces steady motion and cannot
+    plateau, so carried more than a month past the window it runs on past
+    sweeps that already finished. A chain has a stationary distribution and
+    cannot run away.
+    """
+    K, T, V = num.shape
+    y = num.transpose(0, 2, 1).reshape(-1, T)
+    n = np.repeat(den[:, None, :], V, axis=1).reshape(-1, T)
+    M = len(y)
+    if e is None: e = np.linspace(0.02, 0.95, S)
+    if A is None:
+        A = np.full((S, S), 0.1 / max(S - 1, 1)); np.fill_diagonal(A, 0.9)
+    p0 = np.full(S, 1.0 / S)
+    gam = None
+    for _ in range(iters):
+        le = (y[:, :, None] * np.log(e)[None, None, :]
+              + (n - y)[:, :, None] * np.log(1 - e)[None, None, :])
+        le = np.clip(le, -1e6, 1e6)
+        al = np.zeros((M, T, S))
+        a = np.log(p0)[None, :] + le[:, 0, :]
+        a = np.exp(a - a.max(1, keepdims=True))
+        al[:, 0, :] = a / np.maximum(a.sum(1, keepdims=True), EPS)
+        for t in range(1, T):
+            em = np.exp(np.clip(le[:, t, :] - le[:, t, :].max(1, keepdims=True),
+                                -700, 0))
+            a = (al[:, t - 1, :] @ A) * em
+            al[:, t, :] = a / np.maximum(a.sum(1, keepdims=True), EPS)
+        be = np.ones((M, T, S))
+        for t in range(T - 2, -1, -1):
+            em = np.exp(np.clip(le[:, t + 1, :]
+                                - le[:, t + 1, :].max(1, keepdims=True), -700, 0))
+            b_ = (be[:, t + 1, :] * em) @ A.T
+            be[:, t, :] = b_ / np.maximum(b_.sum(1, keepdims=True), EPS)
+        gam = al * be
+        gam /= np.maximum(gam.sum(2, keepdims=True), EPS)
+        xi = np.zeros((S, S))
+        for t in range(T - 1):
+            em = np.exp(np.clip(le[:, t + 1, :]
+                                - le[:, t + 1, :].max(1, keepdims=True), -700, 0))
+            x = al[:, t, :, None] * A[None, :, :] * (be[:, t + 1, :] * em)[:, None, :]
+            xi += x.sum(0)
+        A = (xi + 1e-3) / (xi.sum(1, keepdims=True) + 1e-3 * S)
+        p0 = gam[:, 0, :].mean(0) + 1e-6; p0 /= p0.sum()
+        e = np.clip(np.sort(((gam * y[:, :, None]).sum((0, 1)) + .5)
+                            / ((gam * n[:, :, None]).sum((0, 1)) + 1.0)),
+                    1e-4, 1 - 1e-4)
+    theta_t = (gam @ e).reshape(K, V, T).transpose(0, 2, 1)
+    post = gam[:, -1, :].reshape(K, V, S)
+    return theta_t, post, A, e
+
+
+def chain_m_step(model, ks, Sd, N, S=3, iters=15):
+    """Fit the chain from this iteration's responsibilities and write the
+    per-month levels back onto the model."""
+    T = len(Sd); K = len(ks); V = model.V
+    num = np.zeros((K, T, V)); den = np.zeros((K, T))
+    for t in range(T):
+        num[:, t, :] = Sd[t]; den[:, t] = N[t]
+    theta_t, post, A, e = _chain_fit(num, den, S=S, iters=iters,
+                                     A=model.chain_A, e=model.chain_e)
+    if model.theta_t is None or model.theta_t.shape[1] != T:
+        model.theta_t = np.full((model.max_K, T, V), 1e-4)
+        model.chain_post = np.zeros((model.max_K, V, S))
+    model.theta_t[ks] = theta_t
+    model.chain_post[ks] = post
+    model.chain_A, model.chain_e = A, e
+    # beta is what splits, merges, the candidate scan and the hierarchy all
+    # read, so it has to stay a SHARP profile. Averaging the chain over the
+    # twelve months smears a block that goes 0 -> 1 into a flat 0.5, and the
+    # search then builds the tree out of mush. Use the last month: that is the
+    # block's current signature, which is what a split should be cutting on.
+    pooled = np.clip(theta_t[:, -1, :], 1e-4, 1 - 1e-4)
+    lg = np.log(pooled / (1 - pooled))
+    for i, k in enumerate(ks):
+        k = int(k); p = int(model.parent[k])
+        model.delta[k] = lg[i] - (0.0 if p < 0 else model.beta(p))
+    return model
 
 
 def m_step(model, ks, Sd, N, tv, drift, inner, lr, rw):
@@ -211,6 +348,15 @@ def m_step(model, ks, Sd, N, tv, drift, inner, lr, rw):
 
     The Gaussian prior contributes -delta / sigma^2, which is the shrinkage
     toward the parent.
+
+    A Beta(a,a) prior on theta itself adds (a-1)(1 - 2*theta) per entry, which
+    pulls every emission probability away from 0 and 1 and toward 0.5. At a=1
+    it is off and nothing changes. Its purpose is not regularisation in the
+    usual sense: a block whose entries sit at 0.9999 and 0.0001 assigns almost
+    nothing to a set that differs by one mutation, because that mutation's
+    (1-theta) term is near zero. Sharpness is what makes the model good at
+    describing sequences it has seen and what makes it hostile to ones it has
+    not, and this is the knob on that trade.
     """
     V = model.V
     kidx = {int(k): i for i, k in enumerate(ks)}
@@ -220,6 +366,8 @@ def m_step(model, ks, Sd, N, tv, drift, inner, lr, rw):
         for t in range(len(Sd)):
             th, _ = model.theta(tv[t], drift)
             g = Sd[t] - N[t][:, None] * th
+            if model.beta_prior != 1.0:
+                g = g + (model.beta_prior - 1.0) * (1.0 - 2.0 * th)
             gb += g
             gg += rw[t] * g * tv[t]
         # push each node's residual up to its ancestors
@@ -263,7 +411,7 @@ def _hard_assign(Xs, ws, model, Pi, tv, drift):
     the candidate scan, which previously recomputed it once per component."""
     out = []
     for t, X in enumerate(Xs):
-        th, kk = model.theta(tv[t], drift)
+        th, kk = model.theta(tv[t], drift, ti=t)
         lp = loglik_matrix(X, th) + np.log(Pi[t] + EPS)[None, :]
         out.append(kk[lp.argmax(1)])
     return out
@@ -533,6 +681,18 @@ def try_remerge(Xs, ws, model, Pi, tv, drift, p_birth, names, verbose,
     return model, Pi, None
 
 
+def _beta_mode(model):
+    """Context: splits and merges reason about beta, so the chain table is set
+    aside while a proposal is evaluated and restored afterwards."""
+    tm, tt = model.time_model, model.theta_t
+    model.time_model = "slope"
+    return tm, tt
+
+
+def _beta_restore(model, saved):
+    model.time_model, model.theta_t = saved
+
+
 def try_birth(Xs, ws, model, Pi, tv, drift, p_birth, names, verbose,
               inner=8, lr=2.0, rw=None, refit=5, n_cand=3, min_side=50.0,
               penalty="bic", diag=None, tried=None, cache=None, dirty=None):
@@ -555,10 +715,12 @@ def try_birth(Xs, ws, model, Pi, tv, drift, p_birth, names, verbose,
     if rw is None:
         rw = np.ones(T)
 
+    _sv = _beta_mode(model)
     hard = _hard_assign(Xs, ws, model, Pi, tv, drift)
     cands, cache = _candidates(Xs, ws, model, hard, cache=cache, dirty=dirty,
                                tried=tried)
     if not cands:
+        _beta_restore(model, _sv)
         if diag is not None:
             diag.append(dict(k=-1, mut=-1, why="no-candidate"))
         return model, Pi, None, cache
@@ -598,12 +760,14 @@ def try_birth(Xs, ws, model, Pi, tv, drift, p_birth, names, verbose,
                 print(f"      birth: blk{k} --{nm}--> blk{slot}   dep {score:,.0f}"
                       f"  dLL {dll:+,.0f}  dPrior {lp1-lp0:+,.0f}"
                       f"  cost {cost:,.0f}  gain {gain:+,.0f}", flush=True)
+            _beta_restore(model, _sv)
             return model, Pi2, (k, slot, n_mut, score, gain), cache
         # A candidate that has been initialised, refit and rejected is not a
         # new candidate next call. Without this the same three mutations are
         # re-proposed every iteration -- 600 attempts on 3 distinct splits.
         if tried is not None: tried.add((k, n_mut))
         _restore(model, snap)
+    _beta_restore(model, _sv)
     return model, Pi, None, cache
 
 
@@ -743,10 +907,18 @@ def fit(Xs, ws, V, max_K, seed=0, iters=200, inner=8, lr=2.0, sigma=1.5,
         death_floor=1e-4, names=None, verbose=True,
         burn_in=10, K_warm=0, births_per_call=1, refit=5, n_cand=3,
         grace=15, penalty="bic", warm=None, warm_mode="star", diag=None,
-        rescan_every=0, merge_every=0, n_pairs=3, hier_drift=False):
+        rescan_every=0, merge_every=0, n_pairs=3, hier_drift=False,
+        time_model="slope", chain_states=3, beta_prior=1.0, floor_eps=0.0):
     rng = np.random.default_rng(seed)
     T = len(Xs)
     model = HierMixture(V, max_K, sigma=sigma, rng=rng, hier_drift=hier_drift)
+    model.time_model = time_model
+    model.beta_prior = beta_prior
+    model.floor_eps = floor_eps
+    if floor_eps > 0:
+        Xa = np.vstack(Xs); wa = np.concatenate(ws)
+        model.p_bar = np.clip((wa[:, None] * Xa).sum(0) / wa.sum(),
+                              1e-4, 1 - 1e-4)
     tv = (np.arange(T) - (T - 1) / 2.) / max(T - 1, 1)
     rw = (0.5 ** (np.arange(T)[::-1] / half_life)) if half_life > 0 else np.ones(T)
     rw /= rw.mean()
@@ -770,7 +942,13 @@ def fit(Xs, ws, V, max_K, seed=0, iters=200, inner=8, lr=2.0, sigma=1.5,
 
     for it in range(iters):
         S, Sd, nmass, N, ll, ks = e_step(Xs, ws, model, Pi, tv, drift)
-        model = m_step(model, ks, Sd, N, tv, drift, inner, lr, rw)
+        if time_model == "chain":
+            # beta is still fitted (splits, merges and the hierarchy read it),
+            # then the chain supersedes it as the emission actually scored
+            model = m_step(model, ks, Sd, N, tv, False, inner, lr, rw)
+            model = chain_m_step(model, ks, Sd, N, S=chain_states)
+        else:
+            model = m_step(model, ks, Sd, N, tv, drift, inner, lr, rw)
         Pi = N / np.maximum(N.sum(1, keepdims=True), EPS)
 
         # death: a component nobody uses returns to the pool, but not before it
@@ -848,7 +1026,8 @@ def fit(Xs, ws, V, max_K, seed=0, iters=200, inner=8, lr=2.0, sigma=1.5,
 
 def fit_flat(Xs, ws, V, K, seed=0, drift=False, split_merge=False,
              iters=200, inner=8, lr=2.0, half_life=1.0, prior=.5,
-             names=None, verbose=False, init_beta=None, return_gamma=False):
+             names=None, verbose=False, init_beta=None, return_gamma=False,
+             return_pi=False):
     """Flat mixture: K independent components, optionally with drifting
     emissions and scheduled split-merge. These are the ladder's lower rungs, so
     every rung is fitted by the same code on the same data."""
@@ -958,6 +1137,10 @@ def fit_flat(Xs, ws, V, K, seed=0, drift=False, split_merge=False,
     out = (th_next, Pi[-1], int((Pi.max(0) > 1e-3).sum()), ll, splits, beta)
     # gamma is needed to evaluate the signatures at horizons beyond h=1;
     # returned only on request so existing 6-tuple unpacking still works.
+    if return_pi:
+        # full T x K monthly weights, needed to recover per-month
+        # responsibilities when the blocks are frozen and reused
+        return out + (gamma, tv, Pi)
     return out + (gamma, tv) if return_gamma else out
 
 
@@ -1010,6 +1193,21 @@ def main():
                     help="bic: (V_eff/2)logN per component. prior: geometric "
                          "+ Gaussian only, which does not scale with N and "
                          "will let K run to max-K")
+    ap.add_argument("--emission-floor", type=float, default=0.0,
+                    help="chance that any position differs from its block. "
+                         "Caps what a single mismatch costs, instead of "
+                         "smoothing every entry the way --beta-prior does")
+    ap.add_argument("--beta-prior", type=float, default=1.0,
+                    help="Beta(a,a) prior on every emission probability. 1.0 is "
+                         "off. Larger pulls theta away from 0 and 1, which "
+                         "costs accuracy on sets already seen and buys mass on "
+                         "sets that differ by a mutation or two")
+    ap.add_argument("--time-model", choices=["slope", "chain"], default="slope",
+                    help="slope: sig(beta + gamma t), one straight line per "
+                         "entry. chain: a hidden state per month with shared "
+                         "transitions, so an entry can plateau instead of "
+                         "carrying on past a sweep that already finished")
+    ap.add_argument("--chain-states", type=int, default=3)
     ap.add_argument("--hier-drift", action="store_true",
                     help="make the drift slopes hierarchical too: a child's "
                          "slope is its parent's plus a shrunk deviation. "
@@ -1102,6 +1300,8 @@ def main():
             n_cand=args.n_cand, grace=args.grace, penalty=args.birth_penalty,
             warm=(beta_sm, pi) if args.warm_from_sm else None,
             warm_mode=args.warm_mode, hier_drift=args.hier_drift,
+            time_model=args.time_model, chain_states=args.chain_states,
+            beta_prior=args.beta_prior, floor_eps=args.emission_floor,
             merge_every=args.merge_every,
             n_pairs=args.n_pairs,
             diag=diag)

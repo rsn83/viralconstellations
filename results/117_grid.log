@@ -1,0 +1,50 @@
+train 2021-06..2022-05   h=1:2022-06   h=2:2022-07   h=3:2022-08   h=6:2022-11
+max-K 48   min-count 3   seed 0
+
+  fitted flat                   13 blocks
+  fitted flat + split-merge     18 blocks
+  fitted hierarchy + birth-death 48 blocks
+
+  flat                     chain levels [1.298e-04 4.070e-01 9.754e-01]  stay 1.000
+  flat + split-merge       chain levels [1.280e-04 3.460e-01 9.815e-01]  stay 0.995
+  hierarchy + birth-death  chain levels [1.250e-04 3.024e-01 9.893e-01]  stay 0.933
+
+============================================================================================
+  BLOCK STRUCTURE x TIME MODEL   held-out per sequence
+============================================================================================
+
+                                                           h=1         h=2         h=3         h=6
+                                                       2022-06     2022-07     2022-08     2022-11
+  flat (13)                   constant                 -16.354     -21.714     -23.006     -42.111
+                              slope                    -11.171     -18.697     -33.709    -129.212
+                              chain (3 states)         -12.192     -14.247     -14.757     -35.619
+
+  flat + split-merge (18)     constant                 -15.374     -21.447     -22.914     -42.074
+                              slope                     -8.568     -14.827     -31.170    -133.378
+                              chain (3 states)         -11.399     -13.968     -14.708     -35.678
+
+  hierarchy + birth-death (48)constant                 -13.950     -20.019     -21.396     -41.300
+                              slope                     -8.697     -21.378     -25.812     -83.543
+                              chain (3 states)          -7.638      -9.318      -9.814     -31.802
+
+  gain over the same blocks with theta held constant
+
+                                                           h=1         h=2         h=3         h=6
+  flat (13)                   slope                     +5.184      +3.018     -10.704     -87.100
+                              chain (3 states)          +4.162      +7.468      +8.249      +6.493
+
+  flat + split-merge (18)     slope                     +6.806      +6.621      -8.256     -91.303
+                              chain (3 states)          +3.974      +7.479      +8.206      +6.396
+
+  hierarchy + birth-death (48)slope                     +5.253      -1.359      -4.416     -42.243
+                              chain (3 states)          +6.312     +10.701     +11.582      +9.498
+
+
+  Down a column: what the block structure buys, at a fixed time model.
+  Across a row: what the time model buys, on fixed blocks.
+
+  The old ladder could not separate these. It changed the time model once, at
+  the second rung, then held it at the slope while the block structure changed
+  -- so every later rung was measured with a time model that turns out to be
+  the wrong shape past one month.
+

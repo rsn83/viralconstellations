@@ -1,0 +1,57 @@
+train 2021-06..2022-05   h=1:2022-06   h=6:2022-11
+one fit, 48 blocks, Beta prior 1. Everything below scores THAT fit, so nothing is confounded by a different model.
+
+==========================================================================
+  2022-06   h=1   unseen share 8.3%
+==========================================================================
+
+  how sure is the model which block a sequence came from?
+                 entropy  max entropy   top block
+    seen          0.0238        3.871      99.1%
+    unseen        0.0784        3.871      96.9%
+
+  mixing in a blunt background component
+       eps        seen      unseen         all
+      0.00      -5.613     -20.750      -6.864
+      0.01      -5.615     -20.368      -6.834
+      0.05      -5.654     -20.331      -6.867
+      0.20      -5.823     -20.419      -7.029
+      0.50      -6.291     -20.807      -7.490
+      gain      +0.000      +0.420      +0.030
+
+==========================================================================
+  2022-11   h=6   unseen share 79.5%
+==========================================================================
+
+  how sure is the model which block a sequence came from?
+                 entropy  max entropy   top block
+    seen          0.0048        3.871      99.9%
+    unseen        0.0642        3.871      97.1%
+
+  mixing in a blunt background component
+       eps        seen      unseen         all
+      0.00      -8.658     -36.133     -30.489
+      0.01      -8.647     -36.072     -30.438
+      0.05      -8.685     -36.095     -30.464
+      0.20      -8.854     -36.241     -30.614
+      0.50      -9.321     -36.675     -31.055
+      gain      +0.011      +0.061      +0.051
+
+
+  entropy is of the block posterior, in nats. Zero means the model is certain
+  which block a sequence came from. max entropy is log K, what total
+  uncertainty would look like.
+
+  entropy near zero on unseen sets, and a background component helps them
+      -> the model is confidently assigning a novel sequence to one sharp
+         block, which then charges it for every mismatch while no other block
+         contributes. That is a mixture problem, and the fix belongs there
+         rather than in theta.
+  entropy already sizeable, or the background component does not help
+      -> block membership is not the issue and the deficit sits in the
+         emission.
+
+  The background component is applied at scoring time here, not fitted. If it
+  helps, the principled version is to include it in the mixture during fitting
+  so the blocks form knowing it is there.
+

@@ -1,0 +1,36 @@
+train 2021-06..2022-05   h=1:2022-06   h=2:2022-07   h=3:2022-08   h=6:2022-11
+one fit, 48 blocks, frozen. Only the time model varies below.
+
+  chain with 2 states: levels [2.579e-04 9.738e-01]   mean stay probability 1.000
+  chain with 3 states: levels [1.250e-04 3.024e-01 9.893e-01]   mean stay probability 0.933
+
+================================================================================
+  TIME MODEL FOR THETA   48 blocks, frozen
+================================================================================
+
+  time model                   h=1         h=2         h=3         h=6
+                           2022-06     2022-07     2022-08     2022-11
+  constant                 -13.950     -20.019     -21.396     -41.300
+  slope                     -8.697     -21.378     -25.812     -83.543
+  chain, 2 states           -8.913     -10.271     -10.499     -30.124
+  chain, 3 states           -7.638      -9.318      -9.814     -31.802
+
+  gain over constant
+  slope                     +5.253      -1.359      -4.416     -42.243
+  chain, 2 states           +5.037      +9.748     +10.897     +11.175
+  chain, 3 states           +6.312     +10.701     +11.582      +9.498
+
+  Same blocks, same memberships, same mixture weights for every row. The only
+  difference is how theta is carried from the last training month to the test
+  month, so the mixture's own initialisation noise cancels.
+
+  chain beats slope, and its advantage grows with h
+      -> the slope was the wrong shape. It cannot plateau, so the further out
+         it is carried the further it runs past sweeps that already finished.
+  slope beats chain
+      -> the motion really is steady in logit space and a two- or three-level
+         state is too coarse to capture it.
+  neither beats constant at large h
+      -> theta has no usable time model at this horizon and the loss is
+         elsewhere: in the mixture weights, or in blocks that do not exist yet.
+

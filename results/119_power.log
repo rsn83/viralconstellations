@@ -1,0 +1,55 @@
+blocks fitted on 2021-06..2022-05; appearance scored in 2022-06..2022-11
+48 blocks
+
+  2022-06: 26 blocks occupied, largest 118,843 sequences
+  2022-07: 23 blocks occupied, largest 200,500 sequences
+  2022-08: 21 blocks occupied, largest 140,752 sequences
+  2022-09: 22 blocks occupied, largest 128,277 sequences
+  2022-10: 19 blocks occupied, largest 113,011 sequences
+  2022-11: 20 blocks occupied, largest 94,553 sequences
+
+==============================================================================
+  IS THERE A CONTRAST TO ESTIMATE?
+==============================================================================
+
+    exposure  blocks/mo   appear  non-appear  usable muts  usable obs
+         100        8.8    2,628      10,938          873      13,547
+         500        6.8    2,411       7,077          829       9,438
+       2,000        5.2    1,953       4,544          801       6,447
+       8,000        1.8      954         651          353       1,256
+
+  mutations with the most contrast at exposure 2,000
+    mutation        landed on   skipped
+    1150K                   8        11
+    856S                    7         9
+    190S                    7         8
+    339Y                    7         4
+    19V                     6        13
+    493K                    6        12
+    445L                    6        12
+    251S                    6        10
+    31F                     6        10
+    145del21995-22000          6         9
+    441F                    6         9
+    475T                    6         8
+    255Y                    6         8
+    182N                    6         7
+    182R                    6         6
+
+  usable muts = mutations that both appeared on at least one abundant block and
+  failed to appear on another abundant block in the same month. Only these
+  contribute to a design that conditions on mutation identity, because only
+  these carry a within-mutation contrast.
+
+  usable muts in the low hundreds or more
+      -> the design has power. Fit the conditional model.
+  usable muts in the low tens
+      -> nearly every mutation lives inside one clade. Blocks are so pure that
+         a mutation never gets the chance to land elsewhere, and there is no
+         background contrast to estimate. Worth reporting as a finding rather
+         than working around.
+
+  Raising the exposure floor makes each negative more informative and cuts the
+  number of them. If usable muts collapses as the floor rises, the contrast
+  exists only among blocks too small to trust.
+

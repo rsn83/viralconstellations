@@ -132,6 +132,15 @@ def main():
     ap.add_argument("--iters", type=int, default=400)
     ap.add_argument("--warm-mode", choices=["star", "tree"], default="tree")
     ap.add_argument("--no-hier-drift", action="store_true")
+    ap.add_argument("--time-model", choices=["slope", "chain"], default="slope")
+    ap.add_argument("--emission-floors", default="",
+                    help="comma-separated per-position floors to sweep, e.g. "
+                         "0,0.001,0.01,0.05. Overrides --beta-priors when set")
+    ap.add_argument("--beta-priors", default="1.0",
+                    help="comma-separated Beta(a,a) strengths to sweep. Each "
+                         "one refits the hierarchical model and is reported as "
+                         "its own row, seen and unseen split out")
+    ap.add_argument("--chain-states", type=int, default=3)
     args = ap.parse_args()
 
     E = load_engine(args.engine)
@@ -173,8 +182,17 @@ def main():
     print(f"lookup floor for an unseen set: "
           f"log({alpha}/{denom:,.0f}) = {np.log(alpha/denom):.3f}")
 
-    rungs = ["flat", "flat + drift", "flat + drift + split-merge",
-             "hierarchical + birth-death"]
+    if args.emission_floors:
+        fls = [float(x) for x in args.emission_floors.split(",")]
+        bps = [1.0] * len(fls)
+        hier_rows = [("hierarchical + birth-death" if f == 0 else
+                      f"hierarchical, floor {f:g}") for f in fls]
+    else:
+        bps = [float(x) for x in args.beta_priors.split(",")]
+        fls = [0.0] * len(bps)
+        hier_rows = [("hierarchical + birth-death" if b == 1.0 else
+                      f"hierarchical, Beta({b:g},{b:g})") for b in bps]
+    rungs = ["flat", "flat + drift", "flat + drift + split-merge"] + hier_rows
     outside = ["independence (1 block)", "exact-set lookup"]
     res = {r: {h: [] for h in te} for r in rungs + outside}
     used = {r: [] for r in rungs + outside}
@@ -244,27 +262,33 @@ def main():
                 beta_sm, pi_sm = beta, pin
 
         # rung 4: hierarchical
-        model, Pi, tv, births, _, remerges = E.fit(
-            Xs, ws, V, args.max_K, seed=sd, sigma=args.sigma,
-            half_life=args.half_life, drift=True, names=names,
-            verbose=(sd == 0), iters=args.iters, K_warm=args.max_K,
-            birth_every=1, births_per_call=4, refit=0, penalty="prior",
-            warm=(beta_sm, pi_sm), warm_mode=args.warm_mode,
-            hier_drift=not args.no_hier_drift, rescan_every=25)
-        used["hierarchical + birth-death"].append(int(model.alive.sum()))
-        dt = tv[-1] - tv[-2] if len(tv) > 1 else 0.0
-        hr = "hierarchical + birth-death"
-        for h, (ym, Xte, wte, rte) in te.items():
-            th, ks = model.theta(tv[-1] + h * dt, True)
-            res[hr][h].append(E.score(Xte, wte, th, Pi[-1]))
-            orac[hr][h].append(
-                E.score(Xte, wte, th, oracle_pi(E, Xte, wte, th)))
-            for nm, part in zip(("seen", "unseen"),
-                                split_seen(rte, train_sets)):
-                if not part: continue
-                Xp, wp = E.build(part, V, 1)
-                (seen_ll if nm == "seen" else unseen_ll)[hr][h].append(
-                    E.score(Xp, wp, th, Pi[-1]))
+        for bp, fl, hr in zip(bps, fls, hier_rows):
+          if sd == 0:
+              print(f"\n  --- fitting {hr} "
+                    f"({bps.index(bp)+1} of {len(bps)}) ---", flush=True)
+          model, Pi, tv, births, _, remerges = E.fit(
+              Xs, ws, V, args.max_K, seed=sd, sigma=args.sigma, beta_prior=bp, floor_eps=fl,
+              half_life=args.half_life, drift=True, names=names,
+              verbose=(sd == 0), iters=args.iters, K_warm=args.max_K,
+              birth_every=1, births_per_call=4, refit=0, penalty="prior",
+              warm=(beta_sm, pi_sm), warm_mode=args.warm_mode,
+              hier_drift=not args.no_hier_drift, rescan_every=25,
+              time_model=args.time_model, chain_states=args.chain_states)
+          used[hr].append(int(model.alive.sum()))
+          dt = tv[-1] - tv[-2] if len(tv) > 1 else 0.0
+          for h, (ym, Xte, wte, rte) in te.items():
+              # ti tells a chain time model how far past the window to carry
+              # the state posterior; ignored by the slope model
+              th, ks = model.theta(tv[-1] + h * dt, True, ti=len(tv) - 1 + h)
+              res[hr][h].append(E.score(Xte, wte, th, Pi[-1]))
+              orac[hr][h].append(
+                  E.score(Xte, wte, th, oracle_pi(E, Xte, wte, th)))
+              for nm, part in zip(("seen", "unseen"),
+                                  split_seen(rte, train_sets)):
+                  if not part: continue
+                  Xp, wp = E.build(part, V, 1)
+                  (seen_ll if nm == "seen" else unseen_ll)[hr][h].append(
+                      E.score(Xp, wp, th, Pi[-1]))
 
     hs_sorted = sorted(te)
     hdr = "".join(f"{'h='+str(h):>12}" for h in hs_sorted)
@@ -280,6 +304,27 @@ def main():
         if r == "flat": print()
         row = "".join(f"{np.mean(res[r][h]):>12.3f}" for h in hs_sorted)
         print(f"  {r:<30}{row}{np.mean(used[r]):>12.0f}")
+
+    if len(hier_rows) > 1:
+        base = hier_rows[0]
+        print(f"\n  SWEEP: what softening the emission costs and buys")
+        for h in hs_sorted:
+            print(f"\n    {te[h][0]}  h={h}   seen share "
+                  f"{100*seen_share[h]:.1f}%")
+            print(f"      {'prior':<26}{'seen':>10}{'unseen':>10}"
+                  f"{'d seen':>10}{'d unseen':>10}")
+            for r in hier_rows:
+                if not seen_ll[r][h] or not unseen_ll[r][h]: continue
+                a, b = np.mean(seen_ll[r][h]), np.mean(unseen_ll[r][h])
+                a0 = np.mean(seen_ll[base][h]); b0 = np.mean(unseen_ll[base][h])
+                print(f"      {r:<26}{a:>10.3f}{b:>10.3f}"
+                      f"{a - a0:>+10.3f}{b - b0:>+10.3f}")
+        print("""
+      d seen / d unseen are against the unsmoothed model. The prediction being
+      tested is that they move in OPPOSITE directions: sharp blocks describe
+      seen sets well and assign almost nothing to a set one mutation off. If
+      both columns get worse, sharpness is not the mechanism.
+""")
 
     print(f"\n  gain over flat")
     for r in rungs[1:]:

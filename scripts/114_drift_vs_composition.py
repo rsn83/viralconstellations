@@ -86,7 +86,9 @@ def main():
     ap.add_argument("--test", required=True)
     ap.add_argument("--K-list", default="13,24,48,96")
     ap.add_argument("--min-count", type=int, default=3)
-    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--seeds", type=int, default=3,
+                    help="EM from a warm start still lands in different optima; "
+                         "one seed cannot tell a real effect from a bad fit")
     ap.add_argument("--sigma", type=float, default=1.5)
     ap.add_argument("--half-life", type=float, default=1.0)
     ap.add_argument("--iters", type=int, default=400)
@@ -109,46 +111,61 @@ def main():
           f"min-count {args.min_count}")
     rows = []
     for K in (int(x) for x in args.K_list.split(",")):
-        _, _, _, _, _, w0 = E.fit_flat(Xs, ws, V, K, seed=args.seed,
-                                       drift=False, split_merge=False)
-        _, pi_sm, _, _, _, beta_sm = E.fit_flat(
-            Xs, ws, V, K, seed=args.seed, drift=True, split_merge=True,
-            half_life=args.half_life, init_beta=w0)
-
-        out = {}
-        for tag, drift in (("drift", True), ("nodrift", False)):
-            model, Pi, tv, _, _, _ = E.fit(
-                Xs, ws, V, K, seed=args.seed, sigma=args.sigma,
-                half_life=args.half_life, drift=drift, names=names,
-                verbose=False, iters=args.iters, K_warm=K, birth_every=1,
-                births_per_call=4, refit=0, penalty="prior",
-                warm=(beta_sm, pi_sm), warm_mode="tree", hier_drift=drift,
-                rescan_every=25)
-            dt = tv[-1] - tv[-2] if len(tv) > 1 else 0.0
-            th, ks = model.theta(tv[-1] + dt, drift)
-            out[tag] = dict(ll=E.score(Xte, wte, th, Pi[-1]),
-                            K=int(model.alive.sum()))
-            if drift:
-                out[tag].update(weighted_stats(model, Pi, tv))
-        d = out["drift"]
-        rows.append(dict(K=K, Kused=d["K"], ll_d=d["ll"],
-                         ll_n=out["nodrift"]["ll"],
-                         worth=d["ll"] - out["nodrift"]["ll"],
-                         gmean=d["gmean"], gmax=d["gmax"],
-                         purity=d["purity"], nmid=d["nmid"]))
+        acc = {k: [] for k in ("ll_d", "ll_n", "worth", "gmean", "gmax",
+                               "purity", "nmid", "Kused")}
+        for sd in range(args.seeds):
+            _, _, _, _, _, w0 = E.fit_flat(Xs, ws, V, K, seed=sd,
+                                           drift=False, split_merge=False)
+            _, pi_sm, _, _, _, beta_sm = E.fit_flat(
+                Xs, ws, V, K, seed=sd, drift=True, split_merge=True,
+                half_life=args.half_life, init_beta=w0)
+            out = {}
+            for tag, drift in (("drift", True), ("nodrift", False)):
+                model, Pi, tv, _, _, _ = E.fit(
+                    Xs, ws, V, K, seed=sd, sigma=args.sigma,
+                    half_life=args.half_life, drift=drift, names=names,
+                    verbose=False, iters=args.iters, K_warm=K, birth_every=1,
+                    births_per_call=4, refit=0, penalty="prior",
+                    warm=(beta_sm, pi_sm), warm_mode="tree", hier_drift=drift,
+                    rescan_every=25)
+                dt = tv[-1] - tv[-2] if len(tv) > 1 else 0.0
+                th, ks = model.theta(tv[-1] + dt, drift)
+                out[tag] = dict(ll=E.score(Xte, wte, th, Pi[-1]),
+                                K=int(model.alive.sum()))
+                if drift:
+                    out[tag].update(weighted_stats(model, Pi, tv))
+            d = out["drift"]
+            acc["ll_d"].append(d["ll"]); acc["ll_n"].append(out["nodrift"]["ll"])
+            acc["worth"].append(d["ll"] - out["nodrift"]["ll"])
+            acc["Kused"].append(d["K"])
+            for k in ("gmean", "gmax", "purity", "nmid"):
+                acc[k].append(d[k])
+        rows.append(dict(K=K, Kused=np.mean(acc["Kused"]),
+                         **{k: float(np.mean(acc[k])) for k in
+                            ("ll_d", "ll_n", "worth", "gmean", "gmax",
+                             "purity", "nmid")},
+                         worth_sd=float(np.std(acc["worth"])),
+                         g_sd=float(np.std(acc["gmean"])),
+                         ll_n_sd=float(np.std(acc["ll_n"]))))
         r = rows[-1]
-        print(f"  K={K:<4} occupied {r['Kused']:<4} "
-              f"drift {r['ll_d']:.3f}  no-drift {r['ll_n']:.3f}  "
-              f"worth {r['worth']:+.3f}   mean|gamma| {r['gmean']:.4f}",
-              flush=True)
+        print(f"  K={K:<4} occupied {r['Kused']:<5.0f} "
+              f"drift {r['ll_d']:.3f}  no-drift {r['ll_n']:.3f}"
+              f" +/-{r['ll_n_sd']:.3f}  worth {r['worth']:+.3f}"
+              f" +/-{r['worth_sd']:.3f}   mean|gamma| {r['gmean']:.4f}"
+              f" +/-{r['g_sd']:.4f}", flush=True)
 
     print(f"\n{'=' * 86}\n  IS THE DRIFT REAL, OR IS IT COMPOSITION?\n{'=' * 86}")
-    print(f"\n  {'K':>5}{'occupied':>10}{'drift':>10}{'no drift':>10}"
-          f"{'worth':>9}{'mean|g|':>10}{'max|g|':>9}{'purity':>9}{'mid/blk':>9}")
+    print(f"\n  {'K':>5}{'occ':>6}{'drift':>10}{'no drift':>10}{'+/-':>8}"
+          f"{'worth':>9}{'+/-':>8}{'mean|g|':>10}{'+/-':>8}"
+          f"{'max|g|':>8}{'purity':>8}")
     for r in rows:
-        print(f"  {r['K']:>5}{r['Kused']:>10}{r['ll_d']:>10.3f}"
-              f"{r['ll_n']:>10.3f}{r['worth']:>+9.3f}{r['gmean']:>10.4f}"
-              f"{r['gmax']:>9.2f}{r['purity']:>9.3f}{r['nmid']:>9.1f}")
+        print(f"  {r['K']:>5}{r['Kused']:>6.0f}{r['ll_d']:>10.3f}"
+              f"{r['ll_n']:>10.3f}{r['ll_n_sd']:>8.3f}{r['worth']:>+9.3f}"
+              f"{r['worth_sd']:>8.3f}{r['gmean']:>10.4f}{r['g_sd']:>8.4f}"
+              f"{r['gmax']:>8.2f}{r['purity']:>8.3f}")
+    print("\n  A 'worth' smaller than its own spread is not a difference, and a "
+          "no-drift\n  column that is not monotone in K is a bad fit, not a "
+          "property of the model.")
 
     if len(rows) >= 2:
         a, b = rows[0], rows[-1]
