@@ -104,6 +104,82 @@ def lookup_score(cnt, alpha, denom, records):
     return float((ws * lp).sum() / ws.sum())
 
 
+def effective_rate(m, steps):
+    """Per-site flip probability after `steps` applications of the kernel.
+
+    The published method propagates as f_0 W^n, not W once. For a per-site
+    two-state chain the n-step flip probability is the chance of an ODD number
+    of flips in n draws, which is
+
+        m_n = (1 - (1 - 2m)^n) / 2
+
+    and tends to 1/2 as n grows -- the diffusion forgetting where it started.
+    Using m for every horizon would make the baseline equally confident at
+    h=1 and h=6, which is not what the method claims.
+    """
+    return 0.5 * (1.0 - (1.0 - 2.0 * m) ** max(steps, 1))
+
+
+def kernel_theta(Xref, m, steps=1):
+    """Emission of the mutation kernel used by constrained-subspace diffusion.
+
+    That method moves mass from genotype y to genotype x with probability
+        M_xy = (1-m)^(L-h) m^h,      h = Hamming(x, y)
+    which is exactly a product of independent Bernoullis centred on y: every
+    position agrees with y with probability 1-m and flips with probability m.
+
+    So M_xy is already NORMALISED over {0,1}^V, and a weighted sum of such
+    kernels over the training population is a proper mixture model with one
+    component per reference set. That is what makes it scoreable in nats and
+    directly comparable to the ladder rungs, rather than only as a ranking.
+
+    `steps` is the horizon: W^steps rather than W, via effective_rate.
+
+    What is deliberately NOT here is the constraint function k(t). That is
+    obtained by dividing observed frequencies by diffused ones, so it exists
+    only for genotypes already observed and carries no method for producing
+    the next one. The kernel is the part of that framework that actually
+    proposes, and it is the part worth comparing against.
+
+    theta[y, v] = 1-m_n where y has the mutation, m_n where it does not.
+    """
+    mn = effective_rate(m, steps)
+    return mn + Xref * (1.0 - 2.0 * mn)
+
+
+def chunked_score(E, X, w, th, pi, chunk=4096):
+    """E.score, evaluated in row blocks.
+
+    Identical arithmetic; the kernel mixtures have thousands of components, so
+    the full n_test x n_ref log-likelihood matrix does not fit comfortably.
+    """
+    lpi = np.log(pi + 1e-12)[None, :]
+    tot = 0.0
+    for i in range(0, len(X), chunk):
+        lp = E.loglik_matrix(X[i:i + chunk], th) + lpi
+        mx = lp.max(1, keepdims=True)
+        ll = np.log(np.exp(lp - mx).sum(1)) + mx.ravel()
+        tot += float((w[i:i + chunk] * ll).sum())
+    return tot / max(w.sum(), 1e-12)
+
+
+def kernel_reference(recs, V, E, cap):
+    """The `cap` heaviest distinct sets in `recs`, with their counts.
+
+    Capping is a lower bound on both kernel baselines: dropping reference sets
+    can only remove mass. The heaviest sets are kept because the nearest
+    neighbour of anything is overwhelmingly likely to be a common set, so the
+    bound is tight in practice. Report the cap alongside the numbers.
+    """
+    cnt = {}
+    for r in recs:
+        for s_, c in r:
+            cnt[s_] = cnt.get(s_, 0.0) + float(c)
+    top = sorted(cnt.items(), key=lambda kv: -kv[1])[:cap]
+    X, w = E.build([(s_, c) for s_, c in top], V, 1)
+    return X.astype(np.float32), w.astype(np.float64)
+
+
 def split_seen(records, train_sets):
     seen = [(s_, c) for s_, c in records if s_ in train_sets]
     unseen = [(s_, c) for s_, c in records if s_ not in train_sets]
@@ -133,6 +209,17 @@ def main():
     ap.add_argument("--warm-mode", choices=["star", "tree"], default="tree")
     ap.add_argument("--no-hier-drift", action="store_true")
     ap.add_argument("--time-model", choices=["slope", "chain"], default="slope")
+    ap.add_argument("--mut-rate", type=float, default=1e-3,
+                    help="per-site per-window flip probability for the two "
+                         "kernel baselines. The diffusion row is a proper "
+                         "likelihood at any m, but m sets how much it hedges: "
+                         "small m is confident and punishing on novel sets, "
+                         "large m is tolerant and vague. Sweep it -- the best "
+                         "m is the fair version of the baseline.")
+    ap.add_argument("--kernel-cap", type=int, default=4000,
+                    help="reference sets kept for the kernel baselines. "
+                         "Dropping sets can only remove mass, so this is a "
+                         "lower bound; raise it until the numbers stop moving")
     ap.add_argument("--eps-scales", default="",
                     help="comma-separated per-position tolerance scales to "
                          "sweep, e.g. 0,0.05,0.2,0.5. Overrides the others")
@@ -202,7 +289,10 @@ def main():
         hier_rows = [("hierarchical + birth-death" if b == 1.0 else
                       f"hierarchical, Beta({b:g},{b:g})") for b in bps]
     rungs = ["flat", "flat + drift", "flat + drift + split-merge"] + hier_rows
-    outside = ["independence (1 block)", "exact-set lookup"]
+    outside = ["independence (1 block)", "exact-set lookup",
+               "persistence (last month)",
+               "diffusion kernel (weighted)",
+               "distance kernel (uniform)"]
     res = {r: {h: [] for h in te} for r in rungs + outside}
     used = {r: [] for r in rungs + outside}
     orac = {r: {h: [] for h in te} for r in rungs}
@@ -213,6 +303,37 @@ def main():
     th_ind, pi_ind = independence_theta(E, filt[-1], V, 1)
     used["independence (1 block)"].append(1)
     used["exact-set lookup"].append(len(train_sets))
+
+    # persistence: the same lookup table built from the LAST training month
+    # only. Frequencies move slowly month to month, so this is the honest
+    # "assume nothing changed" baseline, and on seen sets it should be hard
+    # to beat. It has nothing to say about unseen sets, by construction.
+    cnt_p, alpha_p, denom_p = lookup_table([filt[-1]])
+    used["persistence (last month)"].append(len({s_ for s_, _ in filt[-1]}))
+
+    # the two kernel baselines share a reference population and differ only in
+    # the mixing weights: abundance-weighted is the published diffusion
+    # method, uniform is pure distance with no notion of how common a
+    # background is. The gap between them is exactly what abundance buys.
+    # DIFFUSION starts from the LAST training month, as f_0 W^n does, and
+    # propagates h steps for horizon h.
+    Xdif, wdif = kernel_reference([filt[-1]], V, E, args.kernel_cap)
+    pi_dif = wdif / wdif.sum()
+    # DISTANCE pools the whole window and weights uniformly: no abundance, no
+    # time, nothing but Hamming distance to anything ever observed. This is
+    # the null the impossibility results describe, so it stays static on
+    # purpose -- giving it a horizon would defeat what it is there to measure.
+    Xuni, wuni = kernel_reference(filt, V, E, args.kernel_cap)
+    th_uni = kernel_theta(Xuni, args.mut_rate, steps=1)
+    pi_uni = np.full(len(Xuni), 1.0 / len(Xuni))
+    used["diffusion kernel (weighted)"].append(len(Xdif))
+    used["distance kernel (uniform)"].append(len(Xuni))
+    print(f"kernel baselines: diffusion from {tr[-1]} with "
+          f"{len(Xdif):,} reference sets, distance from the pooled window "
+          f"with {len(Xuni):,} (cap {args.kernel_cap:,}), m={args.mut_rate:g}")
+    for h in sorted(te):
+        print(f"    h={h}: effective per-site flip rate "
+              f"{effective_rate(args.mut_rate, h):.5f}")
     for h, (ym, Xte, wte, rte) in te.items():
         sn, un = split_seen(rte, train_sets)
         seen_share[h] = sum(c for _, c in sn) / max(
@@ -220,6 +341,13 @@ def main():
         res["independence (1 block)"][h].append(E.score(Xte, wte, th_ind, pi_ind))
         res["exact-set lookup"][h].append(
             lookup_score(cnt, alpha, denom, rte))
+        res["persistence (last month)"][h].append(
+            lookup_score(cnt_p, alpha_p, denom_p, rte))
+        th_dif = kernel_theta(Xdif, args.mut_rate, steps=h)
+        res["diffusion kernel (weighted)"][h].append(
+            chunked_score(E, Xte, wte, th_dif, pi_dif))
+        res["distance kernel (uniform)"][h].append(
+            chunked_score(E, Xte, wte, th_uni, pi_uni))
         for nm, part in [("seen", sn), ("unseen", un)]:
             if not part: continue
             Xp, wp = E.build(part, V, 1)
@@ -227,6 +355,12 @@ def main():
             tgt["independence (1 block)"][h].append(E.score(Xp, wp, th_ind, pi_ind))
             tgt["exact-set lookup"][h].append(
                 lookup_score(cnt, alpha, denom, part))
+            tgt["persistence (last month)"][h].append(
+                lookup_score(cnt_p, alpha_p, denom_p, part))
+            tgt["diffusion kernel (weighted)"][h].append(
+                chunked_score(E, Xp, wp, th_dif, pi_dif))
+            tgt["distance kernel (uniform)"][h].append(
+                chunked_score(E, Xp, wp, th_uni, pi_uni))
 
     for sd in range(args.seeds):
         print(f"\n--- seed {sd} ---", flush=True)
@@ -368,7 +502,17 @@ def main():
     print("""
   Seen sets measure frequency tracking: the lookup table is near-optimal there
   by construction. Unseen sets measure putting probability on combinations
-  never observed, where the lookup table sits at its smoothing floor. A gain
+  never observed, where the lookup table sits at its smoothing floor.
+
+  The two kernel rows are the comparison that matters for the unseen column.
+  Both score a novel set purely by its Hamming distance to the training
+  population -- the diffusion row weights each reference set by how common it
+  was, the uniform row does not. If a rung does not beat them there, its
+  unseen performance is distance ranking however the model is built, which is
+  what the impossibility results predict for any emission that factorises
+  over positions. The diffusion row is also the mutation kernel of a
+  published method, so it is a citable external baseline rather than another
+  ablation of our own model. A gain
   concentrated in the unseen column is the result this project claims. A gain
   concentrated in the seen column is a good density model of the population
   that already exists -- worth saying plainly rather than leaving to inference.

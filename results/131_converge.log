@@ -1,0 +1,86 @@
+=== lr-iters 200 ===
+train 2021-06..2022-05   h=1:2022-06
+48 blocks, 1,359 mutations, 65,232 free emission parameters as it stands
+
+  reference: full-rank emission scores -5.5697 on the same objective
+
+  rank   4:    6,987 params   train LL/obs at SVD init   -7.7033  after fitting   -5.1557   steps accepted 200/200
+
+==============================================================================
+  LOW-RANK EMISSION   48 blocks, same responsibilities
+==============================================================================
+
+  variant            h1 seen     h1 unseen        h1 all
+  full rank           -6.761       -21.211        -7.955
+  rank 4             -16.745       -29.969       -17.838
+
+  change from full rank
+  rank 4              -9.984        -8.758        -9.883
+
+  The unseen columns are the point. A free number per (block, mutation) makes
+  the blocks isolated corners in a space of a thousand dimensions, so a set
+  three edits away has nothing near it. Sharing a low-dimensional structure
+  across mutations puts the blocks on a surface, and a combination that is not
+  any block can still be close to the surface.
+
+  Read the SVD-init and after-fitting columns first. The truncated SVD of the
+  fitted logits is where each rank STARTS, so if a high rank starts close to
+  the full-rank reference and ends up far from it, the optimiser is at fault
+  and the ranks say nothing about the model. If instead even a high rank
+  starts far away, the fitted emission genuinely is not low rank and the idea
+  is dead on this data.
+
+  unseen improves while seen barely moves
+      -> the surface exists and the isolated-corners geometry was the
+         constraint. Worth building into the fitting rather than refitting the
+         emission afterwards.
+  both get worse as rank falls
+      -> the profiles genuinely need their full dimensionality, and there is
+         no low-dimensional structure to exploit.
+  seen degrades and unseen improves
+      -> the same trade the smoothing prior gives, and no better; the surface
+         is not buying anything that blurring did not.
+
+=== lr-iters 800 ===
+train 2021-06..2022-05   h=1:2022-06
+48 blocks, 1,359 mutations, 65,232 free emission parameters as it stands
+
+  reference: full-rank emission scores -5.5697 on the same objective
+
+  rank   4:    6,987 params   train LL/obs at SVD init   -7.7033  after fitting   -4.7916   steps accepted 800/800
+
+==============================================================================
+  LOW-RANK EMISSION   48 blocks, same responsibilities
+==============================================================================
+
+  variant            h1 seen     h1 unseen        h1 all
+  full rank           -6.761       -21.211        -7.955
+  rank 4             -15.324       -28.369       -16.402
+
+  change from full rank
+  rank 4              -8.563        -7.158        -8.447
+
+  The unseen columns are the point. A free number per (block, mutation) makes
+  the blocks isolated corners in a space of a thousand dimensions, so a set
+  three edits away has nothing near it. Sharing a low-dimensional structure
+  across mutations puts the blocks on a surface, and a combination that is not
+  any block can still be close to the surface.
+
+  Read the SVD-init and after-fitting columns first. The truncated SVD of the
+  fitted logits is where each rank STARTS, so if a high rank starts close to
+  the full-rank reference and ends up far from it, the optimiser is at fault
+  and the ranks say nothing about the model. If instead even a high rank
+  starts far away, the fitted emission genuinely is not low rank and the idea
+  is dead on this data.
+
+  unseen improves while seen barely moves
+      -> the surface exists and the isolated-corners geometry was the
+         constraint. Worth building into the fitting rather than refitting the
+         emission afterwards.
+  both get worse as rank falls
+      -> the profiles genuinely need their full dimensionality, and there is
+         no low-dimensional structure to exploit.
+  seen degrades and unseen improves
+      -> the same trade the smoothing prior gives, and no better; the surface
+         is not buying anything that blurring did not.
+

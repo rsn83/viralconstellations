@@ -346,7 +346,7 @@ def chain_m_step(model, ks, Sd, N, S=3, iters=15):
 
 
 def m_step(model, ks, Sd, N, tv, drift, inner, lr, rw,
-           weight_profile=True, gamma_tau=1.0, max_step=4.0,
+           weight_profile=True, gamma_tau=1.0, max_step=4.0, delta_cap=12.0,
            tol=1e-8, verbose=False):
     """Update each deviation and slope by a per-coordinate Newton step.
 
@@ -488,9 +488,22 @@ def m_step(model, ks, Sd, N, tv, drift, inner, lr, rw,
         for _try in range(12):
             for i, k in enumerate(ks):
                 k = int(k)
-                model.delta[k] = d_save[k] + step * step_d[i]
+                # Hard bound on the PARAMETER, not just the step. theta() clips
+                # to 1e-4, so for a position that never occurs in a component
+                # the residual is 0 - N*1e-4 and never reaches zero however
+                # negative beta gets; the curvature N*th*(1-th) is equally
+                # tiny, so the Newton step stays ~1 per iteration and delta
+                # marches until the Gaussian prior balances it, near
+                # 2.25*N*1e-4 -- hundreds of logits. Past |beta| ~ 12 theta is
+                # pinned at the clip and extra magnitude changes the
+                # likelihood not at all while adding ~1e8 to the prior term,
+                # which then decides every birth and split. The old fixed step
+                # never approached this equilibrium, so it was invisible.
+                model.delta[k] = np.clip(d_save[k] + step * step_d[i],
+                                         -delta_cap, delta_cap)
                 if drift:
-                    model.gamma[k] = g_save[k] + step * step_g[i]
+                    model.gamma[k] = np.clip(g_save[k] + step * step_g[i],
+                                             -delta_cap, delta_cap)
             cur = objective()
             if cur >= prev_obj:
                 break
@@ -1488,6 +1501,15 @@ def main():
                          "transitions, so an entry can plateau instead of "
                          "carrying on past a sweep that already finished")
     ap.add_argument("--chain-states", type=int, default=3)
+    ap.add_argument("--subsample", type=float, default=1.0,
+                    help="keep this fraction of distinct TRAINING "
+                         "constellations, rescaling weights by 1/f so the "
+                         "objective stays unbiased. Test data is untouched. "
+                         "0.2 is roughly a 5x speedup and is usually enough "
+                         "to rank settings; confirm the winner at 1.0.")
+    ap.add_argument("--subsample-seed", type=int, default=0,
+                    help="vary this to check a subsampled conclusion is not "
+                         "an artefact of one draw")
     ap.add_argument("--inner", type=int, default=8,
                     help="M-step Newton iterations per EM step. Raise it to "
                          "check convergence: if the held-out numbers move, "
@@ -1541,9 +1563,31 @@ def main():
     names, V = load_names(args.vocab)
     tr, te = months_in_range(args.train), months_in_range(args.test)
     Xs, ws = [], []
+    sub_rng = np.random.default_rng(args.subsample_seed)
+    n_full = n_kept = 0
     for ym in tr:
         X, w = build(load_month(args.data_dir, ym), V, args.min_count)
+        n_full += len(X)
+        if args.subsample < 1.0 and len(X):
+            # The objective is sum_i w_i log P(x_i) over DISTINCT
+            # constellations. Keeping each row with probability f and scaling
+            # its weight by 1/f leaves that sum unbiased, so a subsampled fit
+            # estimates the same quantity with more variance rather than a
+            # different quantity. Rare constellations are kept at the same
+            # rate as common ones, which matters because those are the ones
+            # the unseen column is about -- do NOT switch this to
+            # weight-proportional sampling.
+            keep = sub_rng.random(len(X)) < args.subsample
+            if not keep.any():
+                keep[sub_rng.integers(len(X))] = True
+            X = X[keep]; w = w[keep] / args.subsample
+        n_kept += len(X)
         Xs.append(X); ws.append(w)
+    if args.subsample < 1.0:
+        print(f"subsampled {n_kept:,} of {n_full:,} distinct training "
+              f"constellations (f={args.subsample}). Held-out numbers are "
+              f"noisier and slightly pessimistic; use for RANKING settings, "
+              f"not for reporting.", flush=True)
     rec = []
     for ym in te: rec += load_month(args.data_dir, ym)
     Xte, wte = build(rec, V)

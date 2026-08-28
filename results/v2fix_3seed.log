@@ -9,47 +9,7 @@ V=1,359 max-K=48 train 2021-06..2022-05 test 2022-06  sigma=1.5  drift=True
       split blk45 rejected (no gain)
       split blk45 rejected (no gain)
   flat + drift + split-merge    -6.880   components 15
-      birth: blk4 --982A--> blk19   dep 2,317  dLL -5,183,507  dPrior +224,855,857  cost 9,813  gain +219,662,537
-      birth: blk19 --26S--> blk20   dep 3,445  dLL +3,649,066  dPrior +73,377,295  cost 1,491  gain +77,024,869
-      death: 4 component(s) returned
-      death: 2 component(s) returned
-      birth: blk20 --144del21992-21994--> blk2   dep 6,644  dLL +30,247,281  dPrior +130,827,495  cost 10,039  gain +161,064,737
-      death: 1 component(s) returned
-      death: 3 component(s) returned
-      death: 1 component(s) returned
-      birth: blk11 --486V--> blk5   dep 515  dLL +270,432  dPrior +7,827,681  cost 16  gain +8,098,097
-      death: 1 component(s) returned
-      birth: blk2 --969K--> blk6   dep 337  dLL -16,689,343  dPrior +96,775,892  cost 10,445  gain +80,076,104
-      death: 1 component(s) returned
-      birth: blk4 --211del22194-22196--> blk8   dep 1,068  dLL +1,510,036  dPrior +93,305,901  cost 882  gain +94,815,055
-      death: 1 component(s) returned
-      birth: blk20 --95I--> blk2   dep 503  dLL -105,697  dPrior +67,979,376  cost 578  gain +67,873,102
-      birth: blk2 --505H--> blk9   dep 271  dLL -15,644,540  dPrior +90,779,447  cost 94  gain +75,134,813
-      birth: blk2 --68del21765-21770--> blk10   dep 275  dLL +5,778,518  dPrior +74,129,580  cost 359  gain +79,907,738
-      birth: blk2 --446S--> blk11   dep 240  dLL -1,569,608  dPrior +101,761,645  cost 546  gain +100,191,491
-      death: 1 component(s) returned
-      death: 2 component(s) returned
-      birth: blk8 --446S--> blk4   dep 181  dLL -4,658,963  dPrior +61,633,249  cost 468  gain +56,973,817
-      birth: blk8 --373P--> blk5   dep 296  dLL +4,244,841  dPrior +85,862,225  cost 648  gain +90,106,419
-      birth: blk8 --212I--> blk13   dep 210  dLL +3,767,578  dPrior +51,544,921  cost 921  gain +55,311,578
-      birth: blk13 --373P--> blk14   dep 363  dLL +13,426,357  dPrior +74,043,756  cost 952  gain +87,469,161
-      birth: blk14 --484A--> blk15   dep 241  dLL +1,551,290  dPrior +49,336,646  cost 8  gain +50,887,928
-      birth: blk7 --417N--> blk17   dep 88  dLL -5,614,538  dPrior +19,775,172  cost 10,250  gain +14,150,385
-      birth: blk7 --764K--> blk18   dep 95  dLL -314,650  dPrior +19,629,864  cost 273  gain +19,314,941
-      death: 2 component(s) returned
-      death: 2 component(s) returned
-      death: 1 component(s) returned
-      death: 2 component(s) returned
       death: 1 component(s) returned
       death: 1 component(s) returned
       death: 2 component(s) returned
-      iter 50  LL/obs -80.00903  components 8
-      death: 2 component(s) returned
-      death: 1 component(s) returned
-      iter 100  LL/obs -80.00892  components 5
-      iter 150  LL/obs -80.00892  components 5
-      iter 200  LL/obs -80.00892  components 5
-  hierarchical + birth-death   -67.634   components 5   births 17  remerges 0
-
---- seed 1 ---
-  flat                          -7.887   components 23
+      iter 50  LL/obs -7.35503  components 15
