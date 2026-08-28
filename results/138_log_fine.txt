@@ -1,0 +1,66 @@
+  ...500,000 rows
+  ...1,000,000 rows
+  ...1,500,000 rows
+  ...2,000,000 rows
+  ...2,500,000 rows
+  ...3,000,000 rows
+  ...3,500,000 rows
+  ...4,000,000 rows
+  ...4,500,000 rows
+  ...5,000,000 rows
+  ...5,500,000 rows
+  ...6,000,000 rows
+  ...6,500,000 rows
+  ...7,000,000 rows
+  ...7,500,000 rows
+  ...8,000,000 rows
+  ...8,500,000 rows
+  ...9,000,000 rows
+  lineage 25/648: B.1.22 (n=158, poly=2)
+  lineage 50/648: AY.42 (n=13920, poly=7)
+  lineage 75/648: B.1.1.318 (n=2605, poly=3)
+  lineage 100/648: AY.24 (n=581, poly=4)
+  lineage 125/648: AY.4.6 (n=12317, poly=4)
+  lineage 150/648: BA.4 (n=9108, poly=7)
+  lineage 175/648: AY.7.2 (n=991, poly=5)
+  lineage 200/648: AY.34.1.1 (n=330, poly=6)
+  lineage 225/648: B.1.234 (n=4750, poly=4)
+  lineage 325/648: B.1.1.523 (n=196, poly=5)
+  lineage 350/648: AY.87 (n=956, poly=2)
+  lineage 375/648: BA.2.14 (n=1408, poly=3)
+  lineage 400/648: BA.2.67 (n=341, poly=16)
+  lineage 425/648: BA.2.73 (n=724, poly=6)
+  lineage 450/648: BA.4.2 (n=1233, poly=6)
+  lineage 500/648: B.1.177.83 (n=182, poly=4)
+  lineage 525/648: B.1.36.1 (n=439, poly=3)
+  lineage 575/648: BA.1.1.8 (n=849, poly=19)
+loading (train window <= 2022-06)
+  7,589,100 sequences, 8849 distinct spike mutations
+vocabulary: 1000 mutations (>= 50 occurrences)
+lineages: 648 with >= 100 sequences
+accumulating within-lineage 2x2 tables
+
+==================================================================
+RESULT
+==================================================================
+total pairs in vocabulary        499,500
+usable (polymorphic in >=3 lin)  871 (0.2%)
+
+within-lineage |log OR|
+  median   1.926
+  90th pct 5.071
+  max      11.337
+  |log OR| > 0.5 : 701 pairs
+  |log OR| > 1.0 : 586 pairs
+
+spearman(marginal, within-lineage) = 0.473
+  high rho -> marginal association survives conditioning
+  low rho  -> marginal association was mostly co-inheritance
+
+------------------------------------------------------------------
+GO: 871 pairs carry within-lineage association.
+    Use this as the parameter budget for J -- restrict J to
+    these pairs rather than all 499,500.
+------------------------------------------------------------------
+
+saved results/138_within_lineage_fine.npz

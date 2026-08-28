@@ -1,0 +1,256 @@
+train  2020-11..2021-10  (12 months, min-count 3)
+test   2021-11   h=1   scored with every sequence in that month
+test   2021-12   h=2   scored with every sequence in that month
+test   2022-01   h=3   scored with every sequence in that month
+test   2022-04   h=6   scored with every sequence in that month
+
+distinct sets in training (after min-count): 10,775
+lookup floor for an unseen set: log(0.5/3,143,975) = -15.654
+
+--- seed 0 ---
+      split blk39 on 253G -> blk0
+      split blk32 on 156del22029-22034 -> blk3
+      split blk16 on 681H -> blk5
+      split blk4 on 95I -> blk6
+      split blk4 on 250I -> blk8
+
+  --- fitting hierarchical + birth-death (1 of 1) ---
+      birth: blk3 --20N--> blk17   dep 5,473  dLL +6,135,483  dPrior -777  cost 0  gain +6,134,706
+      birth: blk3 --253G--> blk18   dep 2,226  dLL +476,636  dPrior -511  cost 0  gain +476,125
+      birth: blk3 --13I--> blk19   dep 1,377  dLL +368,851  dPrior -467  cost 0  gain +368,384
+      birth: blk3 --144del21992-21994--> blk20   dep 831  dLL +290,607  dPrior -243  cost 0  gain +290,364
+      birth: blk3 --417T--> blk21   dep 5,169  dLL +5,644,266  dPrior -1,745  cost 0  gain +5,642,522
+      birth: blk3 --95I--> blk22   dep 2,196  dLL +771,099  dPrior -308  cost 0  gain +770,791
+      birth: blk22 --346K--> blk23   dep 1,160  dLL +114,454  dPrior -399  cost 0  gain +114,054
+      birth: blk3 --152C--> blk24   dep 1,156  dLL +290,096  dPrior -350  cost 0  gain +289,746
+      birth: blk3 --190S--> blk25   dep 4,426  dLL +5,143,176  dPrior -2,275  cost 0  gain +5,140,901
+      birth: blk3 --5F--> blk26   dep 2,027  dLL +871,002  dPrior -589  cost 0  gain +870,414
+      birth: blk3 --452R--> blk27   dep 1,313  dLL +394,362  dPrior -154  cost 0  gain +394,208
+      birth: blk27 --157S--> blk28   dep 962  dLL +149,814  dPrior -326  cost 0  gain +149,488
+      birth: blk1 --982A--> blk29   dep 595  dLL +19,586,071  dPrior -653  cost 0  gain +19,585,417
+      birth: blk1 --253G--> blk30   dep 2,177  dLL +2,122,223  dPrior -686  cost 0  gain +2,121,537
+      birth: blk1 --13I--> blk31   dep 1,389  dLL +452,126  dPrior -328  cost 0  gain +451,798
+      birth: blk1 --144del21992-21994--> blk32   dep 833  dLL +300,693  dPrior -259  cost 0  gain +300,434
+      birth: blk1 --614G--> blk33   dep 823  dLL +2,282,426  dPrior -965  cost 0  gain +2,281,461
+      birth: blk1 --68del21765-21770--> blk34   dep 547  dLL +330,179  dPrior -372  cost 0  gain +329,807
+      birth: blk34 --570D--> blk35   dep 982  dLL +34,553,562  dPrior -329  cost 0  gain +34,553,233
+      birth: blk34 --452R--> blk36   dep 1,363  dLL +2,790,054  dPrior -804  cost 0  gain +2,789,250
+      birth: blk22 --796H--> blk37   dep 542  dLL +25,074,139  dPrior -4,865  cost 0  gain +25,069,274
+      birth: blk37 --95I--> blk38   dep 686  dLL +2,055,164  dPrior +3,427  cost 0  gain +2,058,591
+      birth: blk37 --80A--> blk39   dep 1,849  dLL +1,356,891  dPrior -426  cost 0  gain +1,356,465
+      birth: blk37 --157S--> blk40   dep 1,430  dLL +1,149,845  dPrior -415  cost 0  gain +1,149,430
+      birth: blk3 --501Y--> blk41   dep 525  dLL +3,206,435  dPrior -1,359  cost 0  gain +3,205,077
+      birth: blk3 --701V--> blk42   dep 1,513  dLL +2,884,673  dPrior -1,046  cost 0  gain +2,883,626
+      birth: blk3 --68del21765-21770--> blk43   dep 1,111  dLL +797,781  dPrior -864  cost 0  gain +796,917
+      birth: blk42 --80A--> blk44   dep 876  dLL +183,495  dPrior -342  cost 0  gain +183,153
+      birth: blk3 --222V--> blk45   dep 852  dLL +2,730,425  dPrior -2,722  cost 0  gain +2,727,703
+      birth: blk3 --655Y--> blk46   dep 2,489  dLL +2,124,588  dPrior -1,510  cost 0  gain +2,123,078
+      birth: blk3 --157S--> blk47   dep 2,096  dLL +1,464,694  dPrior -572  cost 0  gain +1,464,122
+      death: 1 component(s) returned
+      birth: blk22 --95I--> blk32   dep 1,914  dLL +15,474,751  dPrior -42  cost 0  gain +15,474,710
+      death: 3 component(s) returned
+      birth: blk22 --5F--> blk33   dep 1,505  dLL +14,687,755  dPrior +183  cost 0  gain +14,687,938
+      birth: blk3 --681R--> blk34   dep 1,427  dLL +1,220,133  dPrior -4,104  cost 0  gain +1,216,029
+      birth: blk23 --452R--> blk36   dep 973  dLL +3,155,213  dPrior -170  cost 0  gain +3,155,044
+      death: 1 component(s) returned
+      birth: blk23 --13I--> blk38   dep 907  dLL +3,703,634  dPrior -510  cost 0  gain +3,703,124
+      death: 2 component(s) returned
+      birth: blk3 --950N--> blk43   dep 1,404  dLL +1,234,498  dPrior -4,000  cost 0  gain +1,230,498
+      birth: blk3 --26S--> blk44   dep 1,249  dLL +1,355,653  dPrior +1,338  cost 0  gain +1,356,991
+      death: 1 component(s) returned
+      birth: blk38 --157S--> blk47   dep 1,193  dLL +1,508,269  dPrior -6,181  cost 0  gain +1,502,088
+      death: 1 component(s) returned
+      birth: blk38 --950H--> blk45   dep 1,189  dLL +2,667,434  dPrior -1,498  cost 0  gain +2,665,936
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,544  dLL +2,719,592  dPrior -793  cost 0  gain +2,718,799
+      iter 50  LL/obs -4.68382  components 48
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,547  dLL +2,745,669  dPrior -854  cost 0  gain +2,744,815
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,563  dLL +2,733,686  dPrior -1,105  cost 0  gain +2,732,581
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,547  dLL +2,742,644  dPrior -854  cost 0  gain +2,741,790
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,561  dLL +2,732,714  dPrior -1,105  cost 0  gain +2,731,609
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,545  dLL +2,744,658  dPrior -854  cost 0  gain +2,743,804
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,564  dLL +2,841,678  dPrior -1,120  cost 0  gain +2,840,559
+      iter 100  LL/obs -4.68096  components 48
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,548  dLL +2,852,105  dPrior -869  cost 0  gain +2,851,236
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,564  dLL +2,843,294  dPrior -1,120  cost 0  gain +2,842,174
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,548  dLL +2,853,066  dPrior -869  cost 0  gain +2,852,197
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,561  dLL +2,721,453  dPrior -1,105  cost 0  gain +2,720,348
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,545  dLL +2,731,396  dPrior -854  cost 0  gain +2,730,542
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,561  dLL +2,723,236  dPrior -1,105  cost 0  gain +2,722,131
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,545  dLL +2,734,788  dPrior -854  cost 0  gain +2,733,934
+      iter 150  LL/obs -4.68008  components 48
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,539  dLL +2,699,818  dPrior -1,102  cost 0  gain +2,698,716
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,523  dLL +2,715,250  dPrior -863  cost 0  gain +2,714,387
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,539  dLL +2,711,472  dPrior -1,102  cost 0  gain +2,710,370
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,523  dLL +2,718,946  dPrior -863  cost 0  gain +2,718,083
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,539  dLL +2,711,985  dPrior -1,102  cost 0  gain +2,710,883
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,523  dLL +2,719,021  dPrior -863  cost 0  gain +2,718,158
+      iter 200  LL/obs -4.67987  components 48
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,539  dLL +2,711,993  dPrior -1,102  cost 0  gain +2,710,891
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,523  dLL +2,719,022  dPrior -863  cost 0  gain +2,718,159
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,539  dLL +2,711,992  dPrior -1,102  cost 0  gain +2,710,890
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,523  dLL +2,719,019  dPrior -863  cost 0  gain +2,718,157
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,539  dLL +2,711,989  dPrior -1,102  cost 0  gain +2,710,887
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,523  dLL +2,719,125  dPrior -863  cost 0  gain +2,718,262
+      iter 250  LL/obs -4.67908  components 48
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,539  dLL +2,712,098  dPrior -1,102  cost 0  gain +2,710,995
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,523  dLL +2,719,132  dPrior -863  cost 0  gain +2,718,269
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,539  dLL +2,712,091  dPrior -1,102  cost 0  gain +2,710,989
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,523  dLL +2,719,120  dPrior -863  cost 0  gain +2,718,257
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,539  dLL +2,712,085  dPrior -1,102  cost 0  gain +2,710,983
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,523  dLL +2,719,119  dPrior -863  cost 0  gain +2,718,256
+      iter 300  LL/obs -4.67888  components 48
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,539  dLL +2,712,085  dPrior -1,102  cost 0  gain +2,710,983
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,523  dLL +2,719,119  dPrior -863  cost 0  gain +2,718,256
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,539  dLL +2,712,085  dPrior -1,102  cost 0  gain +2,710,983
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,523  dLL +2,719,119  dPrior -863  cost 0  gain +2,718,256
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,539  dLL +2,712,085  dPrior -1,102  cost 0  gain +2,710,983
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,523  dLL +2,719,119  dPrior -863  cost 0  gain +2,718,256
+      iter 350  LL/obs -4.67883  components 48
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,539  dLL +2,712,085  dPrior -1,102  cost 0  gain +2,710,983
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,523  dLL +2,719,119  dPrior -863  cost 0  gain +2,718,256
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,539  dLL +2,712,085  dPrior -1,102  cost 0  gain +2,710,983
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,523  dLL +2,719,119  dPrior -863  cost 0  gain +2,718,256
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,539  dLL +2,712,085  dPrior -1,102  cost 0  gain +2,710,983
+      death: 1 component(s) returned
+      birth: blk23 --859N--> blk45   dep 1,523  dLL +2,719,119  dPrior -863  cost 0  gain +2,718,256
+      death: 1 component(s) returned
+      birth: blk23 --157S--> blk36   dep 1,539  dLL +2,712,085  dPrior -1,102  cost 0  gain +2,710,983
+      iter 400  LL/obs -4.69967  components 48
+
+==========================================================================================
+HORIZON LADDER   train 2020-11..2021-10   max-K=48   1 seed(s)
+==========================================================================================
+
+  model                                  h=1         h=2         h=3         h=6      blocks
+                                     2021-11     2021-12     2022-01     2022-04
+  independence (1 block)              -5.555    -115.820    -244.747    -235.306           1
+  exact-set lookup                    -4.542      -9.367     -13.584     -14.107       10775
+
+  flat                                -4.710     -17.156     -30.199     -57.947          15
+  flat + drift                        -4.506     -17.006     -30.192     -57.858          15
+  flat + drift + split-merge          -4.346     -16.902     -30.174     -57.777          20
+  hierarchical + birth-death          -5.755     -81.201    -158.135     -37.858          48
+
+  gain over flat
+  flat + drift                        +0.204      +0.149      +0.007      +0.089
+  flat + drift + split-merge          +0.365      +0.254      +0.024      +0.169
+  hierarchical + birth-death          -1.045     -64.046    -127.937     +20.088
+
+==========================================================================================
+  PI HEADROOM   signatures frozen, weights refit on the test month
+==========================================================================================
+
+  model                                  h=1         h=2         h=3         h=6
+  flat                                -4.710     -17.156     -30.199     -57.947   copied
+                                      -4.689     -12.776     -19.731     -46.976   best possible
+                                      +0.021      +4.380     +10.468     +10.971   headroom
+
+  flat + drift                        -4.506     -17.006     -30.192     -57.858   copied
+                                      -4.487     -12.629     -19.724     -46.892   best possible
+                                      +0.019      +4.378     +10.468     +10.966   headroom
+
+  flat + drift + split-merge          -4.346     -16.902     -30.174     -57.777   copied
+                                      -4.308     -12.507     -19.705     -46.805   best possible
+                                      +0.038      +4.394     +10.470     +10.973   headroom
+
+  hierarchical + birth-death          -5.755     -81.201    -158.135     -37.858   copied
+                                      -5.593     -76.506    -147.185     -25.917   best possible
+                                      +0.162      +4.696     +10.951     +11.941   headroom
+
+  Headroom is what copying last month's weights costs. Small means
+  the comparison is about the signatures, as intended. Large means
+  a rung is being held back by copy-pi and its gain understates it.
+
+==========================================================================================
+  SEEN vs UNSEEN SETS   split by whether the exact set appeared in training
+==========================================================================================
+
+  2021-11  h=1   sequences whose set was seen in training: 97.3%
+    model                                 seen      unseen         gap
+    independence (1 block)              -5.024     -24.455     -19.431
+    exact-set lookup                    -4.229     -15.654     -11.425
+    flat                                -4.343     -17.778     -13.435
+    flat + drift                        -4.143     -17.442     -13.299
+    flat + drift + split-merge          -3.984     -17.221     -13.237
+    hierarchical + birth-death          -5.197     -25.595     -20.398
+
+  2021-12  h=2   sequences whose set was seen in training: 69.8%
+    model                                 seen      unseen         gap
+    independence (1 block)             -71.770    -217.851    -146.082
+    exact-set lookup                    -6.652     -15.654      -9.002
+    flat                               -10.733     -32.033     -21.300
+    flat + drift                       -10.535     -31.996     -21.461
+    flat + drift + split-merge         -10.399     -31.963     -21.564
+    hierarchical + birth-death         -49.072    -155.620    -106.547
+
+  2022-01  h=3   sequences whose set was seen in training: 54.0%
+    model                                 seen      unseen         gap
+    independence (1 block)            -252.462    -235.707     +16.755
+    exact-set lookup                   -11.817     -15.654      -3.837
+    flat                               -26.529     -34.499      -7.971
+    flat + drift                       -26.524     -34.489      -7.965
+    flat + drift + split-merge         -26.516     -34.461      -7.945
+    hierarchical + birth-death        -155.415    -161.323      -5.908
+
+  2022-04  h=6   sequences whose set was seen in training: 56.7%
+    model                                 seen      unseen         gap
+    independence (1 block)            -243.546    -224.501     +19.045
+    exact-set lookup                   -12.927     -15.654      -2.727
+    flat                               -55.282     -61.440      -6.158
+    flat + drift                       -55.197     -61.347      -6.150
+    flat + drift + split-merge         -55.103     -61.284      -6.181
+    hierarchical + birth-death         -30.711     -47.231     -16.520
+
+  Seen sets measure frequency tracking: the lookup table is near-optimal there
+  by construction. Unseen sets measure putting probability on combinations
+  never observed, where the lookup table sits at its smoothing floor. A gain
+  concentrated in the unseen column is the result this project claims. A gain
+  concentrated in the seen column is a good density model of the population
+  that already exists -- worth saying plainly rather than leaving to inference.
+
+  Read the GAIN row, not the raw likelihoods: later months are harder for every
+  model, so raw likelihood falls with h regardless of what the model does.
+

@@ -1,0 +1,69 @@
+  ...500,000 rows
+  ...1,000,000 rows
+  ...1,500,000 rows
+  ...2,000,000 rows
+  ...2,500,000 rows
+  ...3,000,000 rows
+  ...3,500,000 rows
+  ...4,000,000 rows
+  ...4,500,000 rows
+  ...5,000,000 rows
+  ...5,500,000 rows
+  ...6,000,000 rows
+  ...6,500,000 rows
+  ...7,000,000 rows
+  ...7,500,000 rows
+  ...8,000,000 rows
+  ...8,500,000 rows
+  ...9,000,000 rows
+  lineage 75/820: AY.126 (n=34017, poly=8)
+  lineage 100/820: P.1.14 (n=346, poly=4)
+  lineage 125/820: AY.98 (n=42301, poly=4)
+  lineage 150/820: BA.2.12.1 (n=161254, poly=5)
+  lineage 200/820: B.1.1.28 (n=747, poly=2)
+  lineage 225/820: BA.1.1.14 (n=15802, poly=18)
+  lineage 250/820: B.1.1.317 (n=1595, poly=7)
+  lineage 275/820: B.1.1.348 (n=617, poly=3)
+  lineage 300/820: AY.4.3 (n=2361, poly=9)
+  lineage 325/820: B.1.637 (n=12262, poly=5)
+  lineage 350/820: AY.72 (n=447, poly=3)
+  lineage 375/820: AY.33.2 (n=492, poly=6)
+  lineage 400/820: BA.2.71 (n=256, poly=17)
+  lineage 425/820: XR (n=193, poly=4)
+  lineage 450/820: BA.5.8 (n=1021, poly=4)
+  lineage 475/820: BE.1.1.2 (n=503, poly=27)
+  lineage 525/820: B.1.177.82 (n=273, poly=4)
+  lineage 550/820: B.1.1.41 (n=135, poly=2)
+  lineage 625/820: BA.1.1.9 (n=1586, poly=9)
+  lineage 650/820: BA.2.68 (n=122, poly=9)
+  lineage 725/820: B.1.404 (n=537, poly=3)
+loading (train window <= 2022-06)
+  7,589,100 sequences, 8849 distinct spike mutations
+vocabulary: 1000 mutations (>= 50 occurrences)
+lineages: 820 with >= 100 sequences
+accumulating within-lineage 2x2 tables
+
+==================================================================
+RESULT
+==================================================================
+total pairs in vocabulary        499,500
+usable (polymorphic in >=3 lin)  803 (0.2%)
+
+within-lineage |log OR|
+  median   1.986
+  90th pct 5.158
+  max      11.345
+  |log OR| > 0.5 : 682 pairs
+  |log OR| > 1.0 : 583 pairs
+
+spearman(marginal, within-lineage) = 0.527
+  high rho -> marginal association survives conditioning
+  low rho  -> marginal association was mostly co-inheritance
+
+------------------------------------------------------------------
+GO: 803 pairs carry within-lineage association.
+    Use this as the parameter budget for J -- restrict J to
+    these pairs rather than all 499,500.
+------------------------------------------------------------------
+
+saved results/138_within_lineage.npz

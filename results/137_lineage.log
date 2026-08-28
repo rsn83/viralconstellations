@@ -1,0 +1,61 @@
+vocabulary 1,359 nodes: 1,180 substitutions, 179 deletions
+  1,000,000 rows read, 999,312 usable, 9,548 lineage-months
+  2,000,000 rows read, 1,998,685 usable, 10,936 lineage-months
+  3,000,000 rows read, 2,992,435 usable, 14,115 lineage-months
+  4,000,000 rows read, 3,982,211 usable, 15,706 lineage-months
+  5,000,000 rows read, 4,964,626 usable, 20,987 lineage-months
+  6,000,000 rows read, 5,964,463 usable, 26,109 lineage-months
+  7,000,000 rows read, 6,964,160 usable, 28,537 lineage-months
+  8,000,000 rows read, 7,963,052 usable, 30,379 lineage-months
+
+9,428,945 rows read, 8,895,831 usable, 31,369 lineage-months
+  discarded:
+         502,793  host != Homo sapiens
+          30,321  no year-month
+77 months 2020-01..[2022 T, 1,517 lineages with a month of at least 50 sequences
+wrote results/137_lineage.npz
+
+4,258 lineage-month transitions across 7 years
+
+  LEAVE-ONE-YEAR-OUT: is lineage growth a function of lineage contents?
+
+     lambda     2020     2021     2022     2023     2024     2025     2026     mean
+          1   -0.057   -0.323   -0.658   -0.131   -0.437   -0.305      nan   -0.318
+         10   -0.011   -0.065   -0.176   -0.027   -0.087   -0.119      nan   -0.081
+        100    0.000   -0.011   -0.031    0.013   -0.007    0.003      nan   -0.005
+       1000   -0.010   -0.006   -0.027    0.004   -0.002   -0.031      nan   -0.012
+      10000   -0.027   -0.016   -0.033   -0.008   -0.028   -0.090      nan   -0.034
+
+  best mean -0.005 at lambda 100   shuffled control: mean -0.026, max -0.003
+
+  mutations with the largest fitted effect on lineage growth
+     rank        mutation         f       rank        mutation         f
+        1            614G    0.0136          1            493R   -0.0097
+        2144del21992-21994    0.0114          2            339D   -0.0071
+        3            346T    0.0099          3             95I   -0.0065
+        4            339H    0.0092          4            981F   -0.0050
+        5            460K    0.0091          5            856K   -0.0050
+        6            493E    0.0088          6            371L   -0.0050
+        7             22N    0.0084          7            547K   -0.0049
+        8            486P    0.0084          8             67V   -0.0049
+        9            445P    0.0083          9            145D   -0.0049
+       10            182R    0.0080         10142del21987-21995   -0.0049
+       11            190S    0.0080         11            496S   -0.0049
+       12            572I    0.0078         12            484A   -0.0040
+       13             31P    0.0078         13            704L   -0.0029
+       14            452R    0.0077         14            452Q   -0.0027
+       15            487D    0.0071         15            346K   -0.0022
+
+  Identity here is external and exact: a lineage in one month is the same
+  lineage in the next, with no matching step and no fitting. So this removes
+  the one explanation the fitted-component version could not rule out.
+
+  clearly above the shuffled control
+      -> lineage growth IS a function of lineage contents, and the earlier
+         nulls were caused by components that did not persist across months.
+         The problem then is correspondence, not biology.
+  at or below the shuffled control
+      -> growth is not predictable from composition even with perfect
+         identity. The nulls mean what they appeared to mean, and no amount
+         of better clustering will change that.
+

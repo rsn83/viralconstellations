@@ -1,0 +1,122 @@
+V=1,359 max-K=48 train 2021-06..2022-05 test 2022-06  sigma=1.5  drift=True
+
+--- seed 0 ---
+  flat                         -16.181   components 14
+  flat + drift                 -11.069   components 16
+      split blk12 rejected (no gain)
+      split blk39 on 440K -> blk0
+      split blk32 on 452Q -> blk3
+      split blk46 rejected (no gain)
+      split blk46 rejected (no gain)
+  flat + drift + split-merge    -7.248   components 16
+      birth: blk3 --67V--> blk21   dep 1,759  dLL -15,645,303  dPrior +147,408,870  cost 9,789  gain +131,753,778
+      birth: blk3 --26S--> blk22   dep 2,888  dLL +12,026,999  dPrior +98,173,325  cost 1,577  gain +110,198,747
+      death: 7 component(s) returned
+      birth: blk9 --373P--> blk2   dep 1,044  dLL +428,386,664  dPrior -9,980,978  cost 9,540  gain +418,396,146
+      birth: blk9 --484A--> blk4   dep 1,613  dLL +9,306,594  dPrior +71,525,855  cost 10,008  gain +80,822,441
+      death: 4 component(s) returned
+      birth: blk4 --484A--> blk3   dep 6,621  dLL +2,009,409  dPrior +76,849,504  cost 10,234  gain +78,848,679
+      birth: blk4 --417T--> blk5   dep 3,697  dLL +1,104,365  dPrior +60,903,000  cost 1,194  gain +62,006,170
+      birth: blk5 --26S--> blk6   dep 2,682  dLL +972,861  dPrior +34,387,206  cost 625  gain +35,359,442
+      birth: blk6 --26S--> blk8   dep 2,045  dLL -814,182  dPrior +23,561,793  cost 523  gain +22,747,088
+      birth: blk6 --373P--> blk10   dep 4,138  dLL +3,732,748  dPrior +18,190,357  cost 9,415  gain +21,913,690
+      birth: blk8 --20N--> blk13   dep 1,629  dLL +371,535  dPrior +13,661,228  cost 484  gain +14,032,280
+      birth: blk5 --156del22029-22034--> blk14   dep 1,317  dLL -1,795,187  dPrior +8,205,850  cost 1,163  gain +6,409,500
+      death: 2 component(s) returned
+      birth: blk8 --346K--> blk17   dep 965  dLL -400,040  dPrior +2,886,437  cost 546  gain +2,485,850
+      iter 50  LL/obs -5.73936  components 20
+      iter 100  LL/obs -5.77972  components 20
+  hierarchical + birth-death    -7.787   components 20   births 12  remerges 0
+
+============================================================================
+LADDER  max-K=48  1 seeds  test 2022-06
+============================================================================
+
+  model                                   held-out    components     gain
+  flat                           -16.181+/-0.000            14.0   +0.000
+  flat + drift                   -11.069+/-0.000            16.0   +5.112
+  flat + drift + split-merge      -7.248+/-0.000            16.0   +8.933
+  hierarchical + birth-death      -7.787+/-0.000            20.0   +8.394
+
+  THE TREE (births accepted against the prior):
+
+  BIRTH ATTEMPTS (seed 0) -- every proposal, accepted or not
+     parent    mutation       dep           dLL    dPrior      cost          gain  verdict
+          3         67V     1,759   -15,645,303+147,408,870     9,789  +131,753,778  accept
+          3         26S     2,888   +12,026,999+98,173,325     1,577  +110,198,747  accept
+          9        373P     1,044  +428,386,664-9,980,978     9,540  +418,396,146  accept
+          9        484A     1,613    +9,306,594+71,525,855    10,008   +80,822,441  accept
+          4        484A     6,621    +2,009,409+76,849,504    10,234   +78,848,679  accept
+          4        417T     3,697    +1,104,365+60,903,000     1,194   +62,006,170  accept
+          5         26S     2,682      +972,861+34,387,206       625   +35,359,442  accept
+          6         26S     2,045      -814,182+23,561,793       523   +22,747,088  accept
+          6        373P     4,138    +3,732,748+18,190,357     9,415   +21,913,690  accept
+          4        405N     1,815    -1,926,925-20,157,363    10,117   -22,094,405  reject
+          4        376A     1,789    -3,895,182-19,414,763    10,180   -23,320,125  reject
+          4        371F     1,776    +1,001,436-11,722,103       461   -10,721,128  reject
+          4        969K     1,763    -2,452,357-21,900,263    10,047   -24,362,667  reject
+          4        655Y     1,759    -4,358,566-28,404,809    10,141   -32,773,515  reject
+          4        142D     1,753    -1,784,252-29,162,606     9,992   -30,956,850  reject
+          4        614G     1,743    -1,555,155-36,587,498    10,148   -38,152,802  reject
+          4         19I     1,741    -4,333,871-24,547,929    10,133   -28,891,933  reject
+          8         20N     1,629      +371,535+13,661,228       484   +14,032,280  accept
+          568del21765-21770     1,349      +252,695-1,259,555     9,508    -1,016,369  reject
+          5156del22029-22034     1,317    -1,795,187+8,205,850     1,163    +6,409,500  accept
+          9        371L     1,262    +1,744,379-235,423,826    10,094  -233,689,541  reject
+          9        212I     1,208    -2,214,371-227,898,339    10,148  -230,122,859  reject
+          9211del22194-22196     1,195      -242,455-221,487,480    10,094  -221,740,029  reject
+          5         67V     1,183    -7,336,750-12,559,319       945   -19,897,014  reject
+          9        375F     1,173    -3,344,483-253,850,831    10,188  -257,205,502  reject
+          9        417N     1,108    -2,020,117-248,521,747    10,141  -250,552,005  reject
+          9        446S     1,060      +168,874-263,075,424    10,047  -262,916,597  reject
+          9        440K     1,055    +2,257,226-258,661,028    10,047  -256,413,849  reject
+          2        446S     1,025    +1,941,773-36,418,578     9,899   -34,486,703  reject
+          2        440K     1,013      +342,750-38,849,092     9,875   -38,516,217  reject
+          8        859N       996                                                  thin-side
+          2        417N       982      +776,317-35,658,055     9,938   -34,891,676  reject
+          8        346K       965      -400,040+2,886,437       546    +2,485,850  accept
+          2        346K       715      -585,230-44,921,909     9,961   -45,517,101  reject
+          5         95I       599    -3,377,693-37,746,701     9,758   -41,134,153  reject
+          1        142D       598    -1,105,076-126,783,049    10,024  -127,898,149  reject
+          5        452R       496      -950,508-27,180,493     9,743   -28,140,744  reject
+          5        478K       488      -369,434-25,357,268     9,422   -25,736,124  reject
+          2        701V       475    -3,119,565-49,462,919     9,992   -52,592,476  reject
+          5        681R       460    -9,818,397-49,651,782     9,797   -59,479,977  reject
+          5        950N       452   -10,926,416-48,390,597       999   -59,318,012  reject
+          1         95I       440    -4,990,204-140,449,829     9,985  -145,450,017  reject
+          5142del21987-21995     1,806    -9,447,260-128,520,771     9,180  -137,977,211  reject
+          5        145D     1,771    -9,268,216-85,083,789       593   -94,352,598  reject
+          5211del22194-22196     1,750   -33,816,821-102,282,244       906  -136,099,971  reject
+         17        498R     1,461      -836,004-45,157,191    10,016   -46,003,210  reject
+         17        501Y     1,424    -8,601,896-46,143,734    10,024   -54,755,654  reject
+         17        496S     1,403    -6,663,098-65,821,926     9,875   -72,494,900  reject
+          1        145H     1,374    -3,561,431-117,185,626    10,016  -120,757,073  reject
+         17        505H     1,333    -3,486,194-54,461,805       773   -57,948,772  reject
+         13         95I     1,196    -3,592,076-11,711,390         8   -15,303,474  reject
+         13        346K     1,138    -3,168,725-10,069,910         8   -13,238,643  reject
+         13       1176F     1,126    -1,869,903-10,651,844       398   -12,522,144  reject
+         13        950N     1,126    -4,228,633-9,375,312         8   -13,603,952  reject
+         13        145N     1,123    -4,528,980-5,481,881       156   -10,011,017  reject
+         13         26S     1,123    -4,222,288-3,304,717         8    -7,527,013  reject
+         13         20N     1,123    -4,329,716-4,903,087        94    -9,232,897  reject
+         13        417T     1,799      -985,558-5,414,739       336    -6,400,632  reject
+         13        655Y     1,786      -659,335-3,744,353       476    -4,404,164  reject
+         13        138Y     1,785    -1,139,393-4,656,313       351    -5,796,057  reject
+         13        190S     1,769      -911,570-7,445,264       375    -8,357,209  reject
+         13         18F     1,751      -528,655-3,161,373       367    -3,690,395  reject
+         17         95I     1,198    -4,141,723-87,717,488     9,875   -91,869,087  reject
+          1        222V     1,071    -6,181,264-113,529,163     9,946  -119,720,373  reject
+         17        440K       973    -8,038,418-89,797,037     9,977   -97,845,432  reject
+         17        446S       904    -5,588,916-37,671,258     9,969   -43,270,143  reject
+
+NOTE
+  Components are not fixed: max-K is a ceiling on the pool, not the number
+  fitted. A birth is accepted only when the gain in expected complete-data
+  log-likelihood exceeds the prior penalty for one more component, and a
+  component whose responsibility falls below the floor is returned to the pool.
+  So the number of components reported above was chosen by the data.
+
+  sigma controls how far a child may sit from its parent. Smaller sigma means
+  tighter children and, indirectly, fewer accepted births -- worth sweeping,
+  since it is the one quantity here that is set rather than fitted.
+
