@@ -129,6 +129,12 @@ class HierMixture:
         # block at a few positions. theta' = (1-eps)*theta + eps*p_bar
         self.floor_eps = 0.0
         self.p_bar = None
+        # per-position tolerance. A flat floor charges the same for a mismatch
+        # at a hypervariable loop and at a conserved core residue, and blurs
+        # the entries that were correctly sharp -- which is why it lost at
+        # every setting. eps_v softens only where the data says a position
+        # actually moves.
+        self.eps_v = None
         self.theta_t = None          # (max_K, T, V) fitted per-month levels
         self.chain_post = None       # (max_K, V, S) state posterior at month T
         self.chain_A = None          # (S, S) shared transitions
@@ -183,6 +189,10 @@ class HierMixture:
         if drift:
             B = B + np.stack([self.slope(k) for k in ks]) * t
         th = np.clip(sig(B), 1e-4, 1 - 1e-4)
+        if self.eps_v is not None:
+            e = self.eps_v[None, :]
+            th = (1.0 - 2.0 * e) * th + e
+            return np.clip(th, 1e-6, 1 - 1e-6), ks
         if self.floor_eps > 0 and self.p_bar is not None:
             # A sequence three edits from its block currently pays log(1e-4)
             # for each of those edits -- about nine nats apiece, thirty for the
@@ -908,13 +918,24 @@ def fit(Xs, ws, V, max_K, seed=0, iters=200, inner=8, lr=2.0, sigma=1.5,
         burn_in=10, K_warm=0, births_per_call=1, refit=5, n_cand=3,
         grace=15, penalty="bic", warm=None, warm_mode="star", diag=None,
         rescan_every=0, merge_every=0, n_pairs=3, hier_drift=False,
-        time_model="slope", chain_states=3, beta_prior=1.0, floor_eps=0.0):
+        time_model="slope", chain_states=3, beta_prior=1.0, floor_eps=0.0,
+        eps_scale=0.0, eps_cap=0.25):
     rng = np.random.default_rng(seed)
     T = len(Xs)
     model = HierMixture(V, max_K, sigma=sigma, rng=rng, hier_drift=hier_drift)
     model.time_model = time_model
     model.beta_prior = beta_prior
     model.floor_eps = floor_eps
+    if eps_scale > 0:
+        # How much does each position move across the training months? A site
+        # whose frequency swings from month to month is one where a component
+        # should not be certain; a site that never changes is one where a
+        # mismatch really is strong evidence against the component. This uses
+        # only the training window, so nothing leaks.
+        F = np.stack([ (w[:, None] * X).sum(0) / max(w.sum(), EPS)
+                       for X, w in zip(Xs, ws) ])          # T x V
+        rng_v = F.max(0) - F.min(0)
+        model.eps_v = np.clip(eps_scale * rng_v, 1e-6, eps_cap)
     if floor_eps > 0:
         Xa = np.vstack(Xs); wa = np.concatenate(ws)
         model.p_bar = np.clip((wa[:, None] * Xa).sum(0) / wa.sum(),
@@ -1193,6 +1214,14 @@ def main():
                     help="bic: (V_eff/2)logN per component. prior: geometric "
                          "+ Gaussian only, which does not scale with N and "
                          "will let K run to max-K")
+    ap.add_argument("--eps-scale", type=float, default=0.0,
+                    help="per-position tolerance, set to this times the range "
+                         "of the position's monthly frequency in the training "
+                         "window. 0 is off. A mismatch at a site that already "
+                         "moves is then cheap, and one at a site that never "
+                         "moves stays expensive")
+    ap.add_argument("--eps-cap", type=float, default=0.25,
+                    help="upper bound on the per-position tolerance")
     ap.add_argument("--emission-floor", type=float, default=0.0,
                     help="chance that any position differs from its block. "
                          "Caps what a single mismatch costs, instead of "
@@ -1302,6 +1331,7 @@ def main():
             warm_mode=args.warm_mode, hier_drift=args.hier_drift,
             time_model=args.time_model, chain_states=args.chain_states,
             beta_prior=args.beta_prior, floor_eps=args.emission_floor,
+            eps_scale=args.eps_scale, eps_cap=args.eps_cap,
             merge_every=args.merge_every,
             n_pairs=args.n_pairs,
             diag=diag)

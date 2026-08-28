@@ -133,6 +133,10 @@ def main():
     ap.add_argument("--warm-mode", choices=["star", "tree"], default="tree")
     ap.add_argument("--no-hier-drift", action="store_true")
     ap.add_argument("--time-model", choices=["slope", "chain"], default="slope")
+    ap.add_argument("--eps-scales", default="",
+                    help="comma-separated per-position tolerance scales to "
+                         "sweep, e.g. 0,0.05,0.2,0.5. Overrides the others")
+    ap.add_argument("--eps-cap", type=float, default=0.25)
     ap.add_argument("--emission-floors", default="",
                     help="comma-separated per-position floors to sweep, e.g. "
                          "0,0.001,0.01,0.05. Overrides --beta-priors when set")
@@ -182,14 +186,19 @@ def main():
     print(f"lookup floor for an unseen set: "
           f"log({alpha}/{denom:,.0f}) = {np.log(alpha/denom):.3f}")
 
-    if args.emission_floors:
+    if args.eps_scales:
+        esc = [float(x) for x in args.eps_scales.split(",")]
+        bps = [1.0] * len(esc); fls = [0.0] * len(esc)
+        hier_rows = [("hierarchical + birth-death" if e == 0 else
+                      f"hierarchical, eps-scale {e:g}") for e in esc]
+    elif args.emission_floors:
         fls = [float(x) for x in args.emission_floors.split(",")]
-        bps = [1.0] * len(fls)
+        bps = [1.0] * len(fls); esc = [0.0] * len(fls)
         hier_rows = [("hierarchical + birth-death" if f == 0 else
                       f"hierarchical, floor {f:g}") for f in fls]
     else:
         bps = [float(x) for x in args.beta_priors.split(",")]
-        fls = [0.0] * len(bps)
+        fls = [0.0] * len(bps); esc = [0.0] * len(bps)
         hier_rows = [("hierarchical + birth-death" if b == 1.0 else
                       f"hierarchical, Beta({b:g},{b:g})") for b in bps]
     rungs = ["flat", "flat + drift", "flat + drift + split-merge"] + hier_rows
@@ -262,12 +271,12 @@ def main():
                 beta_sm, pi_sm = beta, pin
 
         # rung 4: hierarchical
-        for bp, fl, hr in zip(bps, fls, hier_rows):
+        for bp, fl, es, hr in zip(bps, fls, esc, hier_rows):
           if sd == 0:
               print(f"\n  --- fitting {hr} "
                     f"({bps.index(bp)+1} of {len(bps)}) ---", flush=True)
           model, Pi, tv, births, _, remerges = E.fit(
-              Xs, ws, V, args.max_K, seed=sd, sigma=args.sigma, beta_prior=bp, floor_eps=fl,
+              Xs, ws, V, args.max_K, seed=sd, sigma=args.sigma, beta_prior=bp, floor_eps=fl, eps_scale=es, eps_cap=args.eps_cap,
               half_life=args.half_life, drift=True, names=names,
               verbose=(sd == 0), iters=args.iters, K_warm=args.max_K,
               birth_every=1, births_per_call=4, refit=0, penalty="prior",
