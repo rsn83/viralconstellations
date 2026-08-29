@@ -272,19 +272,40 @@ class SourceIndex:
             shape=(len(sets), V))
         self.n = len(sets)
 
-    def project(self, target):
-        """Return (masks, n_elems, coverable) with bits indexed by sorted(target)."""
+    def project(self, target, max_masks=300):
+        """Return (masks, n_elems, coverable) with bits indexed by sorted(target).
+
+        Only sources with large overlap can appear in a minimum cover, so
+        candidates are ranked sparsely and only the top max_masks are densified.
+        To keep the cover feasible, the best source containing each individual
+        element is always retained -- so a straggler mutation covered by only
+        one low-overlap haplotype is never lost.
+        """
         elem_order = sorted(target)
         n = len(elem_order)
-        sub = self.M[:, elem_order].toarray()
-        sub = sub[sub.any(axis=1)]
-        if sub.size == 0:
+        subM = self.M[:, elem_order]
+        counts = np.asarray(subM.sum(axis=1)).ravel()
+        nz = np.flatnonzero(counts)
+        if nz.size == 0:
             return [], n, 0
+
+        if nz.size > max_masks:
+            top = nz[np.argpartition(-counts[nz], max_masks - 1)[:max_masks]]
+            keep = set(top.tolist())
+            csc = subM.tocsc()
+            for j in range(n):
+                rows = csc.indices[csc.indptr[j]:csc.indptr[j + 1]]
+                if rows.size and not (keep & set(rows.tolist())):
+                    keep.add(int(rows[np.argmax(counts[rows])]))
+            sel = np.fromiter(keep, dtype=int)
+        else:
+            sel = nz
+
+        sub = subM[sel].toarray()
         packed = np.packbits(sub, axis=1)
-        packed = np.unique(packed, axis=0)
         masks, coverable = [], 0
-        for row in packed:
-            v = int.from_bytes(row.tobytes(), "big")
+        for row in {r.tobytes() for r in packed}:
+            v = int.from_bytes(row, "big")
             masks.append(v)
             coverable |= v
         masks.sort(key=_popcount, reverse=True)
