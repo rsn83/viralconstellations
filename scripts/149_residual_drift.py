@@ -1,29 +1,35 @@
 #!/usr/bin/env python
 """
-148_gated_set.py  --  Gated set prediction.
+149_residual_drift.py  --  Residual + drift set prediction.
 
-500 input slots -> 500 output slots.
-Each slot learns: copy input (persist) or generate novel?
+Key design:
+  drift    = mean(mu_{t+1} - mu_t) over training pairs -- analytic, not learned
+  centered = s - mu_t removes absolute mutation level
 
-gate_j = sigmoid(MLP(phi_j, ctx))   learned per slot
-  gate ~ 0: copy input constellation j -> persistence
-  gate ~ 1: generate novel via MADE from cross-attention embedding
+  Group 1 -- Seen (constellations present at both t and t+h):
+    target  = (s_{t+h} - mu_{t+h}) - (s_t - mu_t) - drift*h  <- centered residual
+    model   = small MLP per constellation: phi_i + ctx -> delta_i
+    output  = s_t + drift*h + delta_i
+    at init = delta_i ~ 0 -> output ~ s_t + drift = persistence + drift
 
-output_j = gate_j * novel_j + (1-gate_j) * input_j
+  Group 2 -- Novel (absent at t, appear at t+h):
+    N_novel learned queries cross-attend to phi_i
+    MADE per slot -> new binary vector
+    at init ~ population mean
 
-Gate initialized to -3 -> sigmoid(-3) ~ 0.05 -> near-persistence at init.
-Model learns from Chamfer loss which slots should persist vs go novel.
+Loss: Chamfer(seen_pred + novel_pred, actual top-500 at t+h)
+      Novel constellations upweighted 10x
 
-Novel upweighting ensures novel actual constellations get strong gradient.
+Evaluation: exact recall@k, novel recall@k vs persistence
 
 Run:
-  python scripts/148_gated_set.py \
+  python scripts/149_residual_drift.py \
     --data-dir data/processed/full_data_graphs_withdel \
     --vocab data/processed/full_data_graphs_withdel/posres_vocab_withdel.tsv \
     --months 2020-06:2023-06 --test-start 2022-06 \
-    --M 6 --N 500 --J 200 --d 64 --heads 4 --layers 2 \
-    --d-lstm 64 --d-made 32 --epochs 500 --lr 1e-3 \
-    --top 500 --upweight 10.0 --top-k 20
+    --M 6 --N-novel 100 --J 200 \
+    --d 64 --heads 4 --layers 2 --d-lstm 64 --d-made 32 \
+    --epochs 500 --lr 1e-3 --top 500 --upweight 10.0 --top-k 20
 """
 
 import argparse, importlib.util, sys, os
@@ -90,7 +96,7 @@ def jaccard_matrix(S_bin):
 class MADE(nn.Module):
     def __init__(self, J, d_cond, d_hidden=32, seed=0):
         super().__init__()
-        self.J  = J
+        self.J = J
         rng     = np.random.default_rng(seed)
         degrees = rng.integers(1, max(J, 2), size=d_hidden)
         v_range = torch.arange(J).float()
@@ -105,37 +111,19 @@ class MADE(nn.Module):
         self.b2        = nn.Parameter(torch.zeros(J))
         self.cond_proj = nn.Linear(d_cond, d_hidden, bias=False)
 
-    def forward(self, s_J, c):
-        h = torch.relu(s_J @ (self.W1*self.mask_W1).T
-                       + self.b1 + self.cond_proj(c))
-        return h @ (self.W2*self.mask_W2).T + self.b2
-
-    def soft_output(self, c):
-        s = torch.zeros(1, self.J, device=c.device)
-        return torch.sigmoid(self.forward(s, c)).squeeze(0)
-
     def soft_output_batch(self, C):
+        """C: (N, d). Returns (N, J) soft binary in [0,1]. One forward pass."""
         N = C.shape[0]
         s = torch.zeros(N, self.J, device=C.device)
-        h = torch.relu(s @ (self.W1*self.mask_W1).T + self.b1 + C @ self.cond_proj.weight.T)
+        h = torch.relu(s @ (self.W1*self.mask_W1).T
+                       + self.b1
+                       + C @ self.cond_proj.weight.T)
         return torch.sigmoid(h @ (self.W2*self.mask_W2).T + self.b2)
-
-    def greedy_decode(self, c):
-        """MAP decode: deterministic binary output. Returns (J,)."""
-        s = torch.zeros(self.J, device=c.device)
-        for v in range(self.J):
-            s[v] = (self.forward(s.unsqueeze(0), c)[0, v] > 0).float()
-        return s
-
-    def log_prob(self, s_J, c):
-        """s_J: (N,J), c: (d,). Returns (N,)."""
-        logits = self.forward(s_J, c)
-        return (s_J * F.logsigmoid(logits) +
-                (1-s_J) * F.logsigmoid(-logits)).sum(1)
 
 # --------------------------------------------------------------- model ----
 
 class SetEncoder(nn.Module):
+    """Returns phi_i (N, d) per-constellation AND u_t (d) pooled."""
     def __init__(self, V, d, heads, n_layers):
         super().__init__()
         self.proj = nn.Linear(V, d)
@@ -175,59 +163,62 @@ class TemporalEncoder(nn.Module):
         return h_n.squeeze(0).squeeze(0), context
 
 
-class GatedDecoder(nn.Module):
-    """N slots, each with learned gate deciding copy vs generate.
-
-    gate_j = sigmoid(gate_mlp(phi_j, ctx))
-      gate ~ 0: output_j = input_j (copy, persistence)
-      gate ~ 1: output_j = novel_j (generate via MADE)
-
-    output_j = gate_j * novel_j + (1-gate_j) * input_j
-
-    Gate init to -3 -> sigmoid(-3)=0.05 -> near-persistence at init.
+class ResidualDriftDecoder(nn.Module):
     """
-    def __init__(self, d, d_lstm, N, V, J, d_made, top_j_idx):
+    Group 1 -- Seen residual:
+      For each input constellation phi_i + ctx -> small delta_i in [0,1]^V
+      output_i = clamp(s_i + drift*h + delta_i, 0, 1)
+      At init: delta_i ~ 0 -> output ~ s_i + drift = persistence + drift
+
+    Group 2 -- Novel generation:
+      N_novel learned queries cross-attend to phi_i
+      MADE -> new binary constellations
+      At init: near population mean
+    """
+    def __init__(self, d, d_lstm, N_novel, V, J, d_made, top_j_idx):
         super().__init__()
-        self.N = N; self.V = V; self.J = J
-        V_rest = V - J
+        self.N_novel = N_novel
+        self.V       = V
+        self.J       = J
+        V_rest       = V - J
         self.register_buffer('top_j_idx',
                              torch.tensor(top_j_idx, dtype=torch.long))
 
         ctx_d = d_lstm * 2
-
-        # gate: phi_j + ctx -> scalar in [0,1]
-        # initialized to -3 -> near-zero gate -> persistence at init
-        self.gate_mlp = nn.Sequential(
-            nn.Linear(d + d, d), nn.Tanh(),
-            nn.Linear(d, 1))
-        nn.init.zeros_(self.gate_mlp[-1].weight)
-        nn.init.constant_(self.gate_mlp[-1].bias, -3.0)
-
-        # temporal context projection
         self.ctx_proj = nn.Linear(ctx_d, d)
 
-        # cross-attention: each slot attends to all input embeddings
-        # produces novel embedding e_j for each slot
+        # --- Group 1: seen residual ---
+        # phi_i + ctx -> delta_i in V dimensions
+        # small residual: how much each position changes beyond drift
+        # ZERO INIT: delta ~ 0 at init -> persistence + drift baseline
+        self.residual_mlp = nn.Sequential(
+            nn.Linear(d + d, d*2), nn.Tanh(),
+            nn.Linear(d*2, V))
+        nn.init.zeros_(self.residual_mlp[-1].weight)
+        nn.init.zeros_(self.residual_mlp[-1].bias)
+
+        # weight correction per seen slot
+        self.seen_w_mlp = nn.Sequential(
+            nn.Linear(d + d, d), nn.Tanh(),
+            nn.Linear(d, 1))
+        nn.init.zeros_(self.seen_w_mlp[-1].weight)
+        nn.init.zeros_(self.seen_w_mlp[-1].bias)
+
+        # --- Group 2: novel generation ---
+        self.novel_queries = nn.Parameter(
+            torch.randn(N_novel, d) * 0.01)
         self.cross_attn = nn.MultiheadAttention(
             embed_dim=d, num_heads=max(1, d//16),
             batch_first=True)
-
-        # MADE: e_j -> soft binary for J positions
         self.made = MADE(J, d_cond=d, d_hidden=d_made)
-
-        # factorized: e_j -> soft binary for V-J positions
         self.fact_net = nn.Sequential(
             nn.Linear(d, d*2), nn.Tanh(),
             nn.Linear(d*2, V_rest))
         nn.init.zeros_(self.fact_net[-1].weight)
         nn.init.zeros_(self.fact_net[-1].bias)
-
-        # weight prediction: phi_j + ctx + gate -> scalar
-        self.weight_mlp = nn.Sequential(
-            nn.Linear(d + d + 1, d), nn.Tanh(),
-            nn.Linear(d, 1))
-        nn.init.zeros_(self.weight_mlp[-1].weight)
-        nn.init.zeros_(self.weight_mlp[-1].bias)
+        self.novel_w_mlp = nn.Linear(d, 1)
+        nn.init.zeros_(self.novel_w_mlp.weight)
+        nn.init.zeros_(self.novel_w_mlp.bias)
 
     def _rest_idx(self, device):
         all_idx = torch.arange(self.V, device=device)
@@ -236,80 +227,75 @@ class GatedDecoder(nn.Module):
         return all_idx[mask]
 
     def forward(self, phi_i, w_i, h_t, context,
-                S_input, test=False):
+                S_input, drift_h):
         """
-        phi_i:   (N, d) per-constellation embeddings
-        w_i:     (N,) input frequencies
+        phi_i:   (N_in, d) input constellation embeddings
+        w_i:     (N_in,) input frequencies
         h_t:     (d_lstm,) temporal hidden
         context: (d_lstm,) temporal context
-        S_input: (N, V) input binary constellations
+        S_input: (N_in, V) input binary constellations (NOT centered)
+        drift_h: (V,) drift * h -- population mean shift
 
-        Returns (test=False, train mode):
-          S_out:  (N, V) soft predicted constellations in [0,1]
-          w_out:  (N,) predicted weights
-          gates:  (N,) gate values (diagnostic)
-
-        Returns (test=True):
-          S_out:  (N, V) binary thresholded
-          w_out:  (N,) weights
-          gates:  (N,) gates
+        Returns:
+          S_seen:   (N_in, V) soft predicted seen constellations
+          w_seen:   (N_in,) predicted seen weights
+          S_novel:  (N_novel, V) soft predicted novel constellations
+          w_novel:  (N_novel,) predicted novel weights
         """
+        N_in     = phi_i.shape[0]
         ctx      = torch.tanh(self.ctx_proj(
-            torch.cat([h_t, context])))                # (d,)
-        N_in     = phi_i.shape[0]  # actual number of input constellations
-        ctx_exp  = ctx.unsqueeze(0).expand(N_in, -1)  # (N_in, d)
+            torch.cat([h_t, context])))                    # (d,)
+        ctx_exp  = ctx.unsqueeze(0).expand(N_in, -1)      # (N_in, d)
         rest_idx = self._rest_idx(phi_i.device)
 
-        # gate per slot
-        gate_inp = torch.cat([phi_i, ctx_exp], dim=1)  # (N_in, 2d)
-        gates    = torch.sigmoid(
-            self.gate_mlp(gate_inp).squeeze(-1))        # (N,)
+        # ---- Group 1: seen residual ----
+        inp      = torch.cat([phi_i, ctx_exp], dim=1)     # (N_in, 2d)
+        delta    = torch.tanh(self.residual_mlp(inp))     # (N_in, V) in [-1,1]
+        # output = input + drift + small residual, clamped to [0,1]
+        S_seen   = (S_input + drift_h.unsqueeze(0)
+                    + delta * 0.1).clamp(0, 1)            # (N_in, V)
+        # weight correction
+        w_delta  = self.seen_w_mlp(inp).squeeze(-1)       # (N_in,)
+        w_seen   = torch.softmax(
+            torch.log(w_i + EPS) + w_delta, dim=0)        # (N_in,)
 
-        # cross-attention: each phi_i attends to freq-weighted inputs
-        phi_w   = phi_i * w_i.unsqueeze(-1)            # (N, d) freq-weighted
-        e_j, _  = self.cross_attn(
-            phi_i.unsqueeze(0),     # queries: each slot's own embedding
-            phi_w.unsqueeze(0),     # keys: freq-weighted
-            phi_i.unsqueeze(0))     # values: unweighted
-        e_j     = e_j.squeeze(0)                        # (N, d)
+        # ---- Group 2: novel generation ----
+        phi_w    = phi_i * w_i.unsqueeze(-1)              # (N_in, d)
+        Q        = (self.novel_queries
+                    + ctx.unsqueeze(0))                    # (N_novel, d)
+        e_novel, _ = self.cross_attn(
+            Q.unsqueeze(0),
+            phi_w.unsqueeze(0),
+            phi_i.unsqueeze(0))
+        e_novel  = e_novel.squeeze(0)                     # (N_novel, d)
 
-        # novel output per slot (soft in [0,1])
-        N_in  = phi_i.shape[0]
-        novel = torch.zeros(N_in, self.V, device=phi_i.device)
-        novel[:, rest_idx] = torch.sigmoid(
-            self.fact_net(e_j))                         # factorized positions
+        # novel constellation: MADE for J, factorized for rest
+        S_novel  = torch.zeros(
+            self.N_novel, self.V, device=phi_i.device)
+        S_novel[:, rest_idx]       = torch.sigmoid(
+            self.fact_net(e_novel))
+        S_novel[:, self.top_j_idx] = self.made.soft_output_batch(
+            e_novel)                                       # (N_novel, J)
 
-        if test:
-            novel[:, self.top_j_idx] = (self.made.soft_output_batch(e_j) > 0.5).float()
-        else:
-            novel[:, self.top_j_idx] = self.made.soft_output_batch(e_j)
+        # add drift to novel too
+        S_novel  = (S_novel + drift_h.unsqueeze(0)).clamp(0, 1)
 
-        # gated blend: (1-gate)*input + gate*novel
-        g        = gates.unsqueeze(1)                   # (N, 1)
-        S_out    = (1 - g) * S_input + g * novel        # (N, V)
+        # novel weights
+        w_novel  = torch.softmax(
+            self.novel_w_mlp(e_novel).squeeze(-1), dim=0) # (N_novel,)
 
-        if test:
-            S_out = (S_out > 0.5).float()
-
-        # weight per slot: input weight corrected by gate and context
-        w_inp    = torch.cat([phi_i, ctx_exp,
-                              gates.unsqueeze(1)], dim=1)  # (N, 2d+1)
-        w_logits = self.weight_mlp(w_inp).squeeze(-1)      # (N,)
-        w_out    = torch.softmax(
-            torch.log(w_i + EPS) + w_logits, dim=0)        # (N,)
-
-        return S_out, w_out, gates
+        return S_seen, w_seen, S_novel, w_novel
 
 
-class GatedSetModel(nn.Module):
+class ResidualDriftModel(nn.Module):
     def __init__(self, V, d, heads, n_layers, d_lstm,
-                 N, J, d_made, top_j_idx, M):
+                 N_novel, J, d_made, top_j_idx, M):
         super().__init__()
-        self.V = V; self.N = N; self.M = M
+        self.V = V; self.M = M
         self.enc  = SetEncoder(V, d, heads, n_layers)
         self.temp = TemporalEncoder(d, d_lstm)
-        self.dec  = GatedDecoder(d, d_lstm, N, V, J,
-                                 d_made, top_j_idx)
+        self.dec  = ResidualDriftDecoder(
+            d, d_lstm, N_novel, V, J, d_made, top_j_idx)
         self.register_buffer('mean_drift', torch.zeros(V))
 
     def set_mean_drift(self, drift):
@@ -327,23 +313,25 @@ class GatedSetModel(nn.Module):
         h_t, ctx = self.temp(torch.stack(us))
         return phis[-1], window[-1]["w"], h_t, ctx
 
-    def forward(self, window, S_input, w_input, mu_t,
-                h=1, test=False):
+    def forward(self, window, S_input, w_input, h=1):
         phi_i, w_i, h_t, ctx = self._encode_window(window)
-        mu_next = mu_t + self.mean_drift * h
+        drift_h = self.mean_drift * h                     # (V,) drift for h steps
 
-        # center input
-        S_cen = S_input - mu_t.unsqueeze(0)
+        S_seen, w_seen, S_novel, w_novel = self.dec(
+            phi_i, w_i, h_t, ctx, S_input, drift_h)
 
-        S_out, w_out, gates = self.dec(
-            phi_i, w_i, h_t, ctx, S_cen, test=test)
+        # combine seen + novel
+        S_all = torch.cat([S_seen, S_novel], dim=0)      # (N_in+N_novel, V)
+        w_all = torch.softmax(
+            torch.cat([torch.log(w_seen + EPS),
+                       torch.log(w_novel + EPS)]), dim=0) # renormalize jointly
 
-        # add mu_next back
-        S_out_actual = S_out + mu_next.unsqueeze(0)
+        return S_all, w_all
 
-        if test:
-            return (S_out_actual > 0.5).float(), w_out, gates
-        return S_out_actual, w_out, gates
+    def predict_binary(self, window, S_input, w_input, h=1):
+        """At test time: threshold to binary."""
+        S_all, w_all = self.forward(window, S_input, w_input, h)
+        return (S_all > 0.5).float(), w_all
 
 # ------------------------------------------------------------ loss --------
 
@@ -352,16 +340,14 @@ def hamming_cost(A, B):
             - 2 * A @ B.T) / A.shape[1]
 
 def chamfer_loss(S_pred, w_pred, S_true, w_true,
-                 S_true_bin_cpu, present_sets, upweight):
-    """Weighted Chamfer with novel upweighting."""
+                 S_true_cpu, present_sets, upweight):
     w_adj = w_true.clone()
-    for i, row in enumerate(S_true_bin_cpu):
+    for i, row in enumerate(S_true_cpu):
         fs = frozenset(torch.nonzero(row).squeeze(-1).tolist())
         if fs not in present_sets:
             w_adj[i] = w_adj[i] * upweight
     w_adj = w_adj / w_adj.sum()
-
-    C   = hamming_cost(S_pred, S_true)              # (N, M)
+    C   = hamming_cost(S_pred, S_true)
     fwd = (w_pred * C.min(1).values).sum()
     bwd = (w_adj  * C.min(0).values).sum()
     return fwd + bwd
@@ -412,7 +398,7 @@ def make_windows(clouds, M, horizons, start, end):
 def train(model, clouds, train_wins, a, device):
     opt = torch.optim.Adam(model.parameters(), lr=a.lr, weight_decay=1e-3)
     for epoch in range(a.epochs):
-        model.train(); total = 0.0; total_gate = 0.0
+        model.train(); total = 0.0
         for inputs, target, h in [train_wins[i] for i in
                                    np.random.permutation(len(train_wins))]:
             ct_t = clouds[inputs[-1]]
@@ -428,29 +414,22 @@ def train(model, clouds, train_wins, a, device):
                                   dtype=torch.float32).to(device)
             w_inp  = torch.tensor(ct_t["w"],
                                   dtype=torch.float32).to(device)
-            mu_t   = torch.tensor(ct_t["mu"],
-                                  dtype=torch.float32).to(device)
             S_true = torch.tensor(ct_h["S"],
                                   dtype=torch.float32).to(device)
             w_true = torch.tensor(ct_h["w"],
                                   dtype=torch.float32).to(device)
             S_true_cpu = S_true.cpu().round()
 
-            S_pred, w_pred, gates = model(
-                window, S_inp, w_inp, mu_t, h, test=False)
-
+            S_pred, w_pred = model(window, S_inp, w_inp, h)
             loss = chamfer_loss(
                 S_pred, w_pred, S_true, w_true,
                 S_true_cpu, ct_t["sets"], a.upweight)
-
             opt.zero_grad(); loss.backward(); opt.step()
             total += loss.item()
-            total_gate += gates.mean().item()
 
         if (epoch+1) % 50 == 0:
             print(f"  epoch {epoch+1:4d}  "
                   f"chamfer/win {total/len(train_wins):.5f}  "
-                  f"mean_gate {total_gate/len(train_wins):.3f}  "
                   f"lam={model.enc.lam.item():.3f}")
 
 # ------------------------------------------------------------- evaluate --
@@ -460,8 +439,8 @@ def evaluate(model, clouds, test_wins, months,
     print(f"\n{'Input window':>22} | {'Test':>8} | {'h':>3} | "
           f"{'rec@k':>6} {'nov_rec':>8} | "
           f"{'per_rec':>7} {'per_nov':>8} | "
-          f"{'gain':>6} {'nov_gain':>8} | {'mean_gate':>9}")
-    print("-" * 105)
+          f"{'gain':>6} {'nov_gain':>8}")
+    print("-" * 95)
     by_h = {h: [] for h in eval_h}
 
     with torch.no_grad():
@@ -480,15 +459,11 @@ def evaluate(model, clouds, test_wins, months,
                                  dtype=torch.float32).to(device)
             w_inp = torch.tensor(ct_t["w"],
                                  dtype=torch.float32).to(device)
-            mu_t  = torch.tensor(ct_t["mu"],
-                                 dtype=torch.float32).to(device)
 
-            S_out, w_out, gates = model(
-                window, S_inp, w_inp, mu_t, h, test=True)
-
-            S_np  = S_out.cpu().numpy()
-            w_np  = w_out.cpu().numpy()
-            g_mean= gates.mean().item()
+            S_out, w_out = model.predict_binary(
+                window, S_inp, w_inp, h)
+            S_np = S_out.cpu().numpy()
+            w_np = w_out.cpu().numpy()
 
             rec, nov = recall_at_k(
                 S_np, w_np, ct_h["S"], ct_h["w"],
@@ -509,27 +484,25 @@ def evaluate(model, clouds, test_wins, months,
             print(f"{iw:>22} | {months[target]:>8} | {h:>3} | "
                   f"{rec:6.3f} {nstr:>8} | "
                   f"{per_rec:7.3f} {pnstr:>8} | "
-                  f"{gain:+6.3f} {ngstr:>8} | {g_mean:9.3f}")
+                  f"{gain:+6.3f} {ngstr:>8}")
             by_h[h].append((rec,
                             nov  if np.isfinite(nov)     else np.nan,
                             per_rec,
-                            per_nov if np.isfinite(per_nov) else np.nan,
-                            g_mean))
+                            per_nov if np.isfinite(per_nov) else np.nan))
 
     print(f"\n{'='*70}")
     print(f"=== Summary (top-{top_k}) ===")
     print(f"{'h':>4} {'rec@k':>7} {'nov_rec':>9} | "
           f"{'per_rec':>8} | "
-          f"{'rec_gain':>9} {'nov_gain':>9} | {'mean_gate':>9}")
+          f"{'rec_gain':>9} {'nov_gain':>9}")
     for h in eval_h:
         if not by_h[h]: continue
         R    = np.array(by_h[h])
         rec  = np.nanmean(R[:,0]); nov  = np.nanmean(R[:,1])
         prec = np.nanmean(R[:,2])
-        mg   = np.nanmean(R[:,4])
         print(f"  h={h:2d} {rec:7.3f} {nov:9.3f} | "
               f"{prec:8.3f} | "
-              f"{rec-prec:+9.3f} {nov:+9.3f} | {mg:9.3f}")
+              f"{rec-prec:+9.3f} {nov:+9.3f}")
 
 # ----------------------------------------------------------------- main --
 def main():
@@ -540,7 +513,7 @@ def main():
     p.add_argument("--test-start",  required=True)
     p.add_argument("--engine",      default=ENGINE)
     p.add_argument("--M",       type=int,   default=6)
-    p.add_argument("--N",       type=int,   default=500)
+    p.add_argument("--N-novel", type=int,   default=100, dest="N_novel")
     p.add_argument("--J",       type=int,   default=200)
     p.add_argument("--d",       type=int,   default=64)
     p.add_argument("--heads",   type=int,   default=4)
@@ -572,9 +545,11 @@ def main():
     test_wins  = make_windows(clouds, a.M, a.horizons, ts, len(months))
     print(f"train: {len(train_wins)}  test: {len(test_wins)}")
 
-    drifts     = [clouds[i+1]["mu"] - clouds[i]["mu"]
-                  for i in range(ts-1) if clouds[i] and clouds[i+1]]
+    # analytic drift -- mean per-position change per month, fit on training only
+    drifts = [clouds[i+1]["mu"] - clouds[i]["mu"]
+               for i in range(ts-1) if clouds[i] and clouds[i+1]]
     mean_drift = np.stack(drifts).mean(0) if drifts else np.zeros(V)
+    print(f"drift magnitude: {np.abs(mean_drift).mean():.5f}/position/month")
 
     print(f"top-{a.J} positions...")
     top_j = top_j_positions(clouds, train_idx, a.J)
@@ -584,9 +559,9 @@ def main():
         if clouds[i]: train_sets |= clouds[i]["sets"]
     print(f"training constellations: {len(train_sets)}")
 
-    model = GatedSetModel(
+    model = ResidualDriftModel(
         V=V, d=a.d, heads=a.heads, n_layers=a.layers,
-        d_lstm=a.d_lstm, N=a.N, J=a.J,
+        d_lstm=a.d_lstm, N_novel=a.N_novel, J=a.J,
         d_made=a.d_made, top_j_idx=top_j, M=a.M)
     model.set_mean_drift(mean_drift)
     model = model.to(device)
@@ -602,8 +577,8 @@ def main():
     os.makedirs("results", exist_ok=True)
     torch.save({"state": model.state_dict(), "args": vars(a),
                 "mean_drift": mean_drift, "top_j": top_j},
-               "results/148_model.pt")
-    print("saved results/148_model.pt")
+               "results/149_model.pt")
+    print("saved results/149_model.pt")
 
 if __name__ == "__main__":
     main()
