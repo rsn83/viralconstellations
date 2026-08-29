@@ -251,6 +251,47 @@ def greedy_cover(masks, full):
     return k
 
 
+class SourceIndex:
+    """Sparse index over source haplotypes for fast projection onto a target.
+
+    The per-source Python loop is the bottleneck once the pool grows past a few
+    thousand sets, so intersections are computed as a single sparse column
+    slice, deduped as packed bytes, and only the unique masks are converted to
+    Python ints.
+    """
+
+    def __init__(self, sets, V):
+        import scipy.sparse as sp
+        rows, cols = [], []
+        for i, s in enumerate(sets):
+            for m in s:
+                rows.append(i)
+                cols.append(m)
+        self.M = sp.csc_matrix(
+            (np.ones(len(rows), dtype=bool), (rows, cols)),
+            shape=(len(sets), V))
+        self.n = len(sets)
+
+    def project(self, target):
+        """Return (masks, n_elems, coverable) with bits indexed by sorted(target)."""
+        elem_order = sorted(target)
+        n = len(elem_order)
+        sub = self.M[:, elem_order].toarray()
+        sub = sub[sub.any(axis=1)]
+        if sub.size == 0:
+            return [], n, 0
+        packed = np.packbits(sub, axis=1)
+        packed = np.unique(packed, axis=0)
+        masks, coverable = [], 0
+        for row in packed:
+            v = int.from_bytes(row.tobytes(), "big")
+            masks.append(v)
+            coverable |= v
+        masks.sort(key=_popcount, reverse=True)
+        return masks, n, coverable
+
+
+
 def greedy_cover_masks(masks, full):
     """Greedy cover, returning the chosen masks."""
     covered, chosen = 0, []
@@ -423,6 +464,10 @@ def analyse_window(months, t_idx, horizon, n_null, rng,
     min_band = min(len(b) for b in bands) if bands else 0
     n_present = len(present_muts)
     n_sources = len(source_sets)
+    V = 1 + max((max(s) for s in source_sets if s), default=0)
+    V = max(V, 1 + max((max(s) for s in months[t_idx + horizon]["sets"] if s),
+                       default=0))
+    index = SourceIndex(source_sets, V)
 
     records = []
     targets = [C for C in months[t_idx + horizon]["sets"] if C not in ever_seen]
@@ -437,7 +482,7 @@ def analyse_window(months, t_idx, horizon, n_null, rng,
         if not C_cov:
             continue
 
-        masks, n_el, _, coverable = project_and_prune(C_cov, source_sets)
+        masks, n_el, coverable = index.project(C_cov)
         if not masks:
             continue
         n_uncoverable = n_el - _popcount(coverable)
@@ -475,7 +520,7 @@ def analyse_window(months, t_idx, horizon, n_null, rng,
             Ct = sample_matched(C_cov, bands, mut2band, rng)
             if not Ct:
                 continue
-            m2, n2, _, cov2 = project_and_prune(Ct, source_sets)
+            m2, n2, cov2 = index.project(Ct)
             if not m2:
                 continue
             k2, _, _, _ = exact_min_cover(m2, cov2, count_optima=False)
