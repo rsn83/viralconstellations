@@ -54,13 +54,51 @@ def jaccard_sample(R, n_pairs, rng):
     return inter[v] / union[v]
 
 
+def month_curves(mo, theta, n_null, n_pairs, grid, rng, m152):
+    """Survival curves for one month, before and after core removal."""
+    V = 1 + max(max(s) for s in mo["sets"] if s)
+    X = np.zeros((len(mo["sets"]), V), dtype=bool)
+    for i, s in enumerate(mo["sets"]):
+        if s:
+            X[i, list(s)] = True
+    prev = X.mean(0)
+    core = np.flatnonzero(prev >= theta)
+    non_core = np.flatnonzero((prev < theta) & (prev > 0))
+    if non_core.size < 2:
+        return None
+
+    def surv(j):
+        return np.array([(j > x).mean() for x in grid])
+
+    Xn = X[:, prev > 0]
+    Xn = Xn[Xn.sum(1) > 0]
+    R = X[:, non_core]
+    R = R[R.sum(1) > 0]
+    if R.shape[0] < 10 or Xn.shape[0] < 10:
+        return None
+
+    per_null = max(1, n_pairs // max(1, n_null))
+    out = {"month": mo["month"], "core_size": int(core.size),
+           "median_residual_size": float(np.median(R.sum(1)))}
+    for tag, M in (("raw", Xn), ("res", R)):
+        j = jaccard_sample(M, n_pairs, rng)
+        jn = np.concatenate([
+            jaccard_sample(m152.curveball(M, rng=rng), per_null, rng)
+            for _ in range(n_null)])
+        out[f"{tag}_obs"] = surv(j)
+        out[f"{tag}_null"] = surv(jn)
+        out[f"{tag}_max"] = float(max(j.max(initial=0), jn.max(initial=0)))
+    return out
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--data", required=True)
-    p.add_argument("--month", default="2022-12")
+    p.add_argument("--months", default="2020-06:2024-12",
+                   help="all months are pooled; no single month is privileged")
     p.add_argument("--theta", type=float, default=0.9)
     p.add_argument("--n-null", type=int, default=5)
-    p.add_argument("--n-pairs", type=int, default=40000)
+    p.add_argument("--n-pairs", type=int, default=20000)
     p.add_argument("--json", default=None, help="results_152/horizontal.json")
     p.add_argument("--out", default="figures")
     a = p.parse_args()
@@ -71,65 +109,62 @@ def main():
     m152 = load_mod(here, "152_horizontal_structure.py")
     rng = np.random.default_rng(0)
 
-    months = m150.load_months(a.data, month_range=f"{a.month}:{a.month}",
-                              top=500)
+    months = m150.load_months(a.data, month_range=a.months, top=500)
     if not months:
-        raise SystemExit(f"month {a.month} not found")
-    mo = months[0]
-    V = 1 + max(max(s) for s in mo["sets"] if s)
+        raise SystemExit("no months loaded")
 
-    X = np.zeros((len(mo["sets"]), V), dtype=bool)
-    for i, s in enumerate(mo["sets"]):
-        if s:
-            X[i, list(s)] = True
-    prev = X.mean(0)
-    core = np.flatnonzero(prev >= a.theta)
-    non_core = np.flatnonzero((prev < a.theta) & (prev > 0))
-    R = X[:, non_core]
-    R = R[R.sum(1) > 0]
+    grid = np.linspace(0, 1, 201)
+    curves = []
+    for mo in months:
+        c = month_curves(mo, a.theta, a.n_null, a.n_pairs, grid, rng, m152)
+        if c:
+            curves.append(c)
+            print(f"  {c['month']}  core={c['core_size']:>4}  "
+                  f"resid_size={c['median_residual_size']:.1f}", flush=True)
+    if not curves:
+        raise SystemExit("no usable months")
+    print(f"pooled over {len(curves)} months")
 
     fig, ax = plt.subplots(1, 3, figsize=(15, 4.4))
-    bins = np.linspace(0, 1, 41)
 
-    # ---- A: before core removal -------------------------------------------
-    Xn = X[:, prev > 0]
-    Xn = Xn[Xn.sum(1) > 0]
-    j_raw = jaccard_sample(Xn, a.n_pairs, rng)
-    j_raw_null = np.concatenate([
-        jaccard_sample(m152.curveball(Xn, rng=rng), a.n_pairs // a.n_null, rng)
-        for _ in range(a.n_null)])
-    ax[0].hist(j_raw, bins=bins, density=True, alpha=.6, color=C_REAL,
-               label="observed")
-    ax[0].hist(j_raw_null, bins=bins, density=True, alpha=.6, color=C_NULL,
-               label="null (margins fixed)")
-    ax[0].set_xlabel("Jaccard between two mutation sets")
-    ax[0].set_ylabel("density")
-    ax[0].set_title(f"A. All mutations ({a.month})\n"
-                    f"shared core inflates both")
-    ax[0].legend(fontsize=8)
+    def panel(axis, tag, title, xlabel):
+        """Faint per-month curves behind the pooled mean of both arms."""
+        for c in curves:
+            axis.plot(grid, c[f"{tag}_obs"], color=C_REAL, lw=.4, alpha=.18)
+            axis.plot(grid, c[f"{tag}_null"], color=C_NULL, lw=.4, alpha=.18)
+        obs = np.nanmean([c[f"{tag}_obs"] for c in curves], axis=0)
+        nul = np.nanmean([c[f"{tag}_null"] for c in curves], axis=0)
+        axis.plot(grid, obs, color=C_REAL, lw=2.4, label="observed (pooled)")
+        axis.plot(grid, nul, color=C_NULL, lw=2.4, label="null (margins fixed)")
+        axis.set_yscale("log")
+        xmax = min(1.0, max(c[f"{tag}_max"] for c in curves) * 1.1)
+        axis.set_xlim(0, xmax)
+        axis.set_xlabel(xlabel)
+        axis.set_ylabel("fraction of variant pairs above x")
+        axis.set_title(title)
+        axis.legend(fontsize=8, loc="lower left")
+        return obs, nul, xmax
 
-    # ---- B: after core removal, log y -------------------------------------
-    j_res = jaccard_sample(R, a.n_pairs, rng)
-    j_res_null = np.concatenate([
-        jaccard_sample(m152.curveball(R, rng=rng), a.n_pairs // a.n_null, rng)
-        for _ in range(a.n_null)])
-    ax[1].hist(j_res, bins=bins, density=True, alpha=.6, color=C_REAL,
-               label="observed")
-    ax[1].hist(j_res_null, bins=bins, density=True, alpha=.6, color=C_NULL,
-               label="null (margins fixed)")
-    ax[1].axvline(0.15, color="k", ls=":", lw=1)
-    ax[1].set_yscale("log")
-    ax[1].set_xlabel("Jaccard after removing the shared core")
-    ax[1].set_ylabel("density (log)")
-    tail_r = (j_res > 0.15).mean()
-    tail_n = (j_res_null > 0.15).mean()
-    ratio = tail_r / tail_n if tail_n > 0 else float("inf")
-    ax[1].set_title(f"B. Core removed: right tail is the claim\n"
-                    f"pairs above 0.15  {tail_r:.3f} vs {tail_n:.3f} "
-                    f"({ratio:.1f}x)")
-    ax[1].legend(fontsize=8)
+    panel(ax[0], "raw",
+          "A. All mutations\ncurves coincide: similarity is the shared core",
+          "Jaccard between two variants, x")
 
-    # ---- C: tail ratio over time ------------------------------------------
+    obs, nul, xmax = panel(
+        ax[1], "res",
+        "B. Core removed\ngap between the curves is the structure",
+        "Jaccard after removing the shared core, x")
+
+    ins = ax[1].inset_axes([0.58, 0.62, 0.38, 0.33])
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio_curve = np.where(nul > 0, obs / nul, np.nan)
+    ins.plot(grid, ratio_curve, color="k", lw=1)
+    ins.axhline(1, color="grey", ls="--", lw=.8)
+    ins.set_yscale("log")
+    ins.set_xlim(0, xmax)
+    ins.set_title("observed / null", fontsize=7)
+    ins.tick_params(labelsize=6)
+
+    # ---- C: structure over time -------------------------------------------
     if a.json and os.path.exists(a.json):
         d = json.load(open(a.json))
         key = str(a.theta) if str(a.theta) in d else sorted(d)[0]
@@ -152,13 +187,15 @@ def main():
         ax[2].set_axis_off()
 
     fig.tight_layout()
-    out = os.path.join(a.out, f"horizontal_{a.month}.png")
+    out = os.path.join(a.out, "horizontal_pooled.png")
     fig.savefig(out, dpi=160)
     print(f"wrote {out}")
-    print(f"\ncore size {core.size}, non-core {non_core.size}, "
-          f"sets {R.shape[0]}")
-    print(f"pairs above 0.15 after core removal: observed {tail_r:.4f}, "
-          f"null {tail_n:.4f}, ratio {ratio:.1f}x")
+
+    for x in (0.05, 0.10, 0.15, 0.20, 0.30):
+        i = int(np.argmin(np.abs(grid - x)))
+        r = obs[i] / nul[i] if nul[i] > 0 else float("inf")
+        print(f"  pairs above {x:.2f}: observed {obs[i]:.4f}  "
+              f"null {nul[i]:.4f}  ratio {r:.1f}x")
 
 
 if __name__ == "__main__":
