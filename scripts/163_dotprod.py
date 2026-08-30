@@ -441,16 +441,40 @@ class TransitionModel(nn.Module):
     def predict(self, circ_mass, t_now, dt):
         """Full predicted distribution at T+h.
 
-        Support: existing variants (n_circ) + one-hop additions (n_circ * V).
-        Budget b splits mass between existing and new.
+        LOCAL normalisation per background, then weighted by background mass.
+
+        The global softmax over n_circ * V ~ 1M terms was the failure:
+        every entry gets probability ~1e-6, so the gradient from any one
+        correct entry is diluted by a factor of 1M. The model never moves.
+
+        Instead: for each background B, softmax over its V neighbours
+        independently, giving a local distribution over "which mutation
+        joins B." Then the probability of a new variant B+m is:
+
+            p(B+m) = mass(B) * p(m | B) * b
+
+        This is a mixture of local distributions, weighted by background mass
+        and the budget b. Gradient per correct entry is now ~1/V instead of
+        ~1/(n*V). The normalisation is still principled: each background
+        contributes proportionally to its mass.
         """
         logit_exist, scores, circ, mass = self.score_all_additions(
             circ_mass, t_now, dt)
         b = torch.sigmoid(self.budget_logit(dt)).clamp(1e-6, 1 - 1e-6)
+
+        # existing: weighted by current mass, then scaled by (1-b)
         lp_exist = torch.log_softmax(logit_exist, dim=0) + torch.log1p(-b)
-        flat = scores.reshape(-1)                          # (n*V,)
-        lp_new = torch.log_softmax(flat, dim=0) + torch.log(b)
-        logp = torch.cat([lp_exist, lp_new])
+
+        # new: local softmax per background, weighted by background mass
+        lp_local = torch.log_softmax(scores, dim=1)       # (n, V)
+        log_mass = torch.log(mass.clamp_min(1e-9))        # (n,)
+        # p(B+m) = b * mass(B) * p(m|B); in log space:
+        lp_new = lp_local + log_mass.unsqueeze(1) + torch.log(b)
+        # normalise the new-variant part so it sums to b
+        lp_new_flat = lp_new.reshape(-1)
+        lp_new_flat = lp_new_flat - torch.logsumexp(lp_new_flat, 0)                       + torch.log(b)
+
+        logp = torch.cat([lp_exist, lp_new_flat])
         return logp, circ, scores.shape
 
 
@@ -593,8 +617,27 @@ def run(a):
     opt = torch.optim.Adam(model.parameters(), lr=a.lr)
 
     def circ_at(t):
-        return sorted(mass_map.get(t, {}).items(),
-                      key=lambda kv: -kv[1])[:a.pop_support]
+        """Aggregate mass over the last --window days, cap at pop_support.
+
+        Using only today's circulating variants misses parents that have
+        declined but whose descendants are appearing now. A rolling window
+        keeps those parents in scope without changing the radius or the matmul
+        size -- the aggregated set is still capped at pop_support.
+        """
+        agg = defaultdict(float)
+        for u in all_days:
+            if u > t:
+                break
+            if t - u > a.window:
+                continue
+            for v, w in mass_map.get(u, {}).items():
+                agg[v] += w
+        if not agg:
+            return []
+        tot = sum(agg.values()) or 1.0
+        ranked = sorted(agg.items(), key=lambda kv: -kv[1])[:a.pop_support]
+        s = sum(w for _, w in ranked) or 1.0
+        return [(v, w / s) for v, w in ranked]
 
     def target(t, h):
         nxt = [u for u in all_days if u >= t + 30 * h]
@@ -744,6 +787,8 @@ def main():
     p.add_argument("--epochs", type=int, default=3)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--window", type=int, default=30,
+                   help="days of history to aggregate for circulating variants")
     p.add_argument("--out", default=None)
     a = p.parse_args()
     run(a)
