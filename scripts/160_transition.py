@@ -1035,10 +1035,13 @@ def run(a):
                 opt.step()
                 losses.append(float(total.detach()))
             model.observe([s for s, _ in by_day[t]], float(t))
-        b = np.mean([i["budget"] for i in info]) if info else float("nan")
-        miss = np.mean([i["n_missed"] for i in info]) if info else float("nan")
+        f = lambda k: (np.mean([i[k] for i in info]) if info else float("nan"))
         print(f"epoch {ep+1}/{a.epochs}  loss {np.mean(losses):.4f}  "
-              f"budget {b:.3f}  missed/step {miss:.1f}", flush=True)
+              f"budget {f('budget'):.3f}  "
+              f"target {f('n_target'):.0f} vars "
+              f"({f('target_mass'):.2f} mass)  "
+              f"missed/step {f('n_missed'):.1f}/{f('n_target'):.0f}",
+              flush=True)
 
     # ---------------- evaluation: rolling origins -----------------------
     origins = test_days[::max(1, len(test_days) // a.n_origins)][:a.n_origins]
@@ -1338,9 +1341,26 @@ def transition_loss(model, circ_mass, obs_mass, t, dt, rng, a, train=True,
     circ = [v for v, _ in circ_mass]
     if len(circ) < 2 or not obs_mass:
         return (None, None) if not return_parts else (None, None, None)
+
+    # Restrict the target to the variants that carry the mass.
+    # A real day has thousands of distinct variants, most seen once, so
+    # scoring against all of them makes the loss a contest over singletons --
+    # much of which is sequencing noise -- and no generator can propose them
+    # all. The forecasting question is which variants will DOMINATE, so the
+    # target is the heaviest ones covering obs_frac of the observed mass,
+    # capped at obs_top. Reported metrics still use the full population.
+    ranked = sorted(obs_mass.items(), key=lambda kv: -kv[1])
+    tot_all = sum(v for _, v in ranked) or 1.0
+    keep, run = [], 0.0
+    for v, w in ranked:
+        keep.append((v, w)); run += w / tot_all
+        if run >= a.obs_frac or len(keep) >= a.obs_top:
+            break
+    obs_fit = dict(keep)
+
     mass = torch.tensor([m for _, m in circ_mass], dtype=torch.float32)
     u, bg, zB, table, pairs, n_missed = build_support(
-        model, circ_mass, t, dt, rng, a, obs_mass, train)
+        model, circ_mass, t, dt, rng, a, obs_fit, train)
 
     logm = torch.log(mass.clamp_min(1e-9))
     z = model.variant_repr(circ, float(t))
@@ -1382,9 +1402,10 @@ def transition_loss(model, circ_mass, obs_mass, t, dt, rng, a, train=True,
         logp, allv, mix = lp_upd, circ, torch.tensor(0.5)
 
     ix = {v: i for i, v in enumerate(allv)}
-    tot = sum(obs_mass.values()) or 1.0
+    tgt = obs_fit if train else obs_mass
+    tot = sum(tgt.values()) or 1.0
     I, W = [], []
-    for v, m in obs_mass.items():
+    for v, m in tgt.items():
         j = ix.get(v)
         if j is not None:
             I.append(j); W.append(m / tot)
@@ -1394,6 +1415,7 @@ def transition_loss(model, circ_mass, obs_mass, t, dt, rng, a, train=True,
     Ww = torch.tensor(W, dtype=torch.float32)
     loss = -(Ww * logp[Iw]).sum() / Ww.sum().clamp_min(1e-9)
     meta = {"n_support": len(allv), "n_missed": n_missed,
+            "n_target": len(obs_fit), "target_mass": run,
             "budget": float(torch.sigmoid(model.budget_logit(dt)).detach()),
             "mix_anchored": float(mix.detach())}
     if return_parts:
@@ -1642,6 +1664,12 @@ def main():
                    help="candidates sampled from the anchored path")
     p.add_argument("--n-free", type=int, default=100, dest="n_free",
                    help="candidates sampled from the unanchored path")
+    p.add_argument("--obs-frac", type=float, default=0.8, dest="obs_frac",
+                   help="fit against the heaviest observed variants covering "
+                        "this share of mass; the rest is a singleton tail no "
+                        "generator can enumerate")
+    p.add_argument("--obs-top", type=int, default=200, dest="obs_top",
+                   help="hard cap on the number of target variants")
     p.add_argument("--gen-weight", type=float, default=1.0, dest="gen_weight",
                    help="weight of the generation log-probability in a "
                         "candidate's score")
