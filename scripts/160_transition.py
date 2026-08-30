@@ -1012,7 +1012,7 @@ def run(a):
         return mass_map.get(nxt[0], {}) if nxt else {}
 
     for ep in range(a.epochs):
-        losses, info = [], []
+        losses, info, n_bad = [], [], 0
         step_days = train_days[::max(1, a.stride)]
         for t in step_days:
             model.flush_pending(float(t))
@@ -1029,19 +1029,33 @@ def run(a):
                 if l is not None:
                     total = l if total is None else total + l
                     info.append(meta)
+            if total is not None and not torch.isfinite(total):
+                n_bad += 1
+                total = None
             if total is not None:
                 opt.zero_grad(); total.backward()
+                bad = [n_ for n_, p_ in model.named_parameters()
+                       if p_.grad is not None
+                       and not torch.isfinite(p_.grad).all()]
+                if bad:
+                    n_bad += 1
+                    opt.zero_grad()
+                    continue
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                 opt.step()
                 losses.append(float(total.detach()))
             model.observe([s for s, _ in by_day[t]], float(t))
-        f = lambda k: (np.mean([i[k] for i in info]) if info else float("nan"))
+        f = lambda k: (float(np.nanmean([i[k] for i in info]))
+                       if info else float("nan"))
         print(f"epoch {ep+1}/{a.epochs}  loss {np.mean(losses):.4f}  "
               f"budget {f('budget'):.3f}  "
               f"target {f('n_target'):.0f} vars "
               f"({f('target_mass'):.2f} mass)  "
               f"missed/step {f('n_missed'):.1f}/{f('n_target'):.0f}  "
-              f"aux {f('aux'):.3f} on {f('n_aux'):.0f}", flush=True)
+              f"aux {np.nanmean([i['aux'] for i in info]) if info else float('nan'):.3f}"
+              f" on {f('n_aux'):.0f}"
+              + (f"  [{n_bad} steps skipped: non-finite]" if n_bad else ""),
+              flush=True)
 
     # ---------------- evaluation: rolling origins -----------------------
     origins = test_days[::max(1, len(test_days) // a.n_origins)][:a.n_origins]
@@ -1387,16 +1401,20 @@ def transition_loss(model, circ_mass, obs_mass, t, dt, rng, a, train=True,
             flp, _ = model.gen.free_logp(u, dt, table)
             fv = torch.stack([flp[list(pairs[k][0])].sum() for k in free])
             gl = gl.index_copy(0, torch.tensor(free), fv)
+        # Clamp away from 0 and 1: a saturated gate makes -p + 1e-9 round to
+        # exactly -1.0 in float32, so log1p(-1.0) is -inf, which becomes nan in
+        # the loss and writes nan into every weight it touches.
         mix = torch.sigmoid(model.gen.mix(
-            torch.tensor([[float(dt)]], dtype=torch.float32)).squeeze())
+            torch.tensor([[float(dt)]], dtype=torch.float32)).squeeze()
+        ).clamp(1e-6, 1 - 1e-6)
         w_path = torch.where(
             torch.tensor([p[1] is not None for p in pairs]),
-            torch.log(mix + 1e-9), torch.log1p(-mix + 1e-9))
+            torch.log(mix), torch.log1p(-mix))
 
         sc = sc + a.gen_weight * (gl + w_path)
-        b = torch.sigmoid(model.budget_logit(dt))
-        logp = torch.cat([lp_upd + torch.log1p(-b + 1e-9),
-                          torch.log_softmax(sc, dim=0) + torch.log(b + 1e-9)])
+        b = torch.sigmoid(model.budget_logit(dt)).clamp(1e-6, 1 - 1e-6)
+        logp = torch.cat([lp_upd + torch.log1p(-b),
+                          torch.log_softmax(sc, dim=0) + torch.log(b)])
         allv = circ + cand
     else:
         logp, allv, mix = lp_upd, circ, torch.tensor(0.5)
@@ -1449,8 +1467,17 @@ def transition_loss(model, circ_mass, obs_mass, t, dt, rng, a, train=True,
             z_sup = model.variant_repr(sup_b, float(t))
             lp_sup = model.gen.anchored_logp(z_sup, u, dt, table, sup_a)
             Wg = torch.tensor(sup_w, dtype=torch.float32)
-            aux = -(Wg * lp_sup).sum() / Wg.sum().clamp_min(1e-9)
-            loss = loss + a.aux_weight * aux
+            ok = torch.isfinite(lp_sup) & torch.isfinite(Wg) & (Wg > 0)
+            # A single non-finite term writes nan into every weight it touches,
+            # after which nothing in the model learns again -- which is exactly
+            # what a frozen missed/step looks like. Drop the bad rows instead.
+            if bool(ok.any()):
+                lp_sup, Wg = lp_sup[ok], Wg[ok]
+                cand_aux = -(Wg * lp_sup).sum() / Wg.sum().clamp_min(1e-9)
+                if torch.isfinite(cand_aux):
+                    aux = cand_aux
+                    loss = loss + a.aux_weight * aux
+                sup_i = sup_i[:int(ok.sum())]
 
     meta = {"n_support": len(allv), "n_missed": n_missed,
             "n_aux": (len(sup_i) if (train and a.aux_weight > 0
