@@ -97,7 +97,7 @@ def parse_posres(vocab_path, V):
     if vocab_path and os.path.exists(vocab_path):
         with open(vocab_path) as f:
             for i, line in enumerate(f):
-                p = line.rstrip("\n").split("\t")
+                p = line.rstrip("\n").split()
                 if len(p) >= 2 and p[0].isdigit():
                     names[int(p[0])] = p[1]
                 else:
