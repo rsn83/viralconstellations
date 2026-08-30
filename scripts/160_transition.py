@@ -62,6 +62,7 @@ USAGE
 import argparse
 import json
 import math
+import math
 import os
 import random
 import re
@@ -382,40 +383,118 @@ class PopulationEncoder(nn.Module):
         return self.out(torch.nan_to_num(u, nan=0.0))
 
 
-class Proposer(nn.Module):
-    """p(add mutation m | background B, population state u_t, horizon h).
+class Generator(nn.Module):
+    """Fully learned candidate generation. No enumeration, no fixed radius.
 
-    This replaces 157's random enumeration, which had NO parameters and so
-    could never improve, and replaces the reference method's per-node
-    independent Bernoulli adjacency, whose assembly step loses joint structure
-    ({A,B}+{C,D} and {A,C}+{B,D} give similar adjacency).
+    Three heads, all trained by the forecasting loss because every candidate's
+    score contains the log-probabilities used to generate it:
 
-    One normalised distribution over V mutations, conditioned on the whole
-    background rather than on single nodes. Sampling it proposes candidates;
-    evaluating it scores them -- the same parameters do both, which is what
-    lets the forecasting loss train the generator.
+      size      p(k | B, u, dt)              how many mutations to add
+      add       p(m | B, added, u, dt)       autoregressive over the k additions
+      free      p(m | u, dt)                 unanchored, population-wide
+
+    The anchored path (size + add) preserves the joint structure of a
+    background: a 26-mutation combination is carried, not reconstructed. The
+    free path can assemble combinations that have never co-occurred, so reach
+    is not capped by any radius -- which is what the anchored path alone cannot
+    do, and what matters once the population has moved far from the origin.
+
+    Which path earns mass is decided by the loss, not by a flag: both feed the
+    same support and the same softmax. mix_logit sets the split and is
+    conditioned on dt, since the anchored path should dominate at short
+    horizons and lose ground as the population drifts.
     """
 
-    def __init__(self, d, V, hidden=None):
+    def __init__(self, d, V, max_add=4):
         super().__init__()
-        h = hidden or 2 * d
-        self.net = nn.Sequential(
-            nn.Linear(3 * d + 1, h), nn.Tanh(), nn.Linear(h, d))
+        self.V, self.max_add = V, max_add
+        cin = 3 * d + 1
+        self.size_head = nn.Sequential(
+            nn.Linear(cin, 2 * d), nn.Tanh(), nn.Linear(2 * d, max_add))
+        self.add_head = nn.Sequential(
+            nn.Linear(cin + d, 2 * d), nn.Tanh(), nn.Linear(2 * d, d))
+        self.free_head = nn.Sequential(
+            nn.Linear(d + 1, 2 * d), nn.Tanh(), nn.Linear(2 * d, d))
+        self.free_size = nn.Sequential(
+            nn.Linear(d + 1, 2 * d), nn.Tanh(), nn.Linear(2 * d, max_add))
         self.mut_bias = nn.Parameter(torch.zeros(V))
+        self.mix = nn.Sequential(nn.Linear(1, 8), nn.Tanh(), nn.Linear(8, 1))
+        nn.init.zeros_(self.mix[-1].weight); nn.init.zeros_(self.mix[-1].bias)
 
-    def logits(self, zB, u, dt, mut_table):
-        """zB (n, d) backgrounds, u (d,), mut_table (V, d) -> (n, V)."""
+    def _ctx(self, zB, u, dt):
         n = zB.shape[0]
-        feat = torch.cat([zB, u.unsqueeze(0).expand(n, -1),
+        return torch.cat([zB, u.unsqueeze(0).expand(n, -1),
                           zB * u.unsqueeze(0),
                           torch.full((n, 1), float(dt))], dim=-1)
-        q = self.net(feat)                              # (n, d)
-        return q @ mut_table.T + self.mut_bias.unsqueeze(0)
 
-    def log_prob(self, zB, u, dt, mut_table, m_idx):
-        """log p(m | B) for one mutation per background."""
-        lp = torch.log_softmax(self.logits(zB, u, dt, mut_table), dim=-1)
-        return lp.gather(1, m_idx.unsqueeze(-1)).squeeze(-1)
+    def size_logp(self, zB, u, dt):
+        return torch.log_softmax(self.size_head(self._ctx(zB, u, dt)), dim=-1)
+
+    def add_logp(self, zB, u, dt, added, table):
+        """log p(next mutation | background, mutations added so far)."""
+        q = self.add_head(torch.cat([self._ctx(zB, u, dt), added], dim=-1))
+        return torch.log_softmax(q @ table.T + self.mut_bias.unsqueeze(0),
+                                 dim=-1)
+
+    def free_logp(self, u, dt, table):
+        c = torch.cat([u, torch.tensor([float(dt)])]).unsqueeze(0)
+        q = self.free_head(c)
+        return (torch.log_softmax(q @ table.T + self.mut_bias.unsqueeze(0),
+                                  dim=-1).squeeze(0),
+                torch.log_softmax(self.free_size(c), dim=-1).squeeze(0))
+
+    def anchored_logp(self, zB, u, dt, table, adds):
+        """Exact log-probability of adding the SET `adds` to each background.
+
+        Order-invariant: a set of k additions can be generated in k! orders, so
+        the log-probability sums over the autoregressive chain and adds log k!.
+        Without that term the model would prefer small sets for a reason that
+        has nothing to do with the data.
+        """
+        n = zB.shape[0]
+        slp = self.size_logp(zB, u, dt)
+        out = torch.zeros(n)
+        for i in range(n):
+            ms = sorted(adds[i])
+            k = len(ms)
+            if k == 0 or k > self.max_add:
+                out[i] = -30.0
+                continue
+            lp = slp[i, k - 1]
+            added = torch.zeros(1, table.shape[1])
+            for j, mm in enumerate(ms):
+                step = self.add_logp(zB[i:i + 1], u, dt, added, table)
+                lp = lp + step[0, mm]
+                added = added + table[mm].unsqueeze(0) / max(k, 1)
+            out[i] = lp + float(np.log(math.factorial(k)))
+        return out
+
+    def sample(self, zB, backgrounds, u, dt, table, n_anchor, n_free, rng):
+        """Draw candidates from both paths. Used only at generation time."""
+        cands = []
+        with torch.no_grad():
+            slp = self.size_logp(zB, u, dt).exp()
+            for _ in range(n_anchor):
+                i = rng.randrange(len(backgrounds))
+                k = int(torch.multinomial(slp[i], 1)) + 1
+                cur, added = set(backgrounds[i]), torch.zeros(1, table.shape[1])
+                for _ in range(k):
+                    p = self.add_logp(zB[i:i + 1], u, dt, added, table).exp()
+                    m = int(torch.multinomial(p[0], 1))
+                    cur.add(m)
+                    added = added + table[m].unsqueeze(0) / k
+                cands.append((frozenset(cur), i, frozenset(cur) - backgrounds[i]))
+            if n_free:
+                flp, fsz = self.free_logp(u, dt, table)
+                fp, sp = flp.exp(), fsz.exp()
+                base_sz = int(np.median([len(b) for b in backgrounds])) \
+                    if backgrounds else 20
+                for _ in range(n_free):
+                    k = base_sz + int(torch.multinomial(sp, 1))
+                    idx = torch.multinomial(fp, min(k, (fp > 0).sum().item()),
+                                            replacement=False)
+                    cands.append((frozenset(int(x) for x in idx), None, None))
+        return cands
 
 
 class VariantTPP(nn.Module):
@@ -441,7 +520,7 @@ class VariantTPP(nn.Module):
         self.b_v = nn.Parameter(torch.zeros(d))
         self.scorer = HyperSAGNNScorer(d, heads)
         self.pop_enc = PopulationEncoder(d, heads, layers=1)
-        self.proposer = Proposer(d, V)
+        self.gen = Generator(d, V, max_add=4)
         # horizon-dependent mass budget: 159 showed the share of future mass on
         # variants absent at the origin rises from ~0.5 at 3 months to ~0.9 at
         # 6, so a single scalar cannot be right at every horizon
@@ -615,20 +694,6 @@ class VariantTPP(nn.Module):
         return self.new_bias + self.budget(
             torch.tensor([[float(dt)]], dtype=torch.float32)).squeeze()
 
-    def propose(self, backgrounds, u, dt, t_now, k=8, exclude_self=True):
-        """Top-k mutations to add to each background, with their log-probs."""
-        zB = self.variant_repr(backgrounds, float(t_now))
-        table = self.mutation_table(float(t_now))
-        lg = torch.log_softmax(
-            self.proposer.logits(zB, u, dt, table), dim=-1)      # (n, V)
-        if exclude_self:
-            for i, b in enumerate(backgrounds):
-                idx = [m for m in b if m < lg.shape[1]]
-                if idx:
-                    lg[i, torch.tensor(idx)] = -1e9
-        val, idx = torch.topk(lg, k=min(k, lg.shape[1]), dim=-1)
-        return idx, val
-
     def variant_repr(self, variants, t_now, max_k=64):
         """Pool member representations into one vector per variant."""
         Vrep = self.node_repr_cached(t_now)
@@ -671,42 +736,6 @@ class VariantTPP(nn.Module):
 
 # ======================================================================
 # CANDIDATE GENERATION  (adaptation 1)
-# ======================================================================
-
-def generate_candidates(circulating, active_mutations, radius=1,
-                        max_cand=4000, rng=None, exclude=None):
-    """Circulating variants perturbed by a few currently active mutations.
-
-    Script 150 measured that a newly appearing variant is a median of 1
-    mutation from the nearest circulating one. So the true variant is almost
-    always inside this set, and no learned generator is needed -- unlike their
-    adjacency predictor, whose recall they report as the bottleneck.
-    """
-    rng = rng or random.Random(0)
-    exclude = exclude or set()
-    out = set()
-    circ = list(circulating)
-    acts = list(active_mutations)
-    if not circ or not acts:
-        return []
-    while len(out) < max_cand:
-        base = circ[rng.randrange(len(circ))]
-        cand = set(base)
-        for _ in range(rng.randint(1, radius)):
-            if cand and rng.random() < 0.35:
-                cand.discard(rng.choice(list(cand)))
-            else:
-                cand.add(acts[rng.randrange(len(acts))])
-        fs = frozenset(cand)
-        if fs and fs not in exclude:
-            out.add(fs)
-        if len(out) >= max_cand:
-            break
-    return list(out)
-
-
-# ======================================================================
-# BASELINES  (adaptation: proximity, which they do not run)
 # ======================================================================
 
 class CirculatingIndex:
@@ -981,34 +1010,20 @@ def run(a):
             if not obs:
                 continue
             with torch.no_grad():
-                u, bg, pairs, _ = build_support(
-                    model, cm, T, float(30 * h), rng, a, None, train=False)
-                circ = [v for v, _ in cm]
-                mass = torch.tensor([m for _, m in cm], dtype=torch.float32)
-                logm = torch.log(mass.clamp_min(1e-9))
-                z = model.variant_repr(circ, float(T))
-                ft = torch.cat([z, logm.unsqueeze(-1),
-                                torch.full((len(circ), 1), float(30 * h))],
-                               dim=-1)
-                lp_upd = torch.log_softmax(
-                    logm + 30 * h * model.fitness(ft).squeeze(-1), dim=0)
-                if pairs:
-                    cand = [p[0] for p in pairs]
-                    sc = model.score_variants(cand, float(T))
-                    b = torch.sigmoid(model.budget_logit(float(30 * h)))
-                    logp = torch.cat([lp_upd + torch.log1p(-b + 1e-9),
-                                      torch.log_softmax(sc, 0)
-                                      + torch.log(b + 1e-9)])
-                    allv = circ + cand
-                else:
-                    logp, allv = lp_upd, circ
-                r = {"origin": days[T], "h": h}
-                r["model"] = score_population(logp.numpy(), allv,
-                                              len(circ), obs)
-                for k, lp in population_baselines(
-                        cm, [p[0] for p in pairs], float(30 * h)).items():
-                    r[k] = score_population(lp, allv, len(circ), obs)
-                rows.append(r)
+                _, meta, parts = transition_loss(
+                    model, cm, obs, T, float(30 * h), rng, a,
+                    train=False, return_parts=True)
+            if parts is None:
+                continue
+            logp, allv, n_c = parts
+            r = {"origin": days[T], "h": h,
+                 "budget": meta["budget"], "mix": meta["mix_anchored"]}
+            r["model"] = score_population(logp.numpy(), allv, n_c, obs)
+            for k, lp in population_baselines(
+                    cm, allv[n_c:], float(30 * h)).items():
+                r[k] = score_population(lp, allv, n_c, obs)
+            rows.append(r)
+
     report_forecast(rows)
     if a.out:
         os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
@@ -1212,62 +1227,45 @@ def population_loss(model, circ_mass, candidates, obs_mass,
 
 def build_support(model, circ_mass, t, dt, rng, a, obs_mass=None,
                   train=True):
-    """Support for the transition: circulating + proposed + (training) observed.
+    """Support for the transition: circulating + generated + (training) observed.
 
-    Two proposal sources:
-      copy  -- background plus a random active mutation. No parameters, a
-               safety net while the proposer is untrained, and strong at short
-               horizons where most future mass sits within one mutation.
-      MADE  -- background plus a mutation drawn from p(m | B, u_t, dt). Learned.
+    Candidates come only from the learned generator -- no enumeration and no
+    fixed radius. Both of its paths are sampled here and scored below with the
+    same parameters, so the forecasting loss trains generation directly.
 
-    During TRAINING the observed variants are added to the support even when
-    the proposer missed them. That is the only way the generator can learn what
-    it is failing to propose: their score contains log p(m | B), so a missed
-    variant produces a large loss term whose gradient raises that probability.
-
-    At EVALUATION they are excluded, so the reported number is honest about
-    what the model would actually have produced.
+    During TRAINING the observed variants are added even when the generator
+    missed them: their score contains the generator's own log-probability, so a
+    missed variant produces a large loss term whose gradient raises the
+    probability of generating it. At EVALUATION they are excluded, so the
+    reported number reflects what the model would actually have produced.
     """
     circ = [v for v, _ in circ_mass]
-    circ_set = set(circ)
-    u = model.pop_state(circ, torch.tensor([m for _, m in circ_mass],
-                                           dtype=torch.float32), float(t))
-
-    # learned proposals
+    mass = torch.tensor([m for _, m in circ_mass], dtype=torch.float32)
+    u = model.pop_state(circ, mass, float(t))
     n_bg = min(len(circ), a.n_backgrounds)
     bg = circ[:n_bg]
-    idx, _ = model.propose(bg, u, dt, t, k=a.propose_k)
-    pairs = []                       # (variant, background_index, mutation)
-    seen = set(circ_set)
-    for i in range(n_bg):
-        for j in range(idx.shape[1]):
-            m = int(idx[i, j])
-            v = frozenset(set(bg[i]) | {m})
-            if v not in seen:
-                seen.add(v); pairs.append((v, i, m))
+    zB = model.variant_repr(bg, float(t))
+    table = model.node_repr_cached(float(t))
 
-    # copy path
-    if not a.no_copy:
-        acts = sorted({m for v in circ for m in v})
-        for v in generate_candidates(circ, acts, radius=a.radius,
-                                     max_cand=a.n_copy, rng=rng,
-                                     exclude=seen):
-            if v not in seen:
-                seen.add(v); pairs.append((v, None, None))
+    seen = set(circ)
+    pairs = []                      # (variant, background index, added set)
+    for v, bi, adds in model.gen.sample(zB, bg, u, dt, table,
+                                        a.n_anchor, a.n_free, rng):
+        if v and v not in seen:
+            seen.add(v); pairs.append((v, bi, adds))
 
-    # observed variants the generator missed (training only)
     n_missed = 0
     if train and obs_mass:
         for v in obs_mass:
             if v not in seen:
                 seen.add(v)
-                b_i, m = _attach(v, bg)
-                pairs.append((v, b_i, m)); n_missed += 1
-    return u, bg, pairs, n_missed
+                bi, adds = _attach(v, bg)
+                pairs.append((v, bi, adds)); n_missed += 1
+    return u, bg, zB, table, pairs, n_missed
 
 
 def _attach(v, backgrounds):
-    """Nearest background and the single mutation that extends it, if any."""
+    """Nearest background and the mutations that extend it, if it is a superset."""
     best, bi = None, None
     for i, b in enumerate(backgrounds):
         d = len(v ^ b)
@@ -1276,26 +1274,26 @@ def _attach(v, backgrounds):
     if bi is None:
         return None, None
     extra = v - backgrounds[bi]
-    if len(extra) == 1:
-        return bi, next(iter(extra))
+    if extra and not (backgrounds[bi] - v):
+        return bi, extra
     return None, None
 
 
-def transition_loss(model, circ_mass, obs_mass, t, dt, rng, a, train=True):
+def transition_loss(model, circ_mass, obs_mass, t, dt, rng, a, train=True,
+                    return_parts=False):
     """Cross-entropy of the observed population under the predicted one.
 
     Persistence is the zero-initialised default: budget -> 0 and fitness = 0
     reproduce it exactly, so training can only move away from persistence where
-    that reduces the loss.
+    that lowers the loss on observed transitions.
     """
     circ = [v for v, _ in circ_mass]
     if len(circ) < 2 or not obs_mass:
-        return None, None
+        return (None, None) if not return_parts else (None, None, None)
     mass = torch.tensor([m for _, m in circ_mass], dtype=torch.float32)
-    u, bg, pairs, n_missed = build_support(
+    u, bg, zB, table, pairs, n_missed = build_support(
         model, circ_mass, t, dt, rng, a, obs_mass, train)
 
-    # existing variants: log mass + dt * fitness
     logm = torch.log(mass.clamp_min(1e-9))
     z = model.variant_repr(circ, float(t))
     feat = torch.cat([z, logm.unsqueeze(-1),
@@ -1303,27 +1301,37 @@ def transition_loss(model, circ_mass, obs_mass, t, dt, rng, a, train=True):
     fit = model.fitness(feat).squeeze(-1)
     lp_upd = torch.log_softmax(logm + dt * fit, dim=0)
 
-    if not pairs:
-        allv, logp, n_c = circ, lp_upd, len(circ)
-    else:
+    if pairs:
         cand = [p[0] for p in pairs]
         sc = model.score_variants(cand, float(t))
-        # the proposer's own log-probability enters the score, so the
-        # forecasting loss backpropagates into the generator
-        zB = model.variant_repr(bg, float(t))
-        table = model.mutation_table(float(t))
-        plp = torch.log_softmax(
-            model.proposer.logits(zB, u, dt, table), dim=-1)
-        add = torch.zeros(len(pairs))
-        for k, (_, bi, m) in enumerate(pairs):
-            if bi is not None and m is not None:
-                add = add.clone(); add[k] = plp[bi, m]
-        sc = sc + a.prop_weight * add
+
+        # generation log-probability enters the score, so the forecasting loss
+        # backpropagates into the generator itself
+        anch = [k for k, p in enumerate(pairs) if p[1] is not None]
+        gl = torch.zeros(len(pairs))
+        if anch:
+            sel = torch.tensor([pairs[k][1] for k in anch], dtype=torch.long)
+            lp_a = model.gen.anchored_logp(
+                zB[sel], u, dt, table, [pairs[k][2] for k in anch])
+            gl = gl.index_copy(0, torch.tensor(anch), lp_a)
+        free = [k for k, p in enumerate(pairs) if p[1] is None]
+        if free:
+            flp, _ = model.gen.free_logp(u, dt, table)
+            fv = torch.stack([flp[list(pairs[k][0])].sum() for k in free])
+            gl = gl.index_copy(0, torch.tensor(free), fv)
+        mix = torch.sigmoid(model.gen.mix(
+            torch.tensor([[float(dt)]], dtype=torch.float32)).squeeze())
+        w_path = torch.where(
+            torch.tensor([p[1] is not None for p in pairs]),
+            torch.log(mix + 1e-9), torch.log1p(-mix + 1e-9))
+
+        sc = sc + a.gen_weight * (gl + w_path)
         b = torch.sigmoid(model.budget_logit(dt))
-        lp_new = torch.log_softmax(sc, dim=0)
         logp = torch.cat([lp_upd + torch.log1p(-b + 1e-9),
-                          lp_new + torch.log(b + 1e-9)])
-        allv, n_c = circ + cand, len(circ)
+                          torch.log_softmax(sc, dim=0) + torch.log(b + 1e-9)])
+        allv = circ + cand
+    else:
+        logp, allv, mix = lp_upd, circ, torch.tensor(0.5)
 
     ix = {v: i for i, v in enumerate(allv)}
     tot = sum(obs_mass.values()) or 1.0
@@ -1333,14 +1341,16 @@ def transition_loss(model, circ_mass, obs_mass, t, dt, rng, a, train=True):
         if j is not None:
             I.append(j); W.append(m / tot)
     if not I:
-        return None, None
+        return (None, None) if not return_parts else (None, None, None)
     Iw = torch.tensor(I, dtype=torch.long)
     Ww = torch.tensor(W, dtype=torch.float32)
     loss = -(Ww * logp[Iw]).sum() / Ww.sum().clamp_min(1e-9)
-    return loss, {"n_support": len(allv), "n_missed": n_missed,
-                  "n_circ": n_c,
-                  "budget": float(torch.sigmoid(
-                      model.budget_logit(dt)).detach())}
+    meta = {"n_support": len(allv), "n_missed": n_missed,
+            "budget": float(torch.sigmoid(model.budget_logit(dt)).detach()),
+            "mix_anchored": float(mix.detach())}
+    if return_parts:
+        return loss, meta, (logp, allv, len(circ))
+    return loss, meta
 
 
 def population_baselines(circ_mass, candidates, dt):
@@ -1419,65 +1429,6 @@ def score_population(logp, allv, n_circ, obs_mass):
             "ce_new": ce_n / m_n if m_n > 0 else float("nan"),
             "mass_update": m_u, "mass_new": m_n, "coverage": m_cov,
             "overlap": overlap, "jaccard": jac}
-
-
-def forecast_eval(model, all_days, days, by_day, mass_map, a, rng):
-    """Rolling-origin forecast: from each origin, predict h months ahead.
-
-    This is the evaluation the field actually asks for -- given data up to T,
-    what does the population look like at T+3, T+6, T+12 months -- rather than
-    a ranking against sampled negatives.
-    """
-    n_train = int(len(all_days) * a.train_frac)
-    n_val = int(len(all_days) * a.val_frac)
-    test_days = all_days[n_train + n_val:]
-    if not test_days:
-        return []
-
-    origins = test_days[::max(1, len(test_days) // a.n_origins)][:a.n_origins]
-    rows = []
-    for T in origins:
-        # rebuild state up to the origin
-        model.reset_state()
-        last_seen, freq = {}, {}
-        circ = deque(maxlen=a.circ_max)
-        for t in all_days:
-            if t > T:
-                break
-            model.flush_pending(float(t))
-            model.observe([s for s, _ in by_day[t]], float(t))
-            for s, w in by_day[t]:
-                circ.append(s); last_seen[s] = t; freq[s] = w
-        cm = sorted(mass_map.get(T, {}).items(), key=lambda kv: -kv[1])
-        cm = cm[:a.pop_support]
-        if not cm:
-            continue
-        cands = generate_candidates(
-            [s for s, _ in cm], sorted({m for s, _ in cm for m in s}),
-            radius=a.radius, max_cand=a.pop_cand, rng=rng,
-            exclude={s for s, _ in cm})
-
-        for h in a.forecast_months:
-            dt = 30 * h
-            tgt = [u for u in all_days if u >= T + dt]
-            if not tgt:
-                continue
-            t_tgt = tgt[0]
-            obs = mass_map.get(t_tgt, {})
-            if not obs:
-                continue
-            got = predict_population(model, cm, cands, last_seen, freq,
-                                     T, float(dt), ident_feats)
-            if got is None:
-                continue
-            allv, logp, n_c = got
-            base = population_baselines(cm, cands, float(dt))
-            r = {"origin": days[T], "target": days[t_tgt], "h": h}
-            r["model"] = score_population(logp, allv, n_c, obs)
-            for k, lp in base.items():
-                r[k] = score_population(lp, allv, n_c, obs)
-            rows.append(r)
-    return rows
 
 
 def report_forecast(rows):
@@ -1636,20 +1587,16 @@ def main():
                    help="forecast horizons in months")
     p.add_argument("--pop-support", type=int, default=1000, dest="pop_support",
                    help="circulating variants kept, heaviest first")
-    p.add_argument("--n-backgrounds", type=int, default=300,
+    p.add_argument("--n-backgrounds", type=int, default=200,
                    dest="n_backgrounds",
-                   help="backgrounds the proposer extends")
-    p.add_argument("--propose-k", type=int, default=8, dest="propose_k",
-                   help="mutations proposed per background")
-    p.add_argument("--n-copy", type=int, default=500, dest="n_copy",
-                   help="unlearned copy-path candidates")
-    p.add_argument("--no-copy", action="store_true", dest="no_copy",
-                   help="learned proposals only -- the ablation that says "
-                        "whether the proposer beat enumeration")
-    p.add_argument("--radius", type=int, default=2)
-    p.add_argument("--prop-weight", type=float, default=1.0,
-                   dest="prop_weight",
-                   help="weight of log p(m|B) in a candidate's score")
+                   help="backgrounds the anchored path may extend")
+    p.add_argument("--n-anchor", type=int, default=400, dest="n_anchor",
+                   help="candidates sampled from the anchored path")
+    p.add_argument("--n-free", type=int, default=100, dest="n_free",
+                   help="candidates sampled from the unanchored path")
+    p.add_argument("--gen-weight", type=float, default=1.0, dest="gen_weight",
+                   help="weight of the generation log-probability in a "
+                        "candidate's score")
     p.add_argument("--stride", type=int, default=7,
                    help="train on every Nth day")
     p.add_argument("--train-frac", type=float, default=0.7, dest="train_frac")
