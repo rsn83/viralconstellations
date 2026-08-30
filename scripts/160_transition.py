@@ -446,53 +446,101 @@ class Generator(nn.Module):
     def anchored_logp(self, zB, u, dt, table, adds):
         """Exact log-probability of adding the SET `adds` to each background.
 
-        Order-invariant: a set of k additions can be generated in k! orders, so
-        the log-probability sums over the autoregressive chain and adds log k!.
-        Without that term the model would prefer small sets for a reason that
-        has nothing to do with the data.
+        Batched over backgrounds: the autoregressive chain is at most max_add
+        steps, so this is max_add batched matmuls rather than one small matmul
+        per candidate per step. Same numbers, orders of magnitude faster.
+
+        Order-invariant: a set of k additions can be produced in k! orders, so
+        the chain log-probability gets + log k!. Without it the model would
+        prefer small sets for a reason unrelated to the data.
         """
-        n = zB.shape[0]
-        slp = self.size_logp(zB, u, dt)
-        out = torch.zeros(n)
-        for i in range(n):
-            ms = sorted(adds[i])
-            k = len(ms)
-            if k == 0 or k > self.max_add:
-                out[i] = -30.0
-                continue
-            lp = slp[i, k - 1]
-            added = torch.zeros(1, table.shape[1])
-            for j, mm in enumerate(ms):
-                step = self.add_logp(zB[i:i + 1], u, dt, added, table)
-                lp = lp + step[0, mm]
-                added = added + table[mm].unsqueeze(0) / max(k, 1)
-            out[i] = lp + float(np.log(math.factorial(k)))
-        return out
+        n, dev = zB.shape[0], zB.device
+        ctx = self._ctx(zB, u, dt)                       # (n, 3d+1)
+        slp = torch.log_softmax(self.size_head(ctx), dim=-1)
+
+        ks = torch.tensor([len(x) for x in adds], dtype=torch.long)
+        valid = (ks >= 1) & (ks <= self.max_add)
+        out = torch.full((n,), -30.0, device=dev)
+        if not bool(valid.any()):
+            return out
+
+        # sorted addition lists, padded to max_add
+        seq = torch.zeros(n, self.max_add, dtype=torch.long)
+        for i, x in enumerate(adds):
+            if valid[i]:
+                ms = sorted(x)[:self.max_add]
+                seq[i, :len(ms)] = torch.tensor(ms, dtype=torch.long)
+
+        lp = torch.where(valid, slp.gather(
+            1, (ks.clamp(1, self.max_add) - 1).unsqueeze(1)).squeeze(1),
+            torch.zeros(n, device=dev))
+
+        added = torch.zeros(n, table.shape[1], device=dev)
+        kf = ks.clamp_min(1).float().unsqueeze(-1)
+        for j in range(self.max_add):
+            live = valid & (ks > j)
+            if not bool(live.any()):
+                break
+            q = self.add_head(torch.cat([ctx, added], dim=-1))
+            step = torch.log_softmax(
+                q @ table.T + self.mut_bias.unsqueeze(0), dim=-1)   # (n, V)
+            got = step.gather(1, seq[:, j].unsqueeze(1)).squeeze(1)
+            lp = lp + torch.where(live, got, torch.zeros_like(got))
+            added = added + torch.where(
+                live.unsqueeze(-1), table[seq[:, j]] / kf,
+                torch.zeros_like(added))
+
+        logfact = torch.tensor(
+            [math.lgamma(max(int(k), 1) + 1) for k in ks], device=dev)
+        return torch.where(valid, lp + logfact, out)
 
     def sample(self, zB, backgrounds, u, dt, table, n_anchor, n_free, rng):
-        """Draw candidates from both paths. Used only at generation time."""
+        """Draw candidates from both paths, batched.
+
+        All n_anchor draws advance through the autoregressive chain together,
+        so this is max_add batched steps instead of one forward pass per
+        mutation per candidate. Generation only -- no gradient here; the
+        log-probabilities used in the loss come from anchored_logp.
+        """
         cands = []
         with torch.no_grad():
-            slp = self.size_logp(zB, u, dt).exp()
-            for _ in range(n_anchor):
-                i = rng.randrange(len(backgrounds))
-                k = int(torch.multinomial(slp[i], 1)) + 1
-                cur, added = set(backgrounds[i]), torch.zeros(1, table.shape[1])
-                for _ in range(k):
-                    p = self.add_logp(zB[i:i + 1], u, dt, added, table).exp()
-                    m = int(torch.multinomial(p[0], 1))
-                    cur.add(m)
-                    added = added + table[m].unsqueeze(0) / k
-                cands.append((frozenset(cur), i, frozenset(cur) - backgrounds[i]))
+            if n_anchor and len(backgrounds):
+                pick = torch.randint(0, len(backgrounds), (n_anchor,))
+                Z = zB[pick]                                  # (A, d)
+                ctx = self._ctx(Z, u, dt)
+                ks = torch.multinomial(
+                    torch.log_softmax(self.size_head(ctx), -1).exp(), 1
+                ).squeeze(1) + 1                               # (A,)
+                added = torch.zeros(n_anchor, table.shape[1])
+                chosen = torch.zeros(n_anchor, self.max_add, dtype=torch.long)
+                kf = ks.float().unsqueeze(-1)
+                for j in range(int(ks.max())):
+                    live = ks > j
+                    q = self.add_head(torch.cat([ctx, added], dim=-1))
+                    p = torch.softmax(
+                        q @ table.T + self.mut_bias.unsqueeze(0), dim=-1)
+                    mm = torch.multinomial(p, 1).squeeze(1)
+                    chosen[:, j] = mm
+                    added = added + torch.where(
+                        live.unsqueeze(-1), table[mm] / kf,
+                        torch.zeros_like(added))
+                for r in range(n_anchor):
+                    i = int(pick[r]); k = int(ks[r])
+                    add = {int(chosen[r, j]) for j in range(k)}
+                    add -= set(backgrounds[i])
+                    if not add:
+                        continue
+                    v = frozenset(set(backgrounds[i]) | add)
+                    cands.append((v, i, frozenset(add)))
             if n_free:
                 flp, fsz = self.free_logp(u, dt, table)
                 fp, sp = flp.exp(), fsz.exp()
-                base_sz = int(np.median([len(b) for b in backgrounds])) \
+                base = int(np.median([len(b) for b in backgrounds])) \
                     if backgrounds else 20
+                nz = int((fp > 0).sum())
                 for _ in range(n_free):
-                    k = base_sz + int(torch.multinomial(sp, 1))
-                    idx = torch.multinomial(fp, min(k, (fp > 0).sum().item()),
-                                            replacement=False)
+                    k = min(base + int(torch.multinomial(sp, 1)), nz)
+                    idx = torch.multinomial(fp, k, replacement=False)
                     cands.append((frozenset(int(x) for x in idx), None, None))
         return cands
 
