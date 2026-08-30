@@ -382,7 +382,7 @@ class TransitionModel(nn.Module):
             cnt.index_add_(0, rows, torch.ones(len(rows), 1))
         agg = agg / cnt.clamp_min(1.0)
         dt = (t_now - self.mem.last_t[idx]).clamp_min(0.0)
-        msg = torch.cat([v.detach().cpu(), agg, self.time(dt)], dim=-1)
+        msg = torch.cat([v.detach().cpu(), agg, self.time(dt).cpu()], dim=-1)
         self._pending = (idx, msg.detach())
         with torch.no_grad():
             slot = (self.nbr_cnt[idx] % self.N).cpu()
