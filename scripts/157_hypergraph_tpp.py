@@ -870,8 +870,30 @@ def run(a):
             Ncount = min(len(cands), a.n_neg * k)
             N = rng.sample(cands, Ncount)
 
-            # ---- selection: growth and death of what is already here ----
+            # ---- forecast objective: train on what is reported -----------
             sel_losses = []
+            if train and a.pop_weight > 0 and circ_mass:
+                cm_top = sorted(circ_mass.items(),
+                                key=lambda kv: -kv[1])[:a.pop_support]
+                for mh in a.forecast_months:
+                    ddt = 30 * mh
+                    nxt = [u for u in all_days if u >= t + ddt]
+                    if not nxt:
+                        continue
+                    obs = mass_map.get(nxt[0], {})
+                    if not obs:
+                        continue
+                    cds = generate_candidates(
+                        [v for v, _ in cm_top],
+                        sorted({m for v, _ in cm_top for m in v}),
+                        radius=a.radius, max_cand=a.pop_cand_train, rng=rng,
+                        exclude={v for v, _ in cm_top})
+                    pl = population_loss(
+                        model, cm_top, cds, obs, last_seen, freq,
+                        t, float(ddt), ident_feats,
+                        max_cand=a.pop_cand_train)
+                    if pl is not None:
+                        sel_losses.append(a.pop_weight * pl)
             if circ_mass:
                 for dt in a.horizons:
                     nxt = [u for u in all_days if u >= t + dt]
@@ -1088,6 +1110,56 @@ def predict_population(model, circ_mass, candidates, last_seen, freq,
         return allv, torch.log_softmax(logits, dim=0).numpy(), n_c
 
 
+def population_loss(model, circ_mass, candidates, obs_mass,
+                    last_seen, freq, t, dt, ident_fn, max_cand=2000):
+    """Train on the quantity that is reported.
+
+    The population cross-entropy was previously evaluation-only: no parameter
+    was ever optimised for it, so there was no reason for the model to beat
+    persistence on it. Here it IS the objective. Persistence is the
+    initialisation -- fitness starts at zero and new_bias low -- so any
+    deviation that survives training is one that reduced the forecast loss.
+    """
+    circ = [s for s, _ in circ_mass]
+    if not circ:
+        return None
+    mass = torch.tensor([m for _, m in circ_mass], dtype=torch.float32)
+    n_c = len(circ)
+    cands = list(candidates)[:max_cand]
+
+    logm = torch.log(mass.clamp_min(1e-9))
+    z = model.variant_repr(circ, float(t))
+    feat = torch.cat([z, logm.unsqueeze(-1),
+                      torch.full((n_c, 1), float(dt))], dim=-1)
+    fit = model.fitness(feat).squeeze(-1)
+    logit_upd = logm + dt * fit
+
+    if cands:
+        logit_new = model.score_variants(
+            cands, float(t), ident=ident_fn(cands, last_seen, freq, t))
+        logit_new = logit_new + model.new_bias
+        logits = torch.cat([logit_upd, logit_new])
+    else:
+        logits = logit_upd
+    logp = torch.log_softmax(logits, dim=0)
+
+    ix = {v: i for i, v in enumerate(circ + cands)}
+    tot = sum(obs_mass.values()) or 1.0
+    idx, wts = [], []
+    for v, m in obs_mass.items():
+        j = ix.get(v)
+        if j is not None:
+            idx.append(j); wts.append(m / tot)
+    if not idx:
+        return None
+    # Unreachable mass is a constant w.r.t. the parameters, so it is excluded
+    # from the loss. It is still charged in the reported metric -- the model is
+    # trained on what it can affect and judged on everything.
+    I = torch.tensor(idx, dtype=torch.long)
+    W = torch.tensor(wts, dtype=torch.float32)
+    return -(W * logp[I]).sum() / W.sum().clamp_min(1e-9)
+
+
 def population_baselines(circ_mass, candidates, dt):
     """Full-population baselines. Each returns log-probabilities over the
     same support as the model, so the numbers are directly comparable.
@@ -1142,9 +1214,28 @@ def score_population(logp, allv, n_circ, obs_mass):
             ce_u += -w * lp; m_u += w
         else:
             ce_n += -w * lp; m_n += w
+    # Direct comparison of the two populations as weighted sets. Variants are
+    # exact discrete sets, so predicted and observed match exactly -- there is
+    # no assignment problem and no need for a ranking metric.
+    #   overlap = sum_i min(p_i, q_i)   the share of the population predicted
+    #                                   correctly; 1.0 is perfect
+    #   jaccard = sum min / sum max     the same, penalising over-prediction
+    # Both are bounded in [0, 1], so unreachable mass costs at most its own
+    # weight instead of the log(1e-12) floor that made the cross-entropy
+    # columns indistinguishable.
+    p = np.exp(np.asarray(logp, dtype=float))
+    q = np.zeros_like(p)
+    for s, m in obs_mass.items():
+        j = ix.get(s)
+        if j is not None:
+            q[j] += m / tot
+    overlap = float(np.minimum(p, q).sum())
+    denom = float(np.maximum(p, q).sum())
+    jac = overlap / denom if denom > 0 else float("nan")
     return {"ce": ce, "ce_update": ce_u / m_u if m_u > 0 else float("nan"),
             "ce_new": ce_n / m_n if m_n > 0 else float("nan"),
-            "mass_update": m_u, "mass_new": m_n, "coverage": m_cov}
+            "mass_update": m_u, "mass_new": m_n, "coverage": m_cov,
+            "overlap": overlap, "jaccard": jac}
 
 
 def forecast_eval(model, all_days, days, by_day, mass_map, a, rng):
@@ -1214,7 +1305,32 @@ def report_forecast(rows):
     print("under the predicted one, nats per sequence. LOWER IS BETTER.")
     methods = ["model", "persistence", "prox"]
     lbl = {"model": "MODEL", "persistence": "persistence", "prox": "persist+prox"}
+    print("\nOVERLAP = share of the future population predicted correctly "
+          "(sum of min(pred, obs)).\nHIGHER IS BETTER. 1.0 is perfect, and "
+          "it is bounded, so unreachable mass\ncosts only its own weight "
+          "rather than a log-floor penalty.")
     print(f"\n{'horizon':<10}{'n':>4}" +
+          "".join(f"{lbl[m]:>15}" for m in methods))
+    for h in sorted({r["h"] for r in rows}):
+        sub = [r for r in rows if r["h"] == h]
+        line = f"{str(h) + ' months':<10}{len(sub):>4}"
+        for mth in methods:
+            line += f"{np.mean([r[mth]['overlap'] for r in sub]):>15.4f}"
+        print(line)
+
+    print("\nWeighted Jaccard (overlap normalised by the union)")
+    print(f"{'horizon':<10}{'n':>4}" +
+          "".join(f"{lbl[m]:>15}" for m in methods))
+    for h in sorted({r["h"] for r in rows}):
+        sub = [r for r in rows if r["h"] == h]
+        line = f"{str(h) + ' months':<10}{len(sub):>4}"
+        for mth in methods:
+            line += f"{np.mean([r[mth]['jaccard'] for r in sub]):>15.4f}"
+        print(line)
+
+    print("\nCross-entropy, nats per sequence (lower better). Dominated by "
+          "unreachable\nmass, so read the overlap table first.")
+    print(f"{'horizon':<10}{'n':>4}" +
           "".join(f"{lbl[m]:>15}" for m in methods))
     for h in sorted({r["h"] for r in rows}):
         sub = [r for r in rows if r["h"] == h]
@@ -1362,6 +1478,11 @@ def main():
                    dest="max_circ_sel")
     p.add_argument("--sel-weight", type=float, default=1.0, dest="sel_weight",
                    help="weight of the growth+death loss relative to birth")
+    p.add_argument("--pop-weight", type=float, default=1.0, dest="pop_weight",
+                   help="weight of the population forecast loss; 0 disables")
+    p.add_argument("--pop-cand-train", type=int, default=1000,
+                   dest="pop_cand_train",
+                   help="candidates per forecast loss term during training")
     p.add_argument("--forecast-months", type=int, nargs="+",
                    default=[3, 6, 12], dest="forecast_months")
     p.add_argument("--n-origins", type=int, default=6, dest="n_origins")
