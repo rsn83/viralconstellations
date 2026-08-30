@@ -381,6 +381,17 @@ class VariantTPP(nn.Module):
         # supply that: log recency, log abundance, and a seen-before flag.
         # how much total mass to allocate to never-seen variants, learned
         self.new_bias = nn.Parameter(torch.tensor(-4.0))
+        # Identity features: log recency, log abundance, seen-before flag.
+        # The scorer sees only member mutations, so it cannot tell it has met
+        # this exact variant before -- which is why it scored repeats (0.285)
+        # no better than novel ones (0.291) while recency alone got 0.782.
+        # Projected into d and added to every member representation BEFORE the
+        # attention, not merely added to the final score: a scalar offset can
+        # only shift a variant up or down, whereas the model needs to condition
+        # set structure on history ("plausible combination AND it is growing").
+        self.ident_proj = nn.Linear(3, d)
+        nn.init.zeros_(self.ident_proj.weight)
+        nn.init.zeros_(self.ident_proj.bias)
         self.ident = nn.Linear(3, 1)
         nn.init.zeros_(self.ident.weight); nn.init.zeros_(self.ident.bias)
         # variant-level heads: growth (selection) and death
@@ -471,9 +482,11 @@ class VariantTPP(nn.Module):
             idx[b, :len(ms)] = torch.tensor(ms)
             mask[b, :len(ms)] = False
         X = Vrep[idx]                                        # (B, K, d)
+        if ident is not None:
+            X = X + self.ident_proj(ident).unsqueeze(1)   # into the attention
         base = self.scorer(X, mask)
         if ident is not None:
-            base = base + self.ident(ident).squeeze(-1)
+            base = base + self.ident(ident).squeeze(-1)   # plus a direct path
         return base
 
     # ---- memory update --------------------------------------------------
@@ -948,40 +961,49 @@ def run(a):
 
 
 def report(recs, a):
+    """Ranking diagnostics.
+
+    The ALL row is the headline. A model that wins only on never-seen variants
+    while losing on repeats is not useful: the question is which variants will
+    be circulating, and the answer mixes both. The NEW/REPEAT split below is
+    diagnosis of WHERE performance comes from, not the claim.
+    """
     if not recs:
         print("no test records"); return
     keys = ["mrr_model", "mrr_prox", "mrr_recency", "mrr_freq"]
     lbl = {"mrr_model": "MODEL", "mrr_prox": "proximity",
            "mrr_recency": "recency", "mrr_freq": "frequency"}
 
-    def block(title, sub):
-        """Unweighted and mass-weighted MRR side by side.
-
-        Unweighted treats a variant seen once like one seen 50,000 times.
-        With most variants appearing exactly once, that number is dominated by
-        the singleton tail -- much of which is sequencing noise. Mass-weighted
-        MRR says whether the variants that actually matter are ranked well.
-        The two can disagree sharply, and both belong in the paper.
-        """
+    def block(title, sub, headline=False):
         if not sub:
             return
         w = np.array([r.get("count", 1.0) for r in sub], dtype=float)
         tot = w.sum()
         print(f"\n{title}  (n={len(sub)}, {tot:,.0f} sequences)")
         print(f"  {'method':<12}{'MRR':>9}{'MRR (mass-wtd)':>17}")
+        best = None
         for k in keys:
             v = np.array([r[k] for r in sub], dtype=float)
             wm = float(np.average(v, weights=w)) if tot > 0 else float("nan")
-            print(f"  {lbl[k]:<12}{v.mean():>9.4f}{wm:>17.4f}")
+            mark = ""
+            if headline and k != "mrr_model":
+                best = v.mean() if best is None else max(best, v.mean())
+            print(f"  {lbl[k]:<12}{v.mean():>9.4f}{wm:>17.4f}{mark}")
+        if headline and best is not None:
+            mv = np.mean([r["mrr_model"] for r in sub])
+            verdict = ("BEATS" if mv > best + 1e-6
+                       else ("TIES" if abs(mv - best) <= 1e-6 else "LOSES TO"))
+            print(f"  -> MODEL {verdict} the best baseline "
+                  f"({mv:.4f} vs {best:.4f})")
 
     print("\n" + "=" * 66)
-    print(f"MRR against {a.n_neg} hard negatives per event "
-          "(candidates from the same generator that did not appear)")
-    block("ALL test events", recs)
+    print(f"RANKING DIAGNOSTIC: MRR against {a.n_neg} hard negatives per event")
+    print("(candidates from the same generator that did not appear)")
+    block("ALL test events  <- the headline", recs, headline=True)
+    print("\n--- where it comes from (diagnosis, not the claim) ---")
     block("NEW variants (never seen before)", [r for r in recs if r["new"]])
     block("REPEAT variants", [r for r in recs if not r["new"]])
 
-    # by calendar time -- exposes regime shifts, which their protocol hides
     def wavg(sub, key):
         w = np.array([r.get("count", 1.0) for r in sub], dtype=float)
         v = np.array([r[key] for r in sub], dtype=float)
@@ -989,42 +1011,38 @@ def report(recs, a):
 
     print("\nMRR over calendar time")
     print(f"  {'month':<10}{'n':>7}{'MODEL':>9}{'wtd':>9}"
-          f"{'proximity':>11}{'wtd':>9}")
+          f"{'best base':>11}{'wtd':>9}")
     bym = defaultdict(list)
     for r in recs:
         bym[r["day"][:7]].append(r)
     for mth in sorted(bym):
         sub = bym[mth]
+        bb = max(np.mean([r[k] for r in sub])
+                 for k in keys if k != "mrr_model")
+        bbw = max(wavg(sub, k) for k in keys if k != "mrr_model")
         print(f"  {mth:<10}{len(sub):>7}"
               f"{np.mean([r['mrr_model'] for r in sub]):>9.4f}"
-              f"{wavg(sub, 'mrr_model'):>9.4f}"
-              f"{np.mean([r['mrr_prox'] for r in sub]):>11.4f}"
-              f"{wavg(sub, 'mrr_prox'):>9.4f}")
+              f"{wavg(sub, 'mrr_model'):>9.4f}{bb:>11.4f}{bbw:>9.4f}")
 
-    # by lead time from the first test day
     t0 = min(r["t"] for r in recs)
     bins = [(0, 7), (8, 30), (31, 90), (91, 180), (181, 10 ** 9)]
     print("\nMRR by forecast lead time (days from first test day)")
     print(f"  {'lead':<12}{'n':>7}{'MODEL':>9}{'wtd':>9}"
-          f"{'proximity':>11}{'wtd':>9}")
+          f"{'best base':>11}{'wtd':>9}")
     for lo, hi in bins:
         sub = [r for r in recs if lo <= r["t"] - t0 <= hi]
         if not sub:
             continue
         name = f"{lo}-{hi}" if hi < 10 ** 9 else f"{lo}+"
+        bb = max(np.mean([r[k] for r in sub])
+                 for k in keys if k != "mrr_model")
+        bbw = max(wavg(sub, k) for k in keys if k != "mrr_model")
         print(f"  {name:<12}{len(sub):>7}"
               f"{np.mean([r['mrr_model'] for r in sub]):>9.4f}"
-              f"{wavg(sub, 'mrr_model'):>9.4f}"
-              f"{np.mean([r['mrr_prox'] for r in sub]):>11.4f}"
-              f"{wavg(sub, 'mrr_prox'):>9.4f}")
+              f"{wavg(sub, 'mrr_model'):>9.4f}{bb:>11.4f}{bbw:>9.4f}")
 
     print("\nOne seed. Run several --seed values before treating any "
           "difference as a result.")
-    if a.out:
-        os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
-        with open(a.out, "w") as f:
-            json.dump(recs, f)
-        print(f"wrote {a.out}")
 
 
 def predict_population(model, circ_mass, candidates, last_seen, freq,
