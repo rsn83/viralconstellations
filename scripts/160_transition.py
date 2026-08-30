@@ -1040,8 +1040,8 @@ def run(a):
               f"budget {f('budget'):.3f}  "
               f"target {f('n_target'):.0f} vars "
               f"({f('target_mass'):.2f} mass)  "
-              f"missed/step {f('n_missed'):.1f}/{f('n_target'):.0f}",
-              flush=True)
+              f"missed/step {f('n_missed'):.1f}/{f('n_target'):.0f}  "
+              f"aux {f('aux'):.3f} on {f('n_aux'):.0f}", flush=True)
 
     # ---------------- evaluation: rolling origins -----------------------
     origins = test_days[::max(1, len(test_days) // a.n_origins)][:a.n_origins]
@@ -1414,7 +1414,48 @@ def transition_loss(model, circ_mass, obs_mass, t, dt, rng, a, train=True,
     Iw = torch.tensor(I, dtype=torch.long)
     Ww = torch.tensor(W, dtype=torch.float32)
     loss = -(Ww * logp[Iw]).sum() / Ww.sum().clamp_min(1e-9)
+
+    # ---- auxiliary supervision on the generator -----------------------
+    # The forecast gradient reaches the generator through a softmax over the
+    # whole support, so one missed variant contributes one term out of ~1500
+    # and has to raise one mutation's probability out of ~5000. That signal is
+    # far too diffuse: missed/step stayed pinned to one decimal across epochs.
+    #
+    # This adds the direct term -- -log p(additions | background) for each
+    # observed variant that extends a background, weighted by that variant's
+    # mass so the generator chases what carries the population rather than the
+    # singleton tail. Dense and direct, one term per observed variant.
+    #
+    # It does NOT replace the forecast path. That path is what makes the
+    # generator accountable for the metric; training on the addition target
+    # alone is what leaves the reference method with good adjacency and a
+    # failing assembly step. Both, with --aux-weight to trade them off, and
+    # --aux-weight 0 recovers the previous model exactly.
+    aux = None
+    sup_i = []
+    if train and a.aux_weight > 0 and obs_fit:
+        # Search ALL circulating variants for the parent, not just the top
+        # backgrounds: a new variant's nearest parent is often not among the
+        # heaviest, so restricting to bg would silently drop most supervision.
+        sup_b, sup_a, sup_w = [], [], []
+        tot_o = sum(obs_fit.values()) or 1.0
+        for v, wv in obs_fit.items():
+            bi, adds = _attach(v, circ)
+            if bi is not None and adds and len(adds) <= model.gen.max_add:
+                sup_b.append(circ[bi]); sup_a.append(adds)
+                sup_w.append(wv / tot_o)
+        if sup_b:
+            sup_i = sup_b
+            z_sup = model.variant_repr(sup_b, float(t))
+            lp_sup = model.gen.anchored_logp(z_sup, u, dt, table, sup_a)
+            Wg = torch.tensor(sup_w, dtype=torch.float32)
+            aux = -(Wg * lp_sup).sum() / Wg.sum().clamp_min(1e-9)
+            loss = loss + a.aux_weight * aux
+
     meta = {"n_support": len(allv), "n_missed": n_missed,
+            "n_aux": (len(sup_i) if (train and a.aux_weight > 0
+                                     and obs_fit) else 0),
+            "aux": float(aux.detach()) if aux is not None else float("nan"),
             "n_target": len(obs_fit), "target_mass": run,
             "budget": float(torch.sigmoid(model.budget_logit(dt)).detach()),
             "mix_anchored": float(mix.detach())}
@@ -1670,6 +1711,9 @@ def main():
                         "generator can enumerate")
     p.add_argument("--obs-top", type=int, default=200, dest="obs_top",
                    help="hard cap on the number of target variants")
+    p.add_argument("--aux-weight", type=float, default=1.0, dest="aux_weight",
+                   help="weight of the direct generator supervision; "
+                        "0 recovers forecast-only training")
     p.add_argument("--gen-weight", type=float, default=1.0, dest="gen_weight",
                    help="weight of the generation log-probability in a "
                         "candidate's score")
