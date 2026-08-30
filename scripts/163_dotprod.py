@@ -94,7 +94,9 @@ def load_events(path, vocab_path=None, verbose=True):
 def parse_posres(vocab_path, V):
     import re
     names = {}
-    if vocab_path and os.path.exists(vocab_path):
+    if vocab_path:
+        if not os.path.exists(vocab_path):
+            raise FileNotFoundError(f"vocab not found: {vocab_path}")
         with open(vocab_path) as f:
             for i, line in enumerate(f):
                 p = line.rstrip("\n").split()
