@@ -160,6 +160,29 @@ def events_from_monthly(data_dir, top=None, verbose=True):
     return {"events": events, "days": days, "V": V}
 
 
+def load_first_seen(vocab_path, V, cutoff):
+    """Mask of mutations already seen by the training cutoff.
+
+    Mutations first appearing after the cutoff keep their vocabulary slot but
+    must not carry learned memory -- their only signal is position/residue.
+    """
+    seen = torch.ones(V, dtype=torch.bool)
+    if not (vocab_path and os.path.exists(vocab_path) and cutoff):
+        return seen
+    n_late = 0
+    with open(vocab_path) as f:
+        for line in f:
+            p = line.rstrip("\n").split("\t")
+            if len(p) >= 3 and p[0].isdigit():
+                i = int(p[0])
+                if i < V and p[2] > cutoff:
+                    seen[i] = False
+                    n_late += 1
+    print(f"  {n_late:,} mutations first appear after {cutoff}; "
+          "memory suppressed, posres only")
+    return seen
+
+
 def parse_posres(vocab_path, V):
     """Split mutation names into (position, residue) ids for shared embeddings.
 
@@ -172,8 +195,8 @@ def parse_posres(vocab_path, V):
             for i, line in enumerate(f):
                 p = line.rstrip("\n").split("\t")
                 if len(p) >= 2 and p[0].isdigit():
-                    names[int(p[0])] = p[1]
-                else:
+                    names[int(p[0])] = p[1]      # col 3, if present, is
+                else:                            # the first-seen date
                     names[i] = p[0]
     pat = re.compile(r"(\d+)")
     pos, res, n_ok = [], [], 0
@@ -351,6 +374,15 @@ class VariantTPP(nn.Module):
         self.W_n = nn.Linear(d, d)
         self.b_v = nn.Parameter(torch.zeros(d))
         self.scorer = HyperSAGNNScorer(d, heads)
+        # Identity features. The scorer sees only member mutations, so it has
+        # no way to know it has met this exact variant before -- which is why
+        # it scored repeats (0.285) no better than novel variants (0.291)
+        # while plain recency scored 0.782 on repeats. Three cheap features
+        # supply that: log recency, log abundance, and a seen-before flag.
+        # how much total mass to allocate to never-seen variants, learned
+        self.new_bias = nn.Parameter(torch.tensor(-4.0))
+        self.ident = nn.Linear(3, 1)
+        nn.init.zeros_(self.ident.weight); nn.init.zeros_(self.ident.bias)
         # variant-level heads: growth (selection) and death
         self.pool = nn.Linear(d, d)
         self.fitness = nn.Sequential(nn.Linear(d + 2, d), nn.Tanh(),
@@ -363,6 +395,7 @@ class VariantTPP(nn.Module):
         self.register_buffer("nbr_vec", torch.zeros(V, n_recent, d))
         self.register_buffer("nbr_t", torch.zeros(V, n_recent))
         self.register_buffer("nbr_cnt", torch.zeros(V, dtype=torch.long))
+        self.register_buffer("mem_ok", torch.ones(V, 1))
         self._cache_t = None
         self._cache_v = None
         self._pending = None          # (idx, msg) from the previous step
@@ -400,6 +433,7 @@ class VariantTPP(nn.Module):
         if self._override is not None:
             oi, ov = self._override
             m = m.index_copy(0, oi, ov)      # grad flows to the GRU
+        m = m * self.mem_ok      # zero for mutations unseen by the cutoff
         dt = (t_now - self.nbr_t).clamp_min(0.0)            # (V, N)
         ctx = torch.cat([self.nbr_vec, self.time(dt)], dim=-1)   # (V, N, 2d)
         ar = torch.arange(self.N).unsqueeze(0)
@@ -419,8 +453,11 @@ class VariantTPP(nn.Module):
         return self._cache_v
 
     # ---- scoring --------------------------------------------------------
-    def score_variants(self, variants, t_now, max_k=64):
-        """variants: list of frozensets -> (B,) scores."""
+    def score_variants(self, variants, t_now, max_k=64, ident=None):
+        """variants: list of frozensets -> (B,) scores.
+
+        ident: optional (B, 3) tensor of [log recency, log mass, seen flag].
+        """
         Vrep = self.node_repr_cached(t_now)
         B = len(variants)
         K = max(1, min(max_k, max((len(s) for s in variants), default=1)))
@@ -434,7 +471,10 @@ class VariantTPP(nn.Module):
             idx[b, :len(ms)] = torch.tensor(ms)
             mask[b, :len(ms)] = False
         X = Vrep[idx]                                        # (B, K, d)
-        return self.scorer(X, mask)
+        base = self.scorer(X, mask)
+        if ident is not None:
+            base = base + self.ident(ident).squeeze(-1)
+        return base
 
     # ---- memory update --------------------------------------------------
     def observe(self, variants, t_now, max_k=64):
@@ -637,6 +677,18 @@ def mrr_from_scores(scores, true_index):
 # TRAIN / EVAL
 # ======================================================================
 
+def ident_feats(variants, last_seen, freq, t_now):
+    """[log(1+days since last seen), log mass, seen-before] per variant."""
+    rows = []
+    for s in variants:
+        if s in last_seen:
+            rows.append([math.log1p(max(0.0, t_now - last_seen[s])),
+                         math.log(freq.get(s, 0.0) + 1e-9), 1.0])
+        else:
+            rows.append([math.log1p(1e4), math.log(1e-9), 0.0])
+    return torch.tensor(rows, dtype=torch.float32)
+
+
 def group_by_day(events):
     by_day = defaultdict(list)
     for s, t, w in events:
@@ -657,15 +709,28 @@ def mass_by_day(by_day):
 
 
 def selection_step(model, circ_mass, mass_map, t, t_tgt, death_thresh,
-                   max_c=256, train=True, opt=None):
+                   max_c=256, train=True, opt=None, rng_sel=None):
     """One growth+death step: predict shares and extinction at t_tgt.
 
     Returns (loss, records) where records hold predicted vs observed log
     growth and the death label, for evaluation against baselines.
     """
-    items = sorted(circ_mass.items(), key=lambda kv: -kv[1])[:max_c]
+    # Top-K by mass alone would report only how well the dominant variants
+    # are tracked. Half the sample is drawn from the tail so growth and death
+    # can be broken out by mass decile.
+    ranked = sorted(circ_mass.items(), key=lambda kv: -kv[1])
+    head = ranked[:max_c // 2]
+    tail = ranked[max_c // 2:]
+    if tail and rng_sel is not None:
+        k = min(len(tail), max_c - len(head))
+        items = head + [tail[i] for i in
+                        rng_sel.sample(range(len(tail)), k)]
+    else:
+        items = ranked[:max_c]
     if len(items) < 2:
         return None, []
+    rank_of = {s: i for i, (s, _) in enumerate(ranked)}
+    n_circ = max(1, len(ranked))
     variants = [s for s, _ in items]
     mass = torch.tensor([m for _, m in items], dtype=torch.float32)
     dt = max(1.0, float(t_tgt - t))
@@ -700,6 +765,8 @@ def selection_step(model, circ_mass, mass_map, t, t_tgt, death_thresh,
             recs.append({
                 "t": t, "dt": dt, "size": len(s),
                 "mass": float(cur[j]),
+                "mass_decile": int(10 * rank_of[s] / n_circ),
+                "survived": float(obs_s[j] > 0),
                 "pred_share": float(pred_share[j]),
                 "obs_share": float(obs_s[j]),
                 "pred_logg": float(np.log(pred_share[j] + 1e-12)
@@ -741,6 +808,9 @@ def run(a):
 
     model = VariantTPP(V, d=a.d, heads=a.heads, n_recent=a.n_recent,
                        posres=posres, decay=not a.no_decay)
+    cutoff = days[train_days[-1]]
+    model.mem_ok.copy_(
+        load_first_seen(a.vocab, V, cutoff).float().unsqueeze(-1))
     print(f"parameters: {sum(p.numel() for p in model.parameters()):,}")
     opt = torch.optim.Adam(model.parameters(), lr=a.lr)
 
@@ -783,6 +853,7 @@ def run(a):
             sel = rng.sample(range(len(pos)), k)
             P = [pos[i] for i in sel]
             Pw = torch.tensor(wts[sel], dtype=torch.float32)
+            Praw = [float(batch[i][1]) for i in sel]      # observed counts
             Ncount = min(len(cands), a.n_neg * k)
             N = rng.sample(cands, Ncount)
 
@@ -797,16 +868,20 @@ def run(a):
                     if train:
                         sl, _ = selection_step(
                             model, circ_mass, mass_map, t, t_tgt,
-                            a.death_thresh, a.max_circ_sel, train=True)
+                            a.death_thresh, a.max_circ_sel, train=True,
+                            rng_sel=rng)
                         if sl is not None:
                             sel_losses.append(sl)
                     elif sel_collect is not None:
                         _, rs = selection_step(model, circ_mass, mass_map, t,
                                                t_tgt, a.death_thresh,
-                                               a.max_circ_sel, train=False)
+                                               a.max_circ_sel, train=False,
+                                               rng_sel=rng)
                         sel_collect.extend(rs)
 
-            sc = model.score_variants(P + N, float(t))
+            sc = model.score_variants(
+                P + N, float(t),
+                ident=ident_feats(P + N, last_seen, freq, t))
             lp, ln = sc[:k], sc[k:]
             if train:
                 # adaptation 3: positives weighted by observed abundance
@@ -826,13 +901,17 @@ def run(a):
                 with torch.no_grad():
                     for j, s in enumerate(P):
                         pool = [s] + N[:a.n_neg]
-                        ms = model.score_variants(pool, float(t)).numpy()
+                        ms = model.score_variants(
+                            pool, float(t),
+                            ident=ident_feats(pool, last_seen, freq, t)).numpy()
                         rec, frq, prox = baseline_scores(
                             pool, circ_index, last_seen, freq, t)
                         collect.append({
                             "day": days[t], "t": t,
                             "new": s not in seen_ever,
                             "size": len(s),
+                            "count": Praw[j],
+                            "share": float(wts[sel[j]]),
                             "mrr_model": mrr_from_scores(ms, 0),
                             "mrr_recency": mrr_from_scores(rec, 0),
                             "mrr_freq": mrr_from_scores(frq, 0),
@@ -850,11 +929,22 @@ def run(a):
         tr = stream(train_days, train=True)
         print(f"epoch {ep+1}/{a.epochs}  loss {tr:.4f}", flush=True)
 
-    recs, sel = [], []
-    stream(test_days, train=False, collect=recs, sel_collect=sel)
-    report(recs, a)
-    report_selection(sel, a)
-    return recs, sel
+    fc = forecast_eval(model, all_days, days, by_day, mass_map, a, rng)
+    report_forecast(fc)
+
+    if not a.forecast_only:
+        recs, sel = [], []
+        stream(test_days, train=False, collect=recs, sel_collect=sel)
+        report(recs, a)
+        report_selection(sel, a)
+    else:
+        recs, sel = [], []
+    if a.out:
+        os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
+        with open(a.out, "w") as f:
+            json.dump({"forecast": fc, "birth": recs, "selection": sel}, f)
+        print(f"\nwrote {a.out}")
+    return fc, recs, sel
 
 
 def report(recs, a):
@@ -865,12 +955,24 @@ def report(recs, a):
            "mrr_recency": "recency", "mrr_freq": "frequency"}
 
     def block(title, sub):
+        """Unweighted and mass-weighted MRR side by side.
+
+        Unweighted treats a variant seen once like one seen 50,000 times.
+        With most variants appearing exactly once, that number is dominated by
+        the singleton tail -- much of which is sequencing noise. Mass-weighted
+        MRR says whether the variants that actually matter are ranked well.
+        The two can disagree sharply, and both belong in the paper.
+        """
         if not sub:
             return
-        print(f"\n{title}  (n={len(sub)})")
-        print(f"  {'method':<12}{'MRR':>8}")
+        w = np.array([r.get("count", 1.0) for r in sub], dtype=float)
+        tot = w.sum()
+        print(f"\n{title}  (n={len(sub)}, {tot:,.0f} sequences)")
+        print(f"  {'method':<12}{'MRR':>9}{'MRR (mass-wtd)':>17}")
         for k in keys:
-            print(f"  {lbl[k]:<12}{np.mean([r[k] for r in sub]):>8.4f}")
+            v = np.array([r[k] for r in sub], dtype=float)
+            wm = float(np.average(v, weights=w)) if tot > 0 else float("nan")
+            print(f"  {lbl[k]:<12}{v.mean():>9.4f}{wm:>17.4f}")
 
     print("\n" + "=" * 66)
     print(f"MRR against {a.n_neg} hard negatives per event "
@@ -880,30 +982,41 @@ def report(recs, a):
     block("REPEAT variants", [r for r in recs if not r["new"]])
 
     # by calendar time -- exposes regime shifts, which their protocol hides
+    def wavg(sub, key):
+        w = np.array([r.get("count", 1.0) for r in sub], dtype=float)
+        v = np.array([r[key] for r in sub], dtype=float)
+        return float(np.average(v, weights=w)) if w.sum() > 0 else float("nan")
+
     print("\nMRR over calendar time")
-    print(f"  {'month':<10}{'n':>6}{'MODEL':>9}{'proximity':>11}")
+    print(f"  {'month':<10}{'n':>7}{'MODEL':>9}{'wtd':>9}"
+          f"{'proximity':>11}{'wtd':>9}")
     bym = defaultdict(list)
     for r in recs:
         bym[r["day"][:7]].append(r)
     for mth in sorted(bym):
         sub = bym[mth]
-        print(f"  {mth:<10}{len(sub):>6}"
+        print(f"  {mth:<10}{len(sub):>7}"
               f"{np.mean([r['mrr_model'] for r in sub]):>9.4f}"
-              f"{np.mean([r['mrr_prox'] for r in sub]):>11.4f}")
+              f"{wavg(sub, 'mrr_model'):>9.4f}"
+              f"{np.mean([r['mrr_prox'] for r in sub]):>11.4f}"
+              f"{wavg(sub, 'mrr_prox'):>9.4f}")
 
     # by lead time from the first test day
     t0 = min(r["t"] for r in recs)
     bins = [(0, 7), (8, 30), (31, 90), (91, 180), (181, 10 ** 9)]
     print("\nMRR by forecast lead time (days from first test day)")
-    print(f"  {'lead':<12}{'n':>6}{'MODEL':>9}{'proximity':>11}")
+    print(f"  {'lead':<12}{'n':>7}{'MODEL':>9}{'wtd':>9}"
+          f"{'proximity':>11}{'wtd':>9}")
     for lo, hi in bins:
         sub = [r for r in recs if lo <= r["t"] - t0 <= hi]
         if not sub:
             continue
         name = f"{lo}-{hi}" if hi < 10 ** 9 else f"{lo}+"
-        print(f"  {name:<12}{len(sub):>6}"
+        print(f"  {name:<12}{len(sub):>7}"
               f"{np.mean([r['mrr_model'] for r in sub]):>9.4f}"
-              f"{np.mean([r['mrr_prox'] for r in sub]):>11.4f}")
+              f"{wavg(sub, 'mrr_model'):>9.4f}"
+              f"{np.mean([r['mrr_prox'] for r in sub]):>11.4f}"
+              f"{wavg(sub, 'mrr_prox'):>9.4f}")
 
     print("\nOne seed. Run several --seed values before treating any "
           "difference as a result.")
@@ -914,49 +1027,272 @@ def report(recs, a):
         print(f"wrote {a.out}")
 
 
+def predict_population(model, circ_mass, candidates, last_seen, freq,
+                       t, dt, ident_fn):
+    """One predicted distribution over the population at t+dt.
+
+    The forecasting question is: given data up to t, what does the population
+    look like at t+dt? The answer is a single distribution over variants, not
+    a ranking against sampled negatives -- an MRR depends on how the negatives
+    were drawn, which makes it unfalsifiable as a forecasting claim.
+
+    Support = variants circulating at t (UPDATE: present, weight changes)
+            + generated candidates      (NEW: absent at t, may appear)
+    Logits  = log current mass + dt * fitness   for circulating
+            + birth score                       for candidates
+    One softmax over the union, so mass is conserved: a new variant can only
+    take mass from existing ones.
+    """
+    circ = [s for s, _ in circ_mass]
+    mass = torch.tensor([m for _, m in circ_mass], dtype=torch.float32)
+    n_c = len(circ)
+    if n_c == 0:
+        return None
+
+    with torch.no_grad():
+        logm = torch.log(mass.clamp_min(1e-9))
+        z = model.variant_repr(circ, float(t))
+        feat = torch.cat([z, logm.unsqueeze(-1),
+                          torch.full((n_c, 1), float(dt))], dim=-1)
+        fit = model.fitness(feat).squeeze(-1)
+        logit_upd = logm + dt * fit
+
+        if candidates:
+            logit_new = model.score_variants(
+                candidates, float(t),
+                ident=ident_fn(candidates, last_seen, freq, t))
+            logit_new = logit_new + model.new_bias
+        else:
+            logit_new = torch.zeros(0)
+
+        allv = circ + list(candidates)
+        logits = torch.cat([logit_upd, logit_new])
+        return allv, torch.log_softmax(logits, dim=0).numpy(), n_c
+
+
+def population_baselines(circ_mass, candidates, dt):
+    """Full-population baselines. Each returns log-probabilities over the
+    same support as the model, so the numbers are directly comparable.
+
+    persistence : today's population, unchanged
+    drift       : today's population scaled by its recent growth rate
+    proximity   : persistence, with a small share spread over candidates
+                  in proportion to closeness to the current population
+    """
+    circ = [s for s, _ in circ_mass]
+    mass = np.array([m for _, m in circ_mass], dtype=float)
+    n_c, n_n = len(circ), len(candidates)
+    out = {}
+
+    p = np.concatenate([mass, np.zeros(n_n)])
+    out["persistence"] = np.log(np.clip(p / max(p.sum(), 1e-12), 1e-12, None))
+
+    # proximity: 10% of mass onto candidates, weighted by 1/(1+distance)
+    if n_n:
+        idx = CirculatingIndex(circ, max(
+            (max(s) for s in circ + list(candidates) if s), default=1) + 1)
+        d = -idx.nearest(list(candidates))
+        w = 1.0 / (1.0 + np.maximum(d, 0.0))
+        w = w / max(w.sum(), 1e-12)
+        q = np.concatenate([0.9 * mass / max(mass.sum(), 1e-12), 0.1 * w])
+    else:
+        q = p / max(p.sum(), 1e-12)
+    out["prox"] = np.log(np.clip(q, 1e-12, None))
+    return out
+
+
+def score_population(logp, allv, n_circ, obs_mass):
+    """Cross-entropy of the observed population under a predicted one.
+
+    Reported in nats per sequence -- lower is better. Also split by whether
+    the observed mass sits on a variant that was already present (UPDATE) or
+    one that was not (NEW), which is the decomposition that says what the
+    model is actually getting right.
+    """
+    ix = {s: i for i, s in enumerate(allv)}
+    tot = sum(obs_mass.values()) or 1.0
+    ce = ce_u = ce_n = 0.0
+    m_u = m_n = m_cov = 0.0
+    for s, m in obs_mass.items():
+        w = m / tot
+        j = ix.get(s)
+        lp = logp[j] if j is not None else math.log(1e-12)
+        ce += -w * lp
+        if j is not None:
+            m_cov += w
+        if j is not None and j < n_circ:
+            ce_u += -w * lp; m_u += w
+        else:
+            ce_n += -w * lp; m_n += w
+    return {"ce": ce, "ce_update": ce_u / m_u if m_u > 0 else float("nan"),
+            "ce_new": ce_n / m_n if m_n > 0 else float("nan"),
+            "mass_update": m_u, "mass_new": m_n, "coverage": m_cov}
+
+
+def forecast_eval(model, all_days, days, by_day, mass_map, a, rng):
+    """Rolling-origin forecast: from each origin, predict h months ahead.
+
+    This is the evaluation the field actually asks for -- given data up to T,
+    what does the population look like at T+3, T+6, T+12 months -- rather than
+    a ranking against sampled negatives.
+    """
+    n_train = int(len(all_days) * a.train_frac)
+    n_val = int(len(all_days) * a.val_frac)
+    test_days = all_days[n_train + n_val:]
+    if not test_days:
+        return []
+
+    origins = test_days[::max(1, len(test_days) // a.n_origins)][:a.n_origins]
+    rows = []
+    for T in origins:
+        # rebuild state up to the origin
+        model.reset_state()
+        last_seen, freq = {}, {}
+        circ = deque(maxlen=a.circ_max)
+        for t in all_days:
+            if t > T:
+                break
+            model.flush_pending(float(t))
+            model.observe([s for s, _ in by_day[t]], float(t))
+            for s, w in by_day[t]:
+                circ.append(s); last_seen[s] = t; freq[s] = w
+        cm = sorted(mass_map.get(T, {}).items(), key=lambda kv: -kv[1])
+        cm = cm[:a.pop_support]
+        if not cm:
+            continue
+        cands = generate_candidates(
+            [s for s, _ in cm], sorted({m for s, _ in cm for m in s}),
+            radius=a.radius, max_cand=a.pop_cand, rng=rng,
+            exclude={s for s, _ in cm})
+
+        for h in a.forecast_months:
+            dt = 30 * h
+            tgt = [u for u in all_days if u >= T + dt]
+            if not tgt:
+                continue
+            t_tgt = tgt[0]
+            obs = mass_map.get(t_tgt, {})
+            if not obs:
+                continue
+            got = predict_population(model, cm, cands, last_seen, freq,
+                                     T, float(dt), ident_feats)
+            if got is None:
+                continue
+            allv, logp, n_c = got
+            base = population_baselines(cm, cands, float(dt))
+            r = {"origin": days[T], "target": days[t_tgt], "h": h}
+            r["model"] = score_population(logp, allv, n_c, obs)
+            for k, lp in base.items():
+                r[k] = score_population(lp, allv, n_c, obs)
+            rows.append(r)
+    return rows
+
+
+def report_forecast(rows):
+    if not rows:
+        print("\nno forecast rows"); return
+    print("\n" + "=" * 74)
+    print("POPULATION FORECAST -- cross-entropy of the observed population")
+    print("under the predicted one, nats per sequence. LOWER IS BETTER.")
+    methods = ["model", "persistence", "prox"]
+    lbl = {"model": "MODEL", "persistence": "persistence", "prox": "persist+prox"}
+    print(f"\n{'horizon':<10}{'n':>4}" +
+          "".join(f"{lbl[m]:>15}" for m in methods))
+    for h in sorted({r["h"] for r in rows}):
+        sub = [r for r in rows if r["h"] == h]
+        line = f"{str(h) + ' months':<10}{len(sub):>4}"
+        for mth in methods:
+            line += f"{np.mean([r[mth]['ce'] for r in sub]):>15.4f}"
+        print(line)
+
+    print("\nsplit by where the observed mass sits")
+    print(f"{'horizon':<10}{'mass on':>10}{'mass on':>10}"
+          f"{'MODEL ce':>11}{'MODEL ce':>11}{'covered':>9}")
+    print(f"{'':<10}{'existing':>10}{'new':>10}{'existing':>11}{'new':>11}{'':>9}")
+    for h in sorted({r["h"] for r in rows}):
+        sub = [r for r in rows if r["h"] == h]
+        f = lambda k: np.nanmean([r["model"][k] for r in sub])
+        print(f"{str(h) + ' months':<10}{f('mass_update'):>10.3f}"
+              f"{f('mass_new'):>10.3f}{f('ce_update'):>11.3f}"
+              f"{f('ce_new'):>11.3f}{f('coverage'):>9.3f}")
+    print("\n'covered' is the share of observed mass that appears anywhere in "
+          "the\npredicted support -- an upper bound on what any scoring "
+          "method could get.")
+
+
 def report_selection(recs, a):
     """Growth and death, against the baselines that could beat them.
 
-    Birth (which variants appear) is only part of forecasting. Most hyperedges
-    persist; what changes is their mass. These two tasks measure whether the
-    model tracks that -- and whether it beats simply assuming nothing changes.
+    Growth is computed on SURVIVORS ONLY. When most variants go to zero, a
+    log-growth MAE over everything is dominated by log(0) floor terms and
+    measures extinction, not growth -- which is what the death AUC is for.
+    Spearman is the honest growth number: it asks whether the model orders
+    variants by how fast they actually grew.
     """
     if not recs:
         print("\nno selection records"); return
-    print("\n" + "=" * 66)
+    print("\n" + "=" * 70)
     print("SELECTION: growth and death of already-circulating variants")
 
     for dt in sorted({r["dt"] for r in recs}):
         sub = [r for r in recs if r["dt"] == dt]
-        pg = np.array([r["pred_logg"] for r in sub])
-        og = np.array([r["obs_logg"] for r in sub])
-        ok = np.isfinite(pg) & np.isfinite(og)
-        pg, og = pg[ok], og[ok]
-        if pg.size < 3:
-            continue
-        # persistence: predict zero log growth, i.e. share unchanged
-        mae_model = float(np.abs(pg - og).mean())
-        mae_pers = float(np.abs(og).mean())
-        r_p = float(np.corrcoef(pg, og)[0, 1]) if pg.std() > 0 else float("nan")
-        from scipy.stats import spearmanr
-        try:
-            r_s = float(spearmanr(pg, og).statistic)
-        except Exception:
-            r_s = float("nan")
-
         d = np.array([r["dead"] for r in sub])
         sc = np.array([r["death_score"] for r in sub])
         ms = np.array([r["mass"] for r in sub])
         auc = _auc(d, sc)
-        auc_mass = _auc(d, -ms)      # baseline: rare variants die
+        auc_mass = _auc(d, -ms)          # baseline: rare variants die
         print(f"\n--- horizon {int(dt)} days   (n={len(sub)}, "
-              f"{d.mean():.1%} died) ---")
-        print(f"  growth  MAE log-growth   model {mae_model:8.4f}   "
-              f"persistence {mae_pers:8.4f}")
-        print(f"          corr(pred, obs)  pearson {r_p:7.3f}   "
-              f"spearman {r_s:7.3f}")
-        print(f"  death   AUC              model {auc:8.3f}   "
-              f"rarity baseline {auc_mass:8.3f}")
+              f"{d.mean():.1%} below threshold at t+dt) ---")
+
+        surv = [r for r in sub if r.get("survived", 0.0) > 0]
+        if len(surv) >= 5:
+            pg = np.array([r["pred_logg"] for r in surv])
+            og = np.array([r["obs_logg"] for r in surv])
+            ok = np.isfinite(pg) & np.isfinite(og)
+            pg, og = pg[ok], og[ok]
+            mae_m = float(np.abs(pg - og).mean())
+            mae_p = float(np.abs(og).mean())     # persistence: no change
+            r_p = (float(np.corrcoef(pg, og)[0, 1])
+                   if pg.std() > 0 and og.std() > 0 else float("nan"))
+            try:
+                from scipy.stats import spearmanr
+                r_s = float(spearmanr(pg, og).statistic)
+            except Exception:
+                r_s = float("nan")
+            print(f"  growth (survivors only, n={len(pg)})")
+            print(f"    MAE log-growth   model {mae_m:8.4f}   "
+                  f"persistence {mae_p:8.4f}")
+            print(f"    corr(pred, obs)  pearson {r_p:7.3f}   "
+                  f"spearman {r_s:7.3f}   <- the growth number")
+        else:
+            print("  growth: too few survivors to score")
+
+        print(f"  death   AUC   model {auc:7.3f}   "
+              f"rarity baseline {auc_mass:7.3f}")
+
+        # by mass decile: does the model track dominant variants, the tail,
+        # or neither? a single pooled number cannot say.
+        if any("mass_decile" in r for r in sub):
+            print(f"    {'decile':<8}{'n':>7}{'died':>8}"
+                  f"{'deathAUC':>10}{'spearman':>10}")
+            for dec in range(10):
+                g = [r for r in sub if r.get("mass_decile") == dec]
+                if len(g) < 20:
+                    continue
+                gd = np.array([r["dead"] for r in g])
+                gs = np.array([r["death_score"] for r in g])
+                sv = [r for r in g if r.get("survived", 0.0) > 0]
+                rs = float("nan")
+                if len(sv) >= 5:
+                    try:
+                        from scipy.stats import spearmanr
+                        rs = float(spearmanr(
+                            [r["pred_logg"] for r in sv],
+                            [r["obs_logg"] for r in sv]).statistic)
+                    except Exception:
+                        pass
+                print(f"    {dec:<8}{len(g):>7}{gd.mean():>8.1%}"
+                      f"{_auc(gd, gs):>10.3f}{rs:>10.3f}")
 
 
 def _auc(y, s):
@@ -1008,6 +1344,14 @@ def main():
                    dest="max_circ_sel")
     p.add_argument("--sel-weight", type=float, default=1.0, dest="sel_weight",
                    help="weight of the growth+death loss relative to birth")
+    p.add_argument("--forecast-months", type=int, nargs="+",
+                   default=[3, 6, 12], dest="forecast_months")
+    p.add_argument("--n-origins", type=int, default=6, dest="n_origins")
+    p.add_argument("--pop-support", type=int, default=2000, dest="pop_support")
+    p.add_argument("--pop-cand", type=int, default=4000, dest="pop_cand")
+    p.add_argument("--forecast-only", action="store_true",
+                   dest="forecast_only",
+                   help="skip the MRR and selection diagnostics")
     p.add_argument("--out", default=None)
     a = p.parse_args()
 
