@@ -482,7 +482,10 @@ class TransitionModel(nn.Module):
         """
         logit_exist, scores, circ, mass = self.score_all_additions(
             circ_mass, t_now, dt)
-        b = torch.sigmoid(self.budget_logit(dt)).clamp(1e-6, 1 - 1e-6)
+        # Clip budget: 159 shows new mass share is 0.3-0.5 at 1-3 months.
+        # Without clipping the model drives budget to ~0.3 while cov=0.53,
+        # spending mass on wrong candidates and diverging.
+        b = torch.sigmoid(self.budget_logit(dt)).clamp(0.05, 0.6)
 
         # existing: weighted by current mass, then scaled by (1-b)
         if device is not None:
@@ -823,9 +826,9 @@ def main():
     p.add_argument("--train-frac", type=float, default=0.7, dest="train_frac")
     p.add_argument("--n-origins", type=int, default=3, dest="n_origins")
     p.add_argument("--epochs", type=int, default=3)
-    p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--window", type=int, default=30,
+    p.add_argument("--window", type=int, default=90,
                    help="days of history to aggregate for circulating variants")
     p.add_argument("--out", default=None)
     a = p.parse_args()
