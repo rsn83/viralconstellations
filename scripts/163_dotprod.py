@@ -301,11 +301,29 @@ class TransitionModel(nn.Module):
         # background encoder: maps a variant to z_B
         self.bg_enc = nn.Sequential(
             nn.Linear(d + 1, 2 * d), nn.Tanh(), nn.Linear(2 * d, d))
-        # horizon-dependent fitness for existing variants
+        # horizon-dependent fitness conditioned on population state u_t
+        # so existing variants know what else is circulating
         self.fitness = nn.Sequential(
-            nn.Linear(d + 1, 2 * d), nn.Tanh(), nn.Linear(2 * d, 1))
+            nn.Linear(2 * d + 1, 2 * d), nn.Tanh(), nn.Linear(2 * d, 1))
         nn.init.zeros_(self.fitness[-1].weight)
         nn.init.zeros_(self.fitness[-1].bias)
+        # adjacency head: MLP_a(v_i) -> co-occurrence distribution
+        self.adj = nn.Sequential(
+            nn.Linear(d, 2 * d), nn.Tanh(), nn.Linear(2 * d, d))
+        nn.init.zeros_(self.adj[-1].weight)
+        nn.init.zeros_(self.adj[-1].bias)
+
+        # timing head: MLP_t(v_i) -> log mean of lognormal inter-event time
+        # LL_t trains it on observed Δt per mutation.
+        # Δt_i(t) = exp(μ_i) is then used as a feature in the fitness and
+        # adjacency heads: a short predicted gap means surging, long means
+        # declining. This is their LL_t, feeding rate information into
+        # downstream prediction without requiring autoregressive rollout.
+        self.timing = nn.Linear(d, 1)
+        nn.init.zeros_(self.timing.weight)
+        nn.init.zeros_(self.timing.bias)
+        self.log_sigma_t = nn.Parameter(torch.tensor(0.0))
+
         # mass budget for new variants
         self.budget = nn.Sequential(nn.Linear(1, 8), nn.Tanh(),
                                     nn.Linear(8, 1))
@@ -422,42 +440,101 @@ class TransitionModel(nn.Module):
         X = torch.stack(reps)
         return self.mixer(self.pop_enc(X, mass))
 
+    def timing_feats(self, active_idx, t_now):
+        """Predicted log inter-event time per mutation -> rate feature.
+
+        A small predicted Δt means the mutation is firing frequently (surging);
+        large means it is dormant or declining. This feeds into fitness and
+        adjacency heads as a temporal rate signal, complementing the direct
+        horizon conditioning.
+        """
+        table = self.node_repr_cached(t_now)
+        v = table[active_idx]
+        mu = self.timing(v).squeeze(-1)      # (K,) log mean of lognormal
+        return mu                             # use exp(mu) as rate feature
+
+    def adj_scores(self, active_idx, t_now):
+        """For each active mutation, predicted co-occurrence with all others.
+
+        Returns (len(active), V) log-softmax. High score for (i,j) means
+        mutation i predicts mutation j as a future co-occurrence partner.
+        This is their MLP_a(v_i) adapted to use GRU representations.
+        """
+        table = self.node_repr_cached(t_now)
+        v_active = table[active_idx]              # (K, d)
+        q = self.adj(v_active)                    # (K, d)
+        return torch.log_softmax(q @ table.T, dim=-1)  # (K, V)
+
+    def adj_candidates(self, circ_mass, t_now, top_k=8, top_m=100):
+        """Generate candidates from mutation co-evolution trajectories.
+
+        For each of the top active mutations, find its top-k predicted
+        co-occurrence partners. Intersect pairs to form candidate sets.
+        This generates edges from temporal dynamics, not today's variants.
+        """
+        table = self.node_repr_cached(t_now)
+        act = {}
+        for v, w in circ_mass:
+            for m in v:
+                act[m] = act.get(m, 0.0) + w
+        active = sorted(act, key=lambda m: -act[m])[:top_m]
+        if not active:
+            return []
+        idx = torch.tensor(active, device=table.device, dtype=torch.long)
+        lp = self.adj_scores(idx, t_now)          # (top_m, V)
+        _, top_j = torch.topk(lp, k=top_k, dim=-1)  # (top_m, top_k)
+        top_j = top_j.cpu().tolist()
+        # build candidate sets: seed mutation + its top predicted partners
+        cands = set()
+        for i, m_i in enumerate(active):
+            partners = [j for j in top_j[i] if j != m_i]
+            for m_j in partners:
+                cands.add(frozenset({m_i, m_j}))
+                # extend with another partner to get size-3 sets
+                for m_k in partners[:3]:
+                    if m_k != m_j:
+                        cands.add(frozenset({m_i, m_j, m_k}))
+        # these are mutation-level sets; extend to full variants by finding
+        # circulating variants containing at least one of these mutations
+        circ = [v for v, _ in circ_mass]
+        full = set()
+        for seed_set in cands:
+            for v in circ:
+                if seed_set & v:   # at least one seed mutation in v
+                    for m in seed_set - v:
+                        if m < self.V:
+                            full.add(frozenset(v | {m}))
+        return list(full)
+
     def budget_logit(self, dt):
         return self.new_bias + self.budget(
             _t([[float(dt)]])).squeeze()
 
-    def score_all_additions(self, circ_mass, t_now, dt):
-        """Score every possible addition to every circulating variant.
-
-        Returns:
-          allv   list of (parent_idx, mutation) pairs  -- the new variants
-          logits (n_circ * V_possible,) raw scores before softmax
-          The first n_circ entries are the existing variants (logit from mass).
-        """
+    def score_all_additions(self, circ_mass, t_now, dt, u=None):
+        """Score every possible addition, conditioned on population state u_t."""
         circ = [v for v, _ in circ_mass]
         mass = _t([m for _, m in circ_mass], dtype=torch.float32)
         n = len(circ)
-        table = self.node_repr_cached(t_now)               # (V, d)
-
-        # existing: log mass + dt * fitness
-        logm = torch.log(mass.clamp_min(1e-9))
+        table = self.node_repr_cached(t_now)
         dev = table.device
+        if u is None:
+            u = self.pop_state(circ, mass, t_now)
+        logm = torch.log(mass.clamp_min(1e-9))
         X = torch.stack([table[torch.tensor(list(v), device=dev)].mean(0)
                          if v else torch.zeros(self.d, device=dev) for v in circ])
-        feat = torch.cat([X, torch.full((n, 1), float(dt), device=_DEVICE)], dim=-1)
+        u_exp = u.unsqueeze(0).expand(n, -1)
+        feat = torch.cat([X, u_exp,
+                          torch.full((n, 1), float(dt), device=dev)], dim=-1)
         fit = self.fitness(feat).squeeze(-1)
-        logit_exist = logm + dt * fit                      # (n,)
-
-        # new variants: z_B · v_m for all (B, m) where m not in B
-        zB = self.background_repr(circ, t_now, dt)         # (n, d)
-        scores = zB @ table.T                              # (n, V)
-
-        # mask out mutations already in the background
+        logit_exist = logm + dt * fit
+        mass_norm = (mass / mass.sum().clamp_min(1e-9)).to(dev)
+        zB = self.background_repr(circ, t_now, dt)
+        scores = zB @ table.T
+        scores = scores + torch.log(mass_norm.unsqueeze(1).clamp_min(1e-9))
         for i, v in enumerate(circ):
             for m in v:
                 if m < self.V:
                     scores[i, m] = -1e9
-
         return logit_exist, scores, circ, mass
 
     def predict(self, circ_mass, t_now, dt, device=None):
@@ -480,8 +557,13 @@ class TransitionModel(nn.Module):
         ~1/(n*V). The normalisation is still principled: each background
         contributes proportionally to its mass.
         """
+        u = self.pop_state([v for v, _ in circ_mass],
+                           torch.tensor([m for _, m in circ_mass],
+                                        dtype=torch.float32).to(
+                               self.node_repr_cached(t_now).device),
+                           t_now)
         logit_exist, scores, circ, mass = self.score_all_additions(
-            circ_mass, t_now, dt)
+            circ_mass, t_now, dt, u=u)
         # Clip budget: 159 shows new mass share is 0.3-0.5 at 1-3 months.
         # Without clipping the model drives budget to ~0.3 while cov=0.53,
         # spending mass on wrong candidates and diverging.
@@ -544,6 +626,8 @@ def transition_loss(model, circ_mass, obs_mass, t, dt, a, train=True, device=Non
                     return n_c + pi * V + m
         return None
 
+    adj_loss = None
+
     tgt = obs_fit if train else obs_mass
     tot = sum(tgt.values()) or 1.0
     I, W = [], []
@@ -568,6 +652,7 @@ def transition_loss(model, circ_mass, obs_mass, t, dt, a, train=True, device=Non
         loss = loss.to("cpu") if not loss.device.type == "cpu" else loss
     covered = sum(W) * tot / tot_all
     meta = {"n_target": len(obs_fit), "target_mass": run,
+            "adj": float(adj_loss.detach()) if adj_loss is not None else float("nan"),
             "covered": covered,
             "budget": float(torch.sigmoid(
                 model.budget_logit(dt)).detach())}
@@ -722,10 +807,13 @@ def run(a):
 
         f = lambda k: float(np.nanmean([i[k] for i in info])) if info \
             else float("nan")
+        adj_vals = [float(i.get('adj',float('nan'))) for i in info
+                    if not np.isnan(i.get('adj',float('nan')))]
+        adj_str = f"  adj {np.mean(adj_vals):.3f}" if adj_vals else ""
         print(f"epoch {ep+1}/{a.epochs}  loss {np.mean(losses):.4f}"
               f"  budget {f('budget'):.3f}"
               f"  target {f('n_target'):.0f} ({f('target_mass'):.2f})"
-              f"  cov {f('covered'):.3f}"
+              f"  cov {f('covered'):.3f}" + adj_str
               + (f"  [{n_bad} skipped]" if n_bad else ""), flush=True)
 
     # ---- evaluation ---------------------------------------------------
@@ -830,6 +918,8 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--window", type=int, default=90,
                    help="days of history to aggregate for circulating variants")
+    p.add_argument("--adj-weight", type=float, default=0.5, dest="adj_weight",
+                   help="weight of adjacency co-evolution supervision")
     p.add_argument("--out", default=None)
     a = p.parse_args()
     run(a)
