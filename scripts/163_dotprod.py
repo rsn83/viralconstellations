@@ -376,13 +376,13 @@ class TransitionModel(nn.Module):
             ms = list(s)[:max_k]
             if not ms:
                 continue
-            rows = _t([pos[m] for m in ms], dtype=torch.long)
-            ctx = V_rep[_t(ms, dtype=torch.long)].mean(0, keepdim=True)
+            rows = torch.tensor([pos[m] for m in ms], dtype=torch.long)  # CPU
+            ctx = V_rep[torch.tensor(ms, dtype=torch.long, device=_DEVICE)].detach().cpu().mean(0, keepdim=True)
             agg.index_add_(0, rows, ctx.expand(len(rows), -1))
-            cnt.index_add_(0, rows, torch.ones(len(rows), 1, device=_DEVICE))
+            cnt.index_add_(0, rows, torch.ones(len(rows), 1))
         agg = agg / cnt.clamp_min(1.0)
         dt = (t_now - self.mem.last_t[idx]).clamp_min(0.0)
-        msg = torch.cat([v, agg, self.time(dt)], dim=-1)
+        msg = torch.cat([v.detach().cpu(), agg, self.time(dt)], dim=-1)
         self._pending = (idx, msg.detach())
         with torch.no_grad():
             slot = (self.nbr_cnt[idx] % self.N).cpu()
