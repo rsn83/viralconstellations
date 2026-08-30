@@ -380,7 +380,11 @@ class VariantTPP(nn.Module):
         # while plain recency scored 0.782 on repeats. Three cheap features
         # supply that: log recency, log abundance, and a seen-before flag.
         # how much total mass to allocate to never-seen variants, learned
-        self.new_bias = nn.Parameter(torch.tensor(-4.0))
+        # Mass budget for never-seen variants, as sigmoid(new_bias). Starts
+        # near 0.05 rather than saturated, so the gradient can move it: 159
+        # showed ~50% of mass at 3 months and ~91% at 6 months sits on variants
+        # absent at the origin, so this should learn to be LARGE.
+        self.new_bias = nn.Parameter(torch.tensor(-3.0))
         # Identity features: log recency, log abundance, seen-before flag.
         # The scorer sees only member mutations, so it cannot tell it has met
         # this exact variant before -- which is why it scored repeats (0.285)
@@ -389,8 +393,12 @@ class VariantTPP(nn.Module):
         # attention, not merely added to the final score: a scalar offset can
         # only shift a variant up or down, whereas the model needs to condition
         # set structure on history ("plausible combination AND it is growing").
+        # Small random init, not zeros: a zero-initialised projection outputs
+        # zero, and its own gradient is proportional to its output, so it would
+        # never move. Same dead-initialisation trap as a multiplicative gate
+        # started at zero.
         self.ident_proj = nn.Linear(3, d)
-        nn.init.zeros_(self.ident_proj.weight)
+        nn.init.normal_(self.ident_proj.weight, std=0.01)
         nn.init.zeros_(self.ident_proj.bias)
         self.ident = nn.Linear(3, 1)
         nn.init.zeros_(self.ident.weight); nn.init.zeros_(self.ident.bias)
@@ -1090,24 +1098,54 @@ def predict_population(model, circ_mass, candidates, last_seen, freq,
         return None
 
     with torch.no_grad():
-        logm = torch.log(mass.clamp_min(1e-9))
-        z = model.variant_repr(circ, float(t))
-        feat = torch.cat([z, logm.unsqueeze(-1),
-                          torch.full((n_c, 1), float(dt))], dim=-1)
-        fit = model.fitness(feat).squeeze(-1)
-        logit_upd = logm + dt * fit
+        cands = list(candidates)
+        logp, n_c, b = _split_logp(model, circ, mass, cands, t, dt, ident_fn,
+                                   last_seen, freq)
+        return circ + cands, logp.numpy(), n_c
 
-        if candidates:
-            logit_new = model.score_variants(
-                candidates, float(t),
-                ident=ident_fn(candidates, last_seen, freq, t))
-            logit_new = logit_new + model.new_bias
-        else:
-            logit_new = torch.zeros(0)
 
-        allv = circ + list(candidates)
-        logits = torch.cat([logit_upd, logit_new])
-        return allv, torch.log_softmax(logits, dim=0).numpy(), n_c
+def _split_logp(model, circ, mass, cands, t, dt, ident_fn,
+                last_seen, freq, with_grad=False):
+    """Predicted log-distribution, with the mass budget separated from
+    composition.
+
+    Two independent decisions, and mixing them was the defect:
+
+      budget      how much total mass goes to variants that do not yet exist
+      composition which candidates receive it, and how existing mass shifts
+
+    A single softmax over (existing + candidates) renormalises, so merely
+    PROPOSING candidates removes mass from every existing variant. The model
+    then cannot express persistence at all -- it pays for its proposals whether
+    or not they are any good, which is why it lost to persistence even with
+    fitness identically zero.
+
+    Split explicitly:
+        b        = sigmoid(new_bias)                       one scalar
+        existing = (1 - b) * softmax(log mass + dt*fitness)
+        new      = b       * softmax(birth scores)
+
+    Now b -> 0 reproduces persistence EXACTLY, so copying is the default and
+    every unit of mass moved to new variants has to be earned. The composition
+    heads are untouched: ranking candidates is still the birth scorer's job.
+    """
+    n_c = len(circ)
+    logm = torch.log(mass.clamp_min(1e-9))
+    z = model.variant_repr(circ, float(t))
+    feat = torch.cat([z, logm.unsqueeze(-1),
+                      torch.full((n_c, 1), float(dt))], dim=-1)
+    fit = model.fitness(feat).squeeze(-1)
+    lp_upd = torch.log_softmax(logm + dt * fit, dim=0)
+
+    if not cands:
+        return lp_upd, n_c, 0.0
+    b = torch.sigmoid(model.new_bias)
+    lp_new = torch.log_softmax(
+        model.score_variants(cands, float(t),
+                             ident=ident_fn(cands, last_seen, freq, t)), dim=0)
+    return (torch.cat([lp_upd + torch.log1p(-b + 1e-9),
+                       lp_new + torch.log(b + 1e-9)]),
+            n_c, float(b.detach()))
 
 
 def population_loss(model, circ_mass, candidates, obs_mass,
@@ -1124,24 +1162,9 @@ def population_loss(model, circ_mass, candidates, obs_mass,
     if not circ:
         return None
     mass = torch.tensor([m for _, m in circ_mass], dtype=torch.float32)
-    n_c = len(circ)
     cands = list(candidates)[:max_cand]
-
-    logm = torch.log(mass.clamp_min(1e-9))
-    z = model.variant_repr(circ, float(t))
-    feat = torch.cat([z, logm.unsqueeze(-1),
-                      torch.full((n_c, 1), float(dt))], dim=-1)
-    fit = model.fitness(feat).squeeze(-1)
-    logit_upd = logm + dt * fit
-
-    if cands:
-        logit_new = model.score_variants(
-            cands, float(t), ident=ident_fn(cands, last_seen, freq, t))
-        logit_new = logit_new + model.new_bias
-        logits = torch.cat([logit_upd, logit_new])
-    else:
-        logits = logit_upd
-    logp = torch.log_softmax(logits, dim=0)
+    logp, n_c, _ = _split_logp(model, circ, mass, cands, t, dt, ident_fn,
+                               last_seen, freq)
 
     ix = {v: i for i, v in enumerate(circ + cands)}
     tot = sum(obs_mass.values()) or 1.0
