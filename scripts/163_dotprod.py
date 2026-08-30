@@ -194,6 +194,7 @@ class Memory(nn.Module):
         self.mem.zero_(); self.last_t.zero_()
 
     def read(self, idx, t_now):
+        idx = idx.cpu() if hasattr(idx,'device') else idx
         m = self.mem[idx]
         if self.decay:
             dt = (t_now - self.last_t[idx]).clamp_min(0.0)
@@ -384,22 +385,23 @@ class TransitionModel(nn.Module):
         msg = torch.cat([v, agg, self.time(dt)], dim=-1)
         self._pending = (idx, msg.detach())
         with torch.no_grad():
-            slot = self.nbr_cnt[idx] % self.N
-            self.nbr_vec[idx, slot] = agg.detach()
-            self.nbr_t[idx, slot] = t_now
-            self.nbr_cnt[idx] += 1
+            slot = (self.nbr_cnt[idx] % self.N).cpu()
+            self.nbr_vec[idx.cpu(), slot] = agg.detach().cpu()
+            self.nbr_t[idx.cpu(), slot] = t_now
+            self.nbr_cnt[idx.cpu()] += 1
         self._cache_t = None
 
     def background_repr(self, variants, t_now, dt):
         """z_B for each background: pooled member repr + dt."""
         table = self.node_repr_cached(t_now)
+        dev = table.device
         reps = []
         for v in variants:
             ms = list(v)
             if not ms:
-                reps.append(torch.zeros(self.d))
+                reps.append(torch.zeros(self.d, device=dev))
                 continue
-            reps.append(table[torch.tensor(ms)].mean(0))
+            reps.append(table[torch.tensor(ms, device=dev)].mean(0))
         X = torch.stack(reps)                              # (n, d)
         feat = torch.cat([X, torch.full((len(variants), 1), float(dt), device=_DEVICE)],
                          dim=-1)
@@ -407,11 +409,12 @@ class TransitionModel(nn.Module):
 
     def pop_state(self, variants, mass, t_now):
         table = self.node_repr_cached(t_now)
+        dev = table.device
         reps = []
         for v in variants:
             ms = list(v)
-            reps.append(table[torch.tensor(ms)].mean(0) if ms
-                        else torch.zeros(self.d))
+            reps.append(table[torch.tensor(ms, device=dev)].mean(0) if ms
+                        else torch.zeros(self.d, device=dev))
         X = torch.stack(reps)
         return self.mixer(self.pop_enc(X, mass))
 
@@ -434,8 +437,9 @@ class TransitionModel(nn.Module):
 
         # existing: log mass + dt * fitness
         logm = torch.log(mass.clamp_min(1e-9))
-        X = torch.stack([table[torch.tensor(list(v))].mean(0)
-                         if v else torch.zeros(self.d) for v in circ])
+        dev = table.device
+        X = torch.stack([table[torch.tensor(list(v), device=dev)].mean(0)
+                         if v else torch.zeros(self.d, device=dev) for v in circ])
         feat = torch.cat([X, torch.full((n, 1), float(dt), device=_DEVICE)], dim=-1)
         fit = self.fitness(feat).squeeze(-1)
         logit_exist = logm + dt * fit                      # (n,)
