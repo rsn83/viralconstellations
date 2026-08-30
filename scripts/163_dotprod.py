@@ -367,8 +367,8 @@ class TransitionModel(nn.Module):
         if not seen:
             return
         V_rep = self.node_repr_cached(t_now)
-        idx = _t(seen, dtype=torch.long)
-        v = V_rep[idx]
+        idx = torch.tensor(seen, dtype=torch.long)  # CPU: indexes memory buffers
+        v = V_rep[idx.to(_DEVICE)]
         pos = {m: i for i, m in enumerate(seen)}
         agg = torch.zeros(len(seen), self.d)
         cnt = torch.zeros(len(seen), 1)
