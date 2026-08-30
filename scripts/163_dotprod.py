@@ -49,6 +49,11 @@ from collections import defaultdict
 
 import numpy as np
 import torch
+
+_DEVICE = torch.device('cpu')  # set in run()
+
+def _t(*args, **kw):
+    return torch.tensor(*args, **kw).to(_DEVICE)
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -133,6 +138,14 @@ def load_first_seen(vocab_path, V, cutoff):
           "memory suppressed, posres only")
     return seen
 
+
+
+def to(x, device):
+    if isinstance(x, torch.Tensor):
+        return x.to(device)
+    if isinstance(x, list):
+        return [to(i, device) for i in x]
+    return x
 
 def group_by_day(events):
     by_day = defaultdict(list)
@@ -223,6 +236,7 @@ class PosResEmbed(nn.Module):
         nn.init.normal_(self.res.weight, std=0.02)
 
     def forward(self, idx):
+        idx = idx.to(self.pos_id.device)
         return self.pos(self.pos_id[idx]) + self.res(self.res_id[idx])
 
 
@@ -259,7 +273,7 @@ class PopEncoder(nn.Module):
         self.out = nn.Sequential(nn.Linear(d, d), nn.Tanh())
 
     def forward(self, X, w):
-        u = (w.unsqueeze(-1) * X).sum(0)
+        u = (w.to(X.device).unsqueeze(-1) * X).sum(0)
         return self.out(torch.nan_to_num(u))
 
 
@@ -323,7 +337,7 @@ class TransitionModel(nn.Module):
         self._cache_t = None
 
     def all_node_repr(self, t_now):
-        idx = torch.arange(self.V)
+        idx = torch.arange(self.V, device=_DEVICE)
         m = self.mem.read(idx, t_now)
         if self._override is not None:
             oi, ov = self._override
@@ -331,10 +345,10 @@ class TransitionModel(nn.Module):
         m = m * self.mem_ok
         dt = (t_now - self.nbr_t).clamp_min(0.0)
         ctx = torch.cat([self.nbr_vec, self.time(dt)], dim=-1)
-        ar = torch.arange(self.N).unsqueeze(0)
+        ar = torch.arange(self.N, device=_DEVICE).unsqueeze(0)
         mask = ar >= self.nbr_cnt.clamp(max=self.N).unsqueeze(1)
         mask[mask.all(dim=1), 0] = False
-        q = torch.cat([m, self.time(torch.zeros(self.V))], dim=-1)
+        q = torch.cat([m, self.time(torch.zeros(self.V, device=_DEVICE))], dim=-1)
         nb = self.nbr(q, ctx, mask)
         v = self.W_s(m) + self.W_n(nb)
         if self.posres is not None:
@@ -352,7 +366,7 @@ class TransitionModel(nn.Module):
         if not seen:
             return
         V_rep = self.node_repr_cached(t_now)
-        idx = torch.tensor(seen)
+        idx = _t(seen, dtype=torch.long)
         v = V_rep[idx]
         pos = {m: i for i, m in enumerate(seen)}
         agg = torch.zeros(len(seen), self.d)
@@ -361,10 +375,10 @@ class TransitionModel(nn.Module):
             ms = list(s)[:max_k]
             if not ms:
                 continue
-            rows = torch.tensor([pos[m] for m in ms])
-            ctx = V_rep[torch.tensor(ms)].mean(0, keepdim=True)
+            rows = _t([pos[m] for m in ms], dtype=torch.long)
+            ctx = V_rep[_t(ms, dtype=torch.long)].mean(0, keepdim=True)
             agg.index_add_(0, rows, ctx.expand(len(rows), -1))
-            cnt.index_add_(0, rows, torch.ones(len(rows), 1))
+            cnt.index_add_(0, rows, torch.ones(len(rows), 1, device=_DEVICE))
         agg = agg / cnt.clamp_min(1.0)
         dt = (t_now - self.mem.last_t[idx]).clamp_min(0.0)
         msg = torch.cat([v, agg, self.time(dt)], dim=-1)
@@ -387,7 +401,7 @@ class TransitionModel(nn.Module):
                 continue
             reps.append(table[torch.tensor(ms)].mean(0))
         X = torch.stack(reps)                              # (n, d)
-        feat = torch.cat([X, torch.full((len(variants), 1), float(dt))],
+        feat = torch.cat([X, torch.full((len(variants), 1), float(dt), device=_DEVICE)],
                          dim=-1)
         return self.bg_enc(feat)                           # (n, d)
 
@@ -403,7 +417,7 @@ class TransitionModel(nn.Module):
 
     def budget_logit(self, dt):
         return self.new_bias + self.budget(
-            torch.tensor([[float(dt)]])).squeeze()
+            _t([[float(dt)]])).squeeze()
 
     def score_all_additions(self, circ_mass, t_now, dt):
         """Score every possible addition to every circulating variant.
@@ -414,7 +428,7 @@ class TransitionModel(nn.Module):
           The first n_circ entries are the existing variants (logit from mass).
         """
         circ = [v for v, _ in circ_mass]
-        mass = torch.tensor([m for _, m in circ_mass], dtype=torch.float32)
+        mass = _t([m for _, m in circ_mass], dtype=torch.float32)
         n = len(circ)
         table = self.node_repr_cached(t_now)               # (V, d)
 
@@ -422,7 +436,7 @@ class TransitionModel(nn.Module):
         logm = torch.log(mass.clamp_min(1e-9))
         X = torch.stack([table[torch.tensor(list(v))].mean(0)
                          if v else torch.zeros(self.d) for v in circ])
-        feat = torch.cat([X, torch.full((n, 1), float(dt))], dim=-1)
+        feat = torch.cat([X, torch.full((n, 1), float(dt), device=_DEVICE)], dim=-1)
         fit = self.fitness(feat).squeeze(-1)
         logit_exist = logm + dt * fit                      # (n,)
 
@@ -438,7 +452,7 @@ class TransitionModel(nn.Module):
 
         return logit_exist, scores, circ, mass
 
-    def predict(self, circ_mass, t_now, dt):
+    def predict(self, circ_mass, t_now, dt, device=None):
         """Full predicted distribution at T+h.
 
         LOCAL normalisation per background, then weighted by background mass.
@@ -463,6 +477,10 @@ class TransitionModel(nn.Module):
         b = torch.sigmoid(self.budget_logit(dt)).clamp(1e-6, 1 - 1e-6)
 
         # existing: weighted by current mass, then scaled by (1-b)
+        if device is not None:
+            logit_exist = logit_exist.to(device)
+            scores = scores.to(device)
+            mass = mass.to(device)
         lp_exist = torch.log_softmax(logit_exist, dim=0) + torch.log1p(-b)
 
         # new: local softmax per background, weighted by background mass
@@ -482,7 +500,7 @@ class TransitionModel(nn.Module):
 # LOSS AND EVALUATION
 # ======================================================================
 
-def transition_loss(model, circ_mass, obs_mass, t, dt, a, train=True):
+def transition_loss(model, circ_mass, obs_mass, t, dt, a, train=True, device=None):
     circ = [v for v, _ in circ_mass]
     if len(circ) < 2 or not obs_mass:
         return None, None
@@ -497,7 +515,7 @@ def transition_loss(model, circ_mass, obs_mass, t, dt, a, train=True):
             break
     obs_fit = dict(keep)
 
-    logp, circ_out, shape = model.predict(circ_mass, float(t), float(dt))
+    logp, circ_out, shape = model.predict(circ_mass, float(t), float(dt), device=device)
     n_c, V = shape
 
     # build index: existing variants
@@ -528,9 +546,15 @@ def transition_loss(model, circ_mass, obs_mass, t, dt, a, train=True):
 
     if not I:
         return None, None
-    loss = -(torch.tensor(W, dtype=torch.float32)
-             * logp[torch.tensor(I, dtype=torch.long)]).sum() \
+    _I = torch.tensor(I, dtype=torch.long)
+    _W = torch.tensor(W, dtype=torch.float32)
+    if device is not None:
+        _I = _I.to(device); _W = _W.to(device)
+        logp = logp.to(device)
+    loss = -(_W * logp[_I]).sum() \
         / max(sum(W), 1e-9)
+    if device is not None:
+        loss = loss.to("cpu") if not loss.device.type == "cpu" else loss
     covered = sum(W) * tot / tot_all
     meta = {"n_target": len(obs_fit), "target_mass": run,
             "covered": covered,
@@ -542,7 +566,7 @@ def transition_loss(model, circ_mass, obs_mass, t, dt, a, train=True):
 def score_population(logp, circ, shape, obs_mass):
     n_c, V = shape
     ix = {v: i for i, v in enumerate(circ)}
-    logp_np = logp.detach().numpy() if hasattr(logp, 'detach') else logp
+    logp_np = logp.detach().cpu().numpy() if hasattr(logp, 'detach') else logp
     p = np.exp(logp_np)
     tot = sum(obs_mass.values()) or 1.0
     q = np.zeros_like(p)
@@ -589,6 +613,11 @@ def persistence_scores(circ_mass, obs_mass, shape):
 def run(a):
     torch.manual_seed(a.seed); np.random.seed(a.seed)
     rng = random.Random(a.seed)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f'device: {device}')
+    global _DEVICE; _DEVICE = device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"device: {device}")
 
     D = load_events(a.events, a.vocab)
     events, days, V = D["events"], D["days"], D["V"]
@@ -610,10 +639,11 @@ def run(a):
         posres = PosResEmbed(p_, r_, npos, nres, a.d)
 
     model = TransitionModel(V, d=a.d, heads=a.heads, n_recent=a.n_recent,
-                            posres=posres, decay=not a.no_decay, M=a.M)
+                            posres=posres, decay=not a.no_decay, M=a.M).to(device)
     model.mem_ok.copy_(load_first_seen(
         a.vocab, V, days[train_days[-1]]).float().unsqueeze(-1))
-    print(f"parameters: {sum(p.numel() for p in model.parameters()):,}")
+    model = model.to(device)
+    print(f"parameters: {sum(p.numel() for p in model.parameters()):,}  device: {device}")
     opt = torch.optim.Adam(model.parameters(), lr=a.lr)
 
     def circ_at(t):
@@ -654,7 +684,7 @@ def run(a):
             with torch.no_grad():
                 model.mixer.push(model.pop_state(
                     [v for v, _ in cm],
-                    torch.tensor([m for _, m in cm], dtype=torch.float32),
+                    _t([m for _, m in cm], dtype=torch.float32),
                     float(t)))
             total = None
             for h in a.horizons:
@@ -662,7 +692,7 @@ def run(a):
                 if not obs:
                     continue
                 l, meta = transition_loss(model, cm, obs, t,
-                                          float(30 * h), a, train=True)
+                                          float(30 * h), a, train=True, device=device)
                 if l is not None and torch.isfinite(l):
                     total = l if total is None else total + l
                     info.append(meta)
@@ -714,7 +744,7 @@ def run(a):
                 continue
             with torch.no_grad():
                 logp, circ_out, shape = model.predict(
-                    cm, float(T), float(30 * h))
+                    cm, float(T), float(30 * h), device=device)
             r = {"origin": days[T], "h": h}
             r["model"] = score_population(logp, circ_out, shape, obs)
             # persistence baseline
