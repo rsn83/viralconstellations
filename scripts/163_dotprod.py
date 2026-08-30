@@ -367,28 +367,30 @@ class TransitionModel(nn.Module):
         if not seen:
             return
         V_rep = self.node_repr_cached(t_now)
-        idx = torch.tensor(seen, dtype=torch.long)  # CPU: indexes memory buffers
-        v = V_rep[idx.to(_DEVICE)]
+        buf_dev = self.nbr_vec.device          # buffers move with model to CUDA
+        idx = torch.tensor(seen, dtype=torch.long, device=buf_dev)
+        v = V_rep[idx]
         pos = {m: i for i, m in enumerate(seen)}
-        agg = torch.zeros(len(seen), self.d)
-        cnt = torch.zeros(len(seen), 1)
+        agg = torch.zeros(len(seen), self.d, device=buf_dev)
+        cnt = torch.zeros(len(seen), 1, device=buf_dev)
         for s in variants:
             ms = list(s)[:max_k]
             if not ms:
                 continue
-            rows = torch.tensor([pos[m] for m in ms], dtype=torch.long)  # CPU
-            ctx = V_rep[torch.tensor(ms, dtype=torch.long, device=_DEVICE)].detach().cpu().mean(0, keepdim=True)
+            rows = torch.tensor([pos[m] for m in ms], dtype=torch.long, device=buf_dev)
+            ctx = V_rep[torch.tensor(ms, dtype=torch.long, device=_DEVICE)
+                       ].detach().to(buf_dev).mean(0, keepdim=True)
             agg.index_add_(0, rows, ctx.expand(len(rows), -1))
-            cnt.index_add_(0, rows, torch.ones(len(rows), 1))
+            cnt.index_add_(0, rows, torch.ones(len(rows), 1, device=buf_dev))
         agg = agg / cnt.clamp_min(1.0)
         dt = (t_now - self.mem.last_t[idx]).clamp_min(0.0)
-        msg = torch.cat([v.detach().cpu(), agg, self.time(dt).cpu()], dim=-1)
+        msg = torch.cat([v.detach(), agg, self.time(dt)], dim=-1)
         self._pending = (idx, msg.detach())
         with torch.no_grad():
-            slot = (self.nbr_cnt[idx] % self.N).cpu()
-            self.nbr_vec[idx.cpu(), slot] = agg.detach().cpu()
-            self.nbr_t[idx.cpu(), slot] = t_now
-            self.nbr_cnt[idx.cpu()] += 1
+            slot = self.nbr_cnt[idx] % self.N
+            self.nbr_vec[idx, slot] = agg.detach()
+            self.nbr_t[idx, slot] = t_now
+            self.nbr_cnt[idx] += 1
         self._cache_t = None
 
     def background_repr(self, variants, t_now, dt):
