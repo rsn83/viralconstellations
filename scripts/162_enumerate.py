@@ -631,23 +631,25 @@ class VariantTPP(nn.Module):
         self._cache_t = None
 
     # ---- node representations -----------------------------------------
-    def apply_horizontal(self, circ_mass):
+    def apply_horizontal(self, circ_mass, no_hmix=False, hmix_top=50):
         """Update all_node_repr with cross-set signal from the current pop.
 
         Called once per day after observe(), before any scoring. Zero-init
         projection means the first call is a no-op; signal builds as the
         model trains.
         """
-        if not circ_mass or self._cache_v is None:
+        if no_hmix or not circ_mass or self._cache_v is None:
             return
         circ = [v for v, _ in circ_mass]
         mass = torch.tensor([m for _, m in circ_mass], dtype=torch.float32)
         mass = mass / mass.sum().clamp_min(1e-9)
-        var_rep = self.variant_repr(circ, self._cache_t)   # (E, d)
+        var_rep = self.variant_repr(circ, self._cache_t)
         membership = [[] for _ in range(self.V)]
-        for j, v in enumerate(circ):
-            for m in v:
-                if m < self.V:
+        # cap variants per mutation to avoid memory explosion at V=5000
+        ranked = list(range(len(circ)))
+        for j in ranked:
+            for m in circ[j]:
+                if m < self.V and len(membership[m]) < hmix_top:
                     membership[m].append(j)
         with torch.no_grad():
             updated = self.hmix(self._cache_v, var_rep, membership, mass)
@@ -1055,7 +1057,7 @@ def run(a):
                 losses.append(float(total.detach()))
             model.observe([s for s, _ in by_day[t]], float(t))
             if cm:
-                model.apply_horizontal(cm)
+                model.apply_horizontal(cm, a.no_hmix, a.hmix_top)
                 with torch.no_grad():
                     model.mixer.push(model.pop_state(
                         [v for v, _ in cm],
@@ -1086,7 +1088,7 @@ def run(a):
             _cm_eval = sorted(mass_map.get(t, {}).items(),
                              key=lambda kv: -kv[1])[:a.pop_support]
             if _cm_eval:
-                model.apply_horizontal(_cm_eval)
+                model.apply_horizontal(_cm_eval, a.no_hmix, a.hmix_top)
         cm = circ_at(T, a.pop_support)
         if len(cm) < 2:
             continue
@@ -1674,6 +1676,10 @@ def main():
                    help="top circulating variants to perturb")
     p.add_argument("--top-muts", type=int, default=500, dest="top_muts",
                    help="top active mutations to try adding")
+    p.add_argument("--no-hmix", action="store_true", dest="no_hmix",
+                   help="disable horizontal mixer to save memory")
+    p.add_argument("--hmix-top", type=int, default=50, dest="hmix_top",
+                   help="max variants per mutation in horizontal mixer")
     p.add_argument("--obs-frac", type=float, default=0.8, dest="obs_frac",
                    help="fit against the heaviest observed variants covering "
                         "this share of mass; the rest is a singleton tail no "
