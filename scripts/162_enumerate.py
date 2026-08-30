@@ -427,6 +427,72 @@ def enumerate_candidates(circ_mass, active_muts, radius=2,
     return [c for c in cands if c not in exclude]
 
 
+class HorizontalMixer(nn.Module):
+    """Cross-set aggregation: for each mutation, attend over the variants
+    currently containing it, weighted by their mass.
+
+    This is SFCNTSP's inter-set axis. GRU memory gives each mutation a
+    vertical history (what it appeared in across time). Neighbourhood
+    attention gives it within-set context (who it co-occurs with in recent
+    events). But neither says: "right now, across the 50 variants containing
+    me, what are my typical companions and how are those variants doing?"
+
+    That cross-set-at-same-time signal is what this adds. A mutation whose
+    current co-variants are all high-mass gets a different representation
+    than the same mutation riding in declining backgrounds -- and that
+    difference is exactly what the scorer needs to predict whether a candidate
+    containing it will grow.
+
+    Implemented as: for each mutation i, pool the variant representations
+    of all variants containing i, weighted by mass. Cross-attention between
+    that pool and the mutation's current memory gives the horizontal signal.
+    Added residually so v_i(t) is never worse than without it.
+    """
+
+    def __init__(self, d, heads=2):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(d, heads, batch_first=True,
+                                          dropout=0.0)
+        self.proj = nn.Linear(d, d)
+        nn.init.zeros_(self.proj.weight)
+        nn.init.zeros_(self.proj.bias)      # residual: start at identity
+
+    def forward(self, mem, variant_reps, membership, masses):
+        """
+        mem          (V, d)  current mutation memory
+        variant_reps (E, d)  representation of each circulating variant
+        membership   list of length V, each entry a list of variant indices
+        masses       (E,)    normalised mass of each variant
+        Returns (V, d) updated mutation representations.
+        """
+        if variant_reps.shape[0] == 0:
+            return mem
+        V, d = mem.shape
+        out = torch.zeros_like(mem)
+        # batch over mutations that appear in at least one variant
+        active = [(i, membership[i]) for i in range(V) if membership[i]]
+        if not active:
+            return mem
+        max_k = max(len(idxs) for _, idxs in active)
+        B = len(active)
+        ctx = torch.zeros(B, max_k, d)
+        mask = torch.ones(B, max_k, dtype=torch.bool)
+        q_idx = torch.zeros(B, dtype=torch.long)
+        for r, (i, idxs) in enumerate(active):
+            q_idx[r] = i
+            w = masses[torch.tensor(idxs)]
+            w = w / w.sum().clamp_min(1e-9)
+            for c, j in enumerate(idxs):
+                ctx[r, c] = variant_reps[j] * w[c]
+                mask[r, c] = False
+        q = mem[q_idx].unsqueeze(1)
+        attended, _ = self.attn(q, ctx, ctx,
+                                key_padding_mask=mask, need_weights=False)
+        delta = self.proj(attended.squeeze(1))
+        out[q_idx] = delta
+        return mem + out      # residual
+
+
 class TimeMixer(nn.Module):
     """Mix the last M population states with one M x M matrix.
 
@@ -488,6 +554,7 @@ class VariantTPP(nn.Module):
         self.scorer = HyperSAGNNScorer(d, heads)
         self.pop_enc = PopulationEncoder(d, heads, layers=1)
         self.mixer = TimeMixer(d, M=8)
+        self.hmix = HorizontalMixer(d, heads)
         # horizon-dependent mass budget: 159 showed the share of future mass on
         # variants absent at the origin rises from ~0.5 at 3 months to ~0.9 at
         # 6, so a single scalar cannot be right at every horizon
@@ -564,6 +631,28 @@ class VariantTPP(nn.Module):
         self._cache_t = None
 
     # ---- node representations -----------------------------------------
+    def apply_horizontal(self, circ_mass):
+        """Update all_node_repr with cross-set signal from the current pop.
+
+        Called once per day after observe(), before any scoring. Zero-init
+        projection means the first call is a no-op; signal builds as the
+        model trains.
+        """
+        if not circ_mass or self._cache_v is None:
+            return
+        circ = [v for v, _ in circ_mass]
+        mass = torch.tensor([m for _, m in circ_mass], dtype=torch.float32)
+        mass = mass / mass.sum().clamp_min(1e-9)
+        var_rep = self.variant_repr(circ, self._cache_t)   # (E, d)
+        membership = [[] for _ in range(self.V)]
+        for j, v in enumerate(circ):
+            for m in v:
+                if m < self.V:
+                    membership[m].append(j)
+        with torch.no_grad():
+            updated = self.hmix(self._cache_v, var_rep, membership, mass)
+        self._cache_v = updated
+
     def all_node_repr(self, t_now):
         """v_i(t) for every mutation, computed once per timestep."""
         idx = torch.arange(self.V)
@@ -966,6 +1055,7 @@ def run(a):
                 losses.append(float(total.detach()))
             model.observe([s for s, _ in by_day[t]], float(t))
             if cm:
+                model.apply_horizontal(cm)
                 with torch.no_grad():
                     model.mixer.push(model.pop_state(
                         [v for v, _ in cm],
@@ -993,6 +1083,10 @@ def run(a):
                 break
             model.flush_pending(float(t))
             model.observe([s for s, _ in by_day[t]], float(t))
+            _cm_eval = sorted(mass_map.get(t, {}).items(),
+                             key=lambda kv: -kv[1])[:a.pop_support]
+            if _cm_eval:
+                model.apply_horizontal(_cm_eval)
         cm = circ_at(T, a.pop_support)
         if len(cm) < 2:
             continue
