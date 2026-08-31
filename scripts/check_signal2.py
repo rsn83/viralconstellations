@@ -104,15 +104,7 @@ def run(a):
                 exact_num += w * exact
                 exact_den += w
 
-                # 2. near: is this variant within radius-1 of anything in window?
-                near = 0.0
-                for wv in window_vars:
-                    diff = len(variant.symmetric_difference(wv))
-                    if diff <= 2:  # radius-1 = add one or remove one
-                        near = 1.0
-                        break
-                near_num += w * near
-                near_den += w
+                # 2. skipped (slow) -- use script 159 for radius-1
 
                 # 3. combo: do at least half of variant's mutations
                 #    co-occur in some single window variant?
@@ -128,8 +120,6 @@ def run(a):
         print(f"h={h} months  |  {n_obs} new-variant observations")
         print(f"  exact match in window:        "
               f"{exact_num/exact_den:.3f}  (was this exact set seen before?)")
-        print(f"  within radius-1 of window:    "
-              f"{near_num/near_den:.3f}  (one mutation away from something seen?)")
         print(f"  >50% mutations co-occurred:   "
               f"{combo_num/combo_den:.3f}  (partial combination existed?)")
         print()
