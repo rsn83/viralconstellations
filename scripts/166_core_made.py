@@ -639,16 +639,19 @@ def compute_losses(model, circ_mass, obs_mass, t, dt, a, train=True):
     # ---- LL_a_core: MADE loss on core positions --------------------
     if train and model._core_idx is not None and model.made.K > 0:
         dev2 = model.mem.device
-        core_vecs, core_ws = [], []
-        for v2, wv2 in obs_mass.items():
-            x2 = torch.zeros(model.made.K, device=dev2)
-            for k2, m2 in enumerate(model._core_idx):
-                if m2 in v2:
-                    x2[k2] = 1.0
-            core_vecs.append(x2); core_ws.append(wv2/tot_o)
-        if core_vecs:
-            X_core = torch.stack(core_vecs)
-            W_core = torch.tensor(core_ws, device=dev2)
+        # vectorized core vector construction -- no Python loops over variants
+        core_t = torch.tensor(model._core_idx, dtype=torch.long)
+        obs_list = list(obs_mass.items())
+        K_c = model.made.K
+        X_core = torch.zeros(len(obs_list), K_c, device=dev2)
+        W_core = torch.zeros(len(obs_list), device=dev2)
+        c2k = {m: k for k, m in enumerate(model._core_idx)}
+        core_set = set(model._core_idx)
+        for bi, (v2, wv2) in enumerate(obs_list):
+            for m2 in v2 & core_set:
+                X_core[bi, c2k[m2]] = 1.0
+            W_core[bi] = wv2 / tot_o
+        if X_core.shape[0] > 0:
             active_reps = model.node_repr(float(t))[idx].mean(0)
             ctx2 = model.pop_proj(torch.tanh(active_reps))
             lp_core = model.made.log_prob(X_core, ctx2)
