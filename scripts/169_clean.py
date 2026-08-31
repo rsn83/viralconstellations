@@ -234,8 +234,18 @@ def run(a):
     by_day = group_by_day(events)
     all_days = sorted(by_day.keys())
 
-    # split by date
-    train_days = [t for t in all_days if days[t] <= a.train_end]
+    # only keep events within the M training months + test month
+    # compute start month = train_end minus M months
+    import calendar
+    y, m2 = int(a.train_end[:4]), int(a.train_end[5:7])
+    for _ in range(a.M - 1):
+        m2 -= 1
+        if m2 < 1: m2 = 12; y -= 1
+    start_ym = f"{y:04d}-{m2:02d}"
+    print(f"using months {start_ym} to {a.train_end} (M={a.M}) → predict {a.test_month}")
+
+    train_days = [t for t in all_days if start_ym <= days[t][:7] <= a.train_end]
+    print(f'using {len(train_days)} days from {start_ym} to {a.train_end}')
     test_month  = a.test_month   # year-month string e.g. "2022-07"
     print(f"train days: {len(train_days)} (up to {a.train_end})")
     print(f"predicting: {test_month}  horizon h={a.horizon}m")
@@ -257,75 +267,43 @@ def run(a):
 
     h_days = float(a.horizon * 30)
 
-    # build training pairs: origins spaced ~30 days apart within training data
-    # each origin: circulating at that day, target = month h months later
-    h_gap = int(h_days)
-    train_origins = []
-    for t in train_days[::30]:   # one origin per ~month
-        target_date_min = days[t][:7]
-        # find day h months later (approximate)
-        future_days = [u for u in all_days
-                       if days[u][:7] > target_date_min
-                       and days[u] <= a.train_end]
-        if not future_days: continue
-        # target month = approximately h months after origin
-        import calendar
-        ym = days[t][:7]
-        y, m = int(ym[:4]), int(ym[5:7])
-        m += a.horizon
-        if m > 12: y += m//12; m = m%12 or 12
-        tgt_ym = f"{y:04d}-{m:02d}"
-        tgt_pop = month_population(events, days, tgt_ym)
-        if tgt_pop:
-            train_origins.append((t, tgt_pop, tgt_ym))
-
-    print(f"training origins: {len(train_origins)}")
-
-    for ep in range(a.epochs):
-        model.reset()
-        losses = []
-        for t in train_days:
-            model.flush(float(t))
-            model.observe([s for s, _ in by_day[t]], float(t))
-            # is this a training origin?
-            for orig_t, tgt_pop_i, tgt_ym in train_origins:
-                if orig_t != t: continue
-                circ_raw_i = defaultdict(float)
-                for u in train_days[max(0,train_days.index(t)-30):train_days.index(t)+1]:
-                    for s, w in by_day[u]:
-                        circ_raw_i[s] += w
-                tot_i = sum(circ_raw_i.values()) or 1.0
-                cm_i = sorted(circ_raw_i.items(), key=lambda kv: -kv[1])[:500]
-                cm_i = [(s, w/tot_i) for s, w in cm_i]
-                if len(cm_i) < 2: continue
-                lp_i, vars_i = model.predict(cm_i, float(t), h_days)
-                ix_i  = {v: j for j, v in enumerate(vars_i)}
-                tot2_i = sum(tgt_pop_i.values()) or 1.0
-                I_i, W_i = [], []
-                for v, w in tgt_pop_i.items():
-                    j = ix_i.get(v)
-                    if j is not None: I_i.append(j); W_i.append(w/tot2_i)
-                if not I_i: continue
-                loss_i = -(torch.tensor(W_i, device=device)
-                           * lp_i[torch.tensor(I_i, dtype=torch.long, device=device)]
-                           ).sum() / max(sum(W_i), 1e-9)
-                if torch.isfinite(loss_i):
-                    opt.zero_grad(); loss_i.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-                    opt.step(); losses.append(float(loss_i.detach()))
-        print(f"ep {ep+1}/{a.epochs}  loss {np.mean(losses) if losses else float('nan'):.4f}", flush=True)
-
-    # circulating at train_end for evaluation
+    # single training target: train on M months, predict test_month
+    # one loss computation per epoch, no windowing, no origins
     last_t = train_days[-1]
     circ_raw = defaultdict(float)
     for t in train_days[-30:]:
-        for s, w in by_day[t]:
-            circ_raw[s] += w
+        for sv, w in by_day[t]:
+            circ_raw[sv] += w
     tot = sum(circ_raw.values()) or 1.0
-    circ_mass = sorted(circ_raw.items(), key=lambda kv: -kv[1])
-    circ_mass = [(s, w/tot) for s, w in circ_mass]
+    circ_mass = [(sv, w/tot) for sv, w in
+                 sorted(circ_raw.items(), key=lambda kv: -kv[1])]
 
-    # ── evaluation ────────────────────────────────────────────────────
+    for ep in range(a.epochs):
+        # replay M months to build memory
+        model.reset()
+        for t in train_days:
+            model.flush(float(t))
+            model.observe([sv for sv, _ in by_day[t]], float(t))
+
+        lp, vars = model.predict(circ_mass, float(last_t), h_days)
+        ix = {v: i for i, v in enumerate(vars)}
+        tot2 = sum(target_pop.values()) or 1.0
+        I, W = [], []
+        for v, w in target_pop.items():
+            j = ix.get(v)
+            if j is not None: I.append(j); W.append(w/tot2)
+        if not I:
+            print(f"ep {ep+1}: no overlap"); continue
+        loss = -(torch.tensor(W, device=device)
+                 * lp[torch.tensor(I, dtype=torch.long, device=device)]
+                 ).sum() / max(sum(W), 1e-9)
+        if torch.isfinite(loss):
+            opt.zero_grad(); loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+            opt.step()
+        print(f"ep {ep+1}/{a.epochs}  loss {loss.item():.4f}  cov {sum(W):.3f}", flush=True)
+
+        # ── evaluation ────────────────────────────────────────────────────
     model.reset()
     for t in train_days:
         model.flush(float(t))
@@ -378,6 +356,8 @@ def main():
     p.add_argument('--epochs',     type=int, default=10)
     p.add_argument('--lr',         type=float, default=1e-3)
     p.add_argument('--seed',       type=int, default=0)
+    p.add_argument('--M',          type=int, default=6,
+                   help='number of training months')
     run(p.parse_args())
 
 if __name__ == '__main__':
