@@ -177,7 +177,13 @@ class NodeModel(nn.Module):
         vars = [v for v, _ in circ_mass]
         mass = torch.tensor([w for _, w in circ_mass],
                             dtype=torch.float32, device=dev)
-        table = self.node_repr(t)
+        # use cached repr but detach only memory, keep W_s/W_r in graph
+        m2    = self.mem.detach() * self.mem_ok.detach()
+        dt    = (t - self.last_t.detach()).clamp_min(0)
+        g     = torch.sigmoid(self.log_gamma)*0.5 + 0.5
+        m2    = m2 * g.pow(dt).unsqueeze(-1)
+        # W_s applied to detached memory -- W_s.weight gets gradient via chain rule
+        table = torch.tanh(self.W_s(m2) + self.b_v)
         reps  = []
         for v in vars:
             ms = [m for m in v if m < self.V]
