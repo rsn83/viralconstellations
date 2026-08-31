@@ -515,11 +515,18 @@ def compute_losses(model, circ_mass, obs_mass, t, dt, a, train=True):
             info['ll_k'] = float(loss_k.detach())
 
     # ---- LL_h: hyperedge scoring ------------------------------------
-    # positives from observed population, negatives from assembly
+    # positives: observed hyperedges weighted by mass
+    # negatives: randomly corrupted hyperedges (their exact protocol)
+    # NO assembly during training -- only at evaluation
     pos_variants = [v for v in obs_mass][:a.n_pos]
-    neg_variants = model.assemble_candidates(
-        float(t), n_fire=a.n_fire,
-        exclude=set(obs_mass.keys()))[:a.n_neg]
+    # generate random negatives: sample random nodes of random size
+    rng_neg = random.Random(int(t))
+    all_muts = list(range(model.V))
+    neg_variants = []
+    for _ in range(a.n_neg):
+        k = random.randint(2, min(64, model.V))
+        neg = frozenset(random.sample(all_muts, k))
+        neg_variants.append(neg)
     all_v = pos_variants + neg_variants
     if all_v:
         sc = model.score_hyperedge(all_v, float(t))
@@ -539,10 +546,9 @@ def compute_losses(model, circ_mass, obs_mass, t, dt, a, train=True):
             info['ll_h'] = float(loss_h.detach())
 
     # ---- LL_pop: population forecast (our protocol) ------------------
-    # score existing + assembled candidates as a distribution
-    cands = model.assemble_candidates(
-        float(t + dt), n_fire=a.n_fire,
-        exclude=set(circ))
+    # during training use existing variants only -- no assembly
+    # assembly only at evaluation (their protocol)
+    cands = []
     mass = torch.tensor([w for _, w in circ_mass],
                         dtype=torch.float32, device=dev)
     logm = torch.log(mass.clamp_min(1e-9))
