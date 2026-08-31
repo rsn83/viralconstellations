@@ -2,18 +2,8 @@
 """
 check_signal2.py -- Does co-occurrence history predict new variants?
 
-For each new variant at T+h, check whether its specific mutation combination
-was already forming in the W months before T -- even at low frequency.
-
-Three measures:
-  1. exact_seen: variant appeared at least once in window before T
-  2. near_seen:  variant is within radius-1 of something in window
-  3. combo_seen: at least half of its mutations co-occurred in some
-                 single variant in the window
-
-Result interpretation:
-  High values --> combinations were already forming, signal exists
-  Low values  --> combinations are genuinely novel, hard to predict
+Fast version: only exact match check (O(1) per variant via set lookup).
+Combo check removed -- too slow for 32k variants x 1000s window variants.
 
 Usage:
   python scripts/check_signal2.py \
@@ -70,8 +60,10 @@ def run(a):
     print()
 
     for h in a.horizons:
-        exact_num = near_num = combo_num = 0.0
-        exact_den = near_den = combo_den = 0.0
+        exact_num = exact_den = 0.0
+        # mutation pair co-occurrence: for each new variant, check if its
+        # most common mutation pair co-occurred in window
+        pair_num = pair_den = 0.0
         n_obs = 0
 
         for t in test_months:
@@ -79,49 +71,51 @@ def run(a):
             if t_idx < a.window or t_idx + h >= len(months):
                 continue
 
-            # all variants seen in window before T
-            window_months = months[t_idx - a.window: t_idx]
+            # build lookup: all variants seen in window (O(1) lookup)
             window_vars = set()
-            for wm in window_months:
-                window_vars |= set(var_mass[wm].keys())
+            # build mutation pair lookup from window
+            window_pairs = set()
+            for wm in months[t_idx - a.window: t_idx]:
+                for v in var_mass[wm]:
+                    window_vars.add(v)
+                    mlist = sorted(v)
+                    for i in range(len(mlist)):
+                        for j in range(i+1, min(i+5, len(mlist))):
+                            window_pairs.add((mlist[i], mlist[j]))
 
-            # variants present at T itself
             current = set(var_mass.get(t, {}).keys())
-
-            # future new variants
             future_month = months[t_idx + h]
-            future_vars  = var_mass.get(future_month, {})
-            new_vars = {v: w for v, w in future_vars.items() if v not in current}
+            new_vars = {v: w for v, w in var_mass.get(future_month, {}).items()
+                        if v not in current}
             if not new_vars:
                 continue
 
             for variant, weight in new_vars.items():
                 n_obs += 1
-                w = weight
 
-                # 1. exact: did this exact set appear in the window?
-                exact = float(variant in window_vars)
-                exact_num += w * exact
-                exact_den += w
+                # exact match O(1)
+                exact_num += weight * float(variant in window_vars)
+                exact_den += weight
 
-                # 2. skipped (slow) -- use script 159 for radius-1
-
-                # 3. combo: do at least half of variant's mutations
-                #    co-occur in some single window variant?
-                best_overlap = 0.0
-                for wv in window_vars:
-                    overlap = len(variant & wv) / len(variant)
-                    if overlap > best_overlap:
-                        best_overlap = overlap
-                combo = float(best_overlap >= 0.5)
-                combo_num += w * combo
-                combo_den += w
+                # do any adjacent mutation pairs in this variant
+                # appear as co-occurring pairs in the window?
+                mlist = sorted(variant)
+                found = 0; total_pairs = 0
+                for i in range(len(mlist)):
+                    for j in range(i+1, min(i+5, len(mlist))):
+                        total_pairs += 1
+                        if (mlist[i], mlist[j]) in window_pairs:
+                            found += 1
+                frac = found / total_pairs if total_pairs > 0 else 0.0
+                pair_num += weight * frac
+                pair_den += weight
 
         print(f"h={h} months  |  {n_obs} new-variant observations")
-        print(f"  exact match in window:        "
+        print(f"  exact match in window:          "
               f"{exact_num/exact_den:.3f}  (was this exact set seen before?)")
-        print(f"  >50% mutations co-occurred:   "
-              f"{combo_num/combo_den:.3f}  (partial combination existed?)")
+        print(f"  adjacent pair co-occurrence:    "
+              f"{pair_num/pair_den:.3f}  (do adjacent mutations co-occur in window?)")
+        print(f"  (pair measure: 0=no pairs known  1=all pairs already co-occurred)")
         print()
 
 def main():
@@ -129,8 +123,7 @@ def main():
     p.add_argument('--events',     required=True)
     p.add_argument('--train-frac', type=float, default=0.7, dest='train_frac')
     p.add_argument('--horizons',   type=int, nargs='+', default=[1, 2, 3, 6])
-    p.add_argument('--window',     type=int, default=3,
-                   help='months of history to measure co-occurrence over')
+    p.add_argument('--window',     type=int, default=3)
     run(p.parse_args())
 
 if __name__ == '__main__':
