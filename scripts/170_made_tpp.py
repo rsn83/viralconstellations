@@ -57,6 +57,24 @@ def load_monthly(path, start_ym, end_ym, test_ym):
     print(f"months {len(months)}, V={V} active mutations")
     return var_mass, months, mut2idx, V
 
+
+class FourierTime(nn.Module):
+    """Fourier time features: Phi(dt) = [cos(w1*dt+b1), ..., cos(wd*dt+bd)]
+    Encodes time gap dt as a d-dimensional vector.
+    Parameters w and b are learned.
+    """
+    def __init__(self, d):
+        super().__init__()
+        self.w = nn.Parameter(torch.from_numpy(
+            1.0/10**np.linspace(0, 3, d)).float())
+        self.b = nn.Parameter(torch.zeros(d))
+    def forward(self, dt):
+        # dt: scalar or (B,) tensor of time gaps in days
+        if not torch.is_tensor(dt):
+            dt = torch.tensor(float(dt))
+        return torch.cos(dt.unsqueeze(-1) * self.w + self.b)
+
+
 # ── HGNN ──────────────────────────────────────────────────────────────
 
 class HGNN(nn.Module):
@@ -164,17 +182,30 @@ class HGNNMADEModel(nn.Module):
         # context projection: mean of node reprs -> context vector
         self.ctx_proj = nn.Linear(d, d)
 
+        # Fourier time encoding
+        self.psi = FourierTime(d)
+
+        # temporal projection: combine node repr + time encoding
+        self.W_time = nn.Linear(2*d, d)
+
         # MADE: joint distribution over top-K mutation positions
         self.made = MADE(K_made, d, d_hidden)
         self._mut2idx = mut2idx or {}
 
-    def get_node_reprs(self, H):
-        """H: (V, K) incidence matrix.
-        Returns (V, d) node representations after HGNN convolution.
-        Gradient flows through HGNN and node_emb.
+    def get_node_reprs(self, H, dt=0.0):
+        """H: (V, K) incidence matrix. dt: time gap in days since last event.
+        Returns (V, d) node representations after HGNN + temporal drift.
+        Time enters via Phi(dt) concatenated with node features.
         """
-        X = self.node_emb.weight   # (V, d)
-        return self.hgnn(H, X)     # (V, d)
+        X = self.node_emb.weight                    # (V, d)
+        X_hgnn = self.hgnn(H, X)                   # (V, d)
+        # temporal drift: same Phi(dt) for all nodes (monthly aggregation)
+        phi = self.psi(torch.tensor(float(dt),
+                       device=X.device))             # (d,)
+        phi_exp = phi.unsqueeze(0).expand(self.V, -1)  # (V, d)
+        # combine HGNN output with temporal drift
+        return torch.tanh(self.W_time(
+            torch.cat([X_hgnn, phi_exp], dim=-1)))   # (V, d)
 
     def get_context(self, node_reprs, active_muts):
         """Population context = mean of active mutation representations."""
@@ -339,6 +370,8 @@ def run(a):
     last_train = train_months[-1]
     H_test, _ = build_incidence(var_mass[last_train], mut2idx, V)
     H_test = H_test.to(device)
+    # horizon in days
+    h_days = 30.0  # h=1 month = 30 days
 
     # circulating variants at train_end
     circ = var_mass[last_train]
@@ -358,7 +391,7 @@ def run(a):
     # score all candidates + circulating via MADE likelihood
     model.eval()
     with torch.no_grad():
-        node_reprs = model.get_node_reprs(H_test)
+        node_reprs = model.get_node_reprs(H_test, dt=h_days)
         ctx = model.get_context(node_reprs, active_muts)
         core_set = set(core_muts)
         c2k = {m: k for k, m in enumerate(core_muts)}
