@@ -50,8 +50,11 @@ def load_weekly(path, start_ym, end_ym, test_ym):
                 if s:
                     # week key: YYYY-WW
                     from datetime import date as dobj
-                    d = dobj.fromisoformat(date)
-                    wk = f"{d.isocalendar()[0]:04d}-{d.isocalendar()[1]:02d}"
+                    try:
+                        d = dobj.fromisoformat(date)
+                        wk = f"{d.isocalendar()[0]:04d}-{d.isocalendar()[1]:02d}"
+                    except ValueError:
+                        continue
                     by_week[wk][s] += cnt
 
     weeks = sorted(by_week.keys())
@@ -396,15 +399,8 @@ def run(a):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"device: {device}")
 
-    # compute start month
-    y, m2 = int(a.train_end[:4]), int(a.train_end[5:7])
-    for _ in range(a.M - 1):
-        m2 -= 1
-        if m2 < 1: m2 = 12; y -= 1
-    start_ym = f"{y:04d}-{m2:02d}"
-
     var_mass, weeks, week2ym, mut2idx, V = load_weekly(
-        a.events, start_ym, a.train_end, a.test_month)
+        a.events, '2000-01', a.train_end, a.test_month)
     all_muts_list = list(mut2idx.keys())
 
     train_weeks = [w for w in weeks if week2ym[w] <= a.train_end]
@@ -538,7 +534,7 @@ def run(a):
     mass_new = sum(pred.get(v,0) for v in new_vars)
 
     print(f"\n{'='*50}")
-    print(f"train {start_ym}..{a.train_end}  predict {a.test_month}  h={a.horizon}m")
+    print(f"train {train_weeks[0]}..{a.train_end}  predict {a.test_month}  h={a.horizon}m")
     print(f"model       overlap {ov_m:.4f}  mass_new {mass_new:.4f}")
     print(f"persistence overlap {ov_p:.4f}  mass_new 0.0000")
     print(f"gain        {ov_m-ov_p:+.4f}")
@@ -549,7 +545,6 @@ def main():
     p.add_argument('--events',    required=True)
     p.add_argument('--train-end', default='2022-06', dest='train_end')
     p.add_argument('--test-month',default='2022-07', dest='test_month')
-    p.add_argument('--M',         type=int, default=24)
     p.add_argument('--d',         type=int, default=64)
     p.add_argument('--d-hidden',  type=int, default=256, dest='d_hidden')
     p.add_argument('--K-made',    type=int, default=50, dest='K_made')
