@@ -132,9 +132,10 @@ class RecurrentMADE(nn.Module):
         self.gru = nn.GRUCell(d_ctx, d_hidden)
 
         # autoregressive network conditioned on GRU hidden state
-        # input: hidden state (d_hidden) + previous K positions
+        # input: hidden state (d_hidden) + node repr (d_ctx) + previous K positions
+        self.d_node = d_ctx
         self.net = nn.Sequential(
-            nn.Linear(d_hidden + K, d_hidden),
+            nn.Linear(d_hidden + d_ctx + K, d_hidden),
             nn.Tanh(),
             nn.Linear(d_hidden, d_hidden),
             nn.Tanh(),
@@ -156,19 +157,23 @@ class RecurrentMADE(nn.Module):
         """
         self.h = self.gru(ctx.unsqueeze(0), self.h.unsqueeze(0)).squeeze(0)
 
-    def log_prob(self, x, ctx=None):
+    def log_prob(self, x, ctx=None, node_reprs_core=None):
         """Log probability of binary vectors x given current hidden state.
         x:   (B, K) binary
-        ctx: ignored -- uses accumulated hidden state self.h
+        node_reprs_core: (K, d) per-position node representations
         Returns (B,) log probabilities.
-        Gradient flows through net and into self.h.
         """
         B = x.shape[0]
         h = self.h.unsqueeze(0).expand(B, -1)  # (B, d_hidden)
         lp = torch.zeros(B, device=x.device)
         prev = torch.zeros(B, self.K, device=x.device)
         for k in range(self.K):
-            inp = torch.cat([h, prev], dim=-1)
+            if node_reprs_core is not None:
+                v_k = node_reprs_core[k].unsqueeze(0).expand(B, -1)
+                inp = torch.cat([h, v_k, prev], dim=-1)
+            else:
+                zeros = torch.zeros(B, self.d_node, device=h.device)
+                inp = torch.cat([h, zeros, prev], dim=-1)
             logit = self.net(inp).squeeze(-1)
             lp = lp - F.binary_cross_entropy_with_logits(
                 logit, x[:, k], reduction='none')
@@ -176,14 +181,20 @@ class RecurrentMADE(nn.Module):
             prev[:, k] = x[:, k]
         return lp
 
-    def sample(self, ctx=None, n=1):
+    def sample(self, ctx=None, n=1, node_reprs_core=None):
         """Sample n binary vectors given current hidden state."""
         dev = self.h.device
         h = self.h.unsqueeze(0).expand(n, -1)
         prev = torch.zeros(n, self.K, device=dev)
         with torch.no_grad():
             for k in range(self.K):
-                inp = torch.cat([h, prev], dim=-1)
+                if node_reprs_core is not None:
+                    v_k = node_reprs_core[k].unsqueeze(0).expand(n, -1)
+                    inp = torch.cat([h, v_k, prev], dim=-1)
+                else:
+                    # no node repr: use zeros of d_node size
+                    zeros = torch.zeros(n, self.d_node, device=h.device)
+                    inp = torch.cat([h, zeros, prev], dim=-1)
                 logit = self.net(inp).squeeze(-1)
                 prev[:, k] = torch.bernoulli(torch.sigmoid(logit))
         return prev
@@ -275,21 +286,28 @@ class HGNNMADEModel(nn.Module):
                     X[bi, c2k[m]] = 1.0
             W[bi] = w
 
-        # MADE log-likelihood -- gradient flows here
-        lp = self.made.log_prob(X, ctx.unsqueeze(0).expand(len(variants_mass), -1))
+        # per-position node representations for core mutations
+        core_t = torch.tensor(core_muts, dtype=torch.long, device=dev)
+        node_reprs_core = node_reprs[core_t]  # (K_made, d)
+
+        # MADE log-likelihood with per-position node reprs
+        lp = self.made.log_prob(X,
+                                ctx.unsqueeze(0).expand(len(variants_mass), -1),
+                                node_reprs_core=node_reprs_core)
 
         # weighted negative log-likelihood
         W = W / W.sum().clamp_min(1e-9)
         loss = -(W * lp).sum()
         return loss
 
-    def generate(self, H, active_muts, core_muts, n_samples=100):
+    def generate(self, H, active_muts, core_muts, n_samples=100, node_reprs_core=None):
         """Generate candidate variants by sampling from MADE."""
         dev = self.node_emb.weight.device
         with torch.no_grad():
             node_reprs = self.get_node_reprs(H)
             ctx = self.get_context(node_reprs, active_muts)
-            samples = self.made.sample(ctx, n=n_samples)  # (n, K_made)
+            samples = self.made.sample(ctx, n=n_samples,
+                                        node_reprs_core=node_reprs_core if node_reprs_core is not None else None)
         candidates = []
         for i in range(n_samples):
             muts = frozenset(core_muts[k] for k in range(self.K_made)
@@ -371,16 +389,15 @@ def run(a):
     for ep in range(a.epochs):
         model.made.reset()
         total_loss = 0.0
-        for ti in range(len(train_months) - 1):
-            t_ym  = train_months[ti]
-            t1_ym = train_months[ti + 1]
+        for ti in range(len(train_months)):
+            t_ym = train_months[ti]
 
             # build H from current month
             H, _ = build_incidence(var_mass[t_ym], mut2idx, V)
             H = H.to(device)
 
-            # target: next month's variants
-            variants_mass = sorted(var_mass[t1_ym].items(),
+            # target: SAME month's variants (like their TPP)
+            variants_mass = sorted(var_mass[t_ym].items(),
                                   key=lambda x: -x[1])
 
             if not variants_mass: continue
@@ -428,7 +445,7 @@ def run(a):
     H_test, _ = build_incidence(var_mass[last_train], mut2idx, V)
     H_test = H_test.to(device)
     # horizon in days
-    h_days = 30.0  # h=1 month = 30 days
+    h_days = float(a.horizon * 30)  # project to T+h
 
     # circulating variants at train_end
     circ = var_mass[last_train]
@@ -440,15 +457,23 @@ def run(a):
         print("no test data"); return
 
     # generate candidates
+    with torch.no_grad():
+        node_reprs_eval = model.get_node_reprs(H_test, dt=h_days)
+        core_t2 = torch.tensor(core_muts, dtype=torch.long, device=device)
+        nrc = node_reprs_eval[core_t2]
     candidates = model.generate(H_test, active_muts, core_muts,
-                               n_samples=a.n_samples)
+                               n_samples=a.n_samples,
+                               node_reprs_core=nrc)
     print(f"generated {len(candidates)} candidates")
     print(f"unique candidates: {len(set(candidates))}")
 
     # score all candidates + circulating via MADE likelihood
     model.eval()
     with torch.no_grad():
+        # project node representations to T+h via temporal drift
         node_reprs = model.get_node_reprs(H_test, dt=h_days)
+        core_t = torch.tensor(core_muts, dtype=torch.long, device=device)
+        node_reprs_core = node_reprs[core_t]  # (K_made, d) projected
         ctx = model.get_context(node_reprs, active_muts)
         core_set = set(core_muts)
         c2k = {m: k for k, m in enumerate(core_muts)}
@@ -517,6 +542,8 @@ def main():
     p.add_argument('--lr',         type=float, default=1e-3)
     p.add_argument('--n-samples',  type=int, default=200, dest='n_samples')
     p.add_argument('--seed',       type=int, default=0)
+    p.add_argument('--horizon',    type=int, default=1,
+                   help='forecast horizon in months')
     p.add_argument('--budget',     type=float, default=0.1,
                    help='fraction of mass for new candidates')
     run(p.parse_args())
