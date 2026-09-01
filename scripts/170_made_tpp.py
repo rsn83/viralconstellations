@@ -69,10 +69,13 @@ class FourierTime(nn.Module):
             1.0/10**np.linspace(0, 3, d)).float())
         self.b = nn.Parameter(torch.zeros(d))
     def forward(self, dt):
-        # dt: scalar or (B,) tensor of time gaps in days
+        # dt: scalar, (B,) or (V,) tensor of time gaps in days
         if not torch.is_tensor(dt):
             dt = torch.tensor(float(dt))
-        return torch.cos(dt.unsqueeze(-1) * self.w + self.b)
+        if dt.dim() == 0:
+            dt = dt.unsqueeze(0)  # (1,)
+        out = torch.cos(dt.unsqueeze(-1) * self.w + self.b)  # (..., d)
+        return out.squeeze(0) if out.shape[0] == 1 and dt.shape[0]==1 else out
 
 
 # ── HGNN ──────────────────────────────────────────────────────────────
@@ -222,6 +225,10 @@ class HGNNMADEModel(nn.Module):
         # Fourier time encoding
         self.psi = FourierTime(d)
 
+        # track last seen time per mutation (in months)
+        self.register_buffer('last_seen', torch.zeros(V))
+        self._current_month = 0
+
         # temporal projection: combine node repr + time encoding
         self.W_time = nn.Linear(2*d, d)
 
@@ -229,18 +236,38 @@ class HGNNMADEModel(nn.Module):
         self.made = RecurrentMADE(K_made, d, d_hidden)
         self._mut2idx = mut2idx or {}
 
-    def get_node_reprs(self, H, dt=0.0):
-        """H: (V, K) incidence matrix. dt: time gap in days since last event.
-        Returns (V, d) node representations after HGNN + temporal drift.
-        Time enters via Phi(dt) concatenated with node features.
+    def update_last_seen(self, var_mass_ym, mut2idx, month_idx):
+        """Update last seen month for each mutation."""
+        self._current_month = month_idx
+        with torch.no_grad():
+            for v in var_mass_ym:
+                for m in v:
+                    idx = mut2idx.get(m, -1)
+                    if 0 <= idx < self.V:
+                        self.last_seen[idx] = float(month_idx)
+
+    def get_node_reprs(self, H, dt=0.0, per_mutation_dt=False):
+        """H: (V, K) incidence matrix.
+        dt: uniform time gap in days (used during training).
+        per_mutation_dt: if True, use (current_month + dt/30 - last_seen) per mutation.
+        This gives each mutation its own drift based on when it last appeared.
         """
         X = self.node_emb.weight                    # (V, d)
         X_hgnn = self.hgnn(H, X)                   # (V, d)
-        # temporal drift: same Phi(dt) for all nodes (monthly aggregation)
-        phi = self.psi(torch.tensor(float(dt),
-                       device=X.device))             # (d,)
-        phi_exp = phi.unsqueeze(0).expand(self.V, -1)  # (V, d)
-        # combine HGNN output with temporal drift
+
+        if per_mutation_dt:
+            # per-mutation drift: how long since each mutation last appeared
+            # dt here is the horizon in months
+            future_month = self._current_month + dt / 30.0
+            gaps = (future_month - self.last_seen).clamp_min(0)  # (V,) in months
+            gaps_days = gaps * 30.0  # convert to days for Phi
+            # compute Phi per mutation
+            phi_exp = self.psi(gaps_days)  # (V, d) -- psi broadcasts over V
+        else:
+            # uniform drift for all mutations (used during training)
+            phi = self.psi(torch.tensor(float(dt), device=X.device))  # (d,)
+            phi_exp = phi.unsqueeze(0).expand(self.V, -1)              # (V, d)
+
         return torch.tanh(self.W_time(
             torch.cat([X_hgnn, phi_exp], dim=-1)))   # (V, d)
 
@@ -396,6 +423,9 @@ def run(a):
             H, _ = build_incidence(var_mass[t_ym], mut2idx, V)
             H = H.to(device)
 
+            # update last seen times
+            model.update_last_seen(var_mass[t_ym], mut2idx, ti)
+
             # target: SAME month's variants (like their TPP)
             variants_mass = sorted(var_mass[t_ym].items(),
                                   key=lambda x: -x[1])
@@ -458,7 +488,8 @@ def run(a):
 
     # generate candidates
     with torch.no_grad():
-        node_reprs_eval = model.get_node_reprs(H_test, dt=h_days)
+        node_reprs_eval = model.get_node_reprs(H_test, dt=h_days,
+                                                  per_mutation_dt=True)
         core_t2 = torch.tensor(core_muts, dtype=torch.long, device=device)
         nrc = node_reprs_eval[core_t2]
     candidates = model.generate(H_test, active_muts, core_muts,
@@ -470,8 +501,10 @@ def run(a):
     # score all candidates + circulating via MADE likelihood
     model.eval()
     with torch.no_grad():
-        # project node representations to T+h via temporal drift
-        node_reprs = model.get_node_reprs(H_test, dt=h_days)
+        # project node representations to T+h -- per-mutation drift
+        # each mutation drifts by (T+h - its last_seen) months
+        node_reprs = model.get_node_reprs(H_test, dt=h_days,
+                                          per_mutation_dt=True)
         core_t = torch.tensor(core_muts, dtype=torch.long, device=device)
         node_reprs_core = node_reprs[core_t]  # (K_made, d) projected
         ctx = model.get_context(node_reprs, active_muts)
