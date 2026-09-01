@@ -160,14 +160,16 @@ class RecurrentMADE(nn.Module):
         """
         self.h = self.gru(ctx.unsqueeze(0), self.h.unsqueeze(0)).squeeze(0)
 
-    def log_prob(self, x, ctx=None, node_reprs_core=None):
+    def log_prob(self, x, ctx=None, node_reprs_core=None, h_override=None):
         """Log probability of binary vectors x given current hidden state.
         x:   (B, K) binary
         node_reprs_core: (K, d) per-position node representations
+        h_override: if provided, use this h instead of self.h (allows gradient flow)
         Returns (B,) log probabilities.
         """
         B = x.shape[0]
-        h = self.h.unsqueeze(0).expand(B, -1)  # (B, d_hidden)
+        h_use = h_override if h_override is not None else self.h
+        h = h_use.unsqueeze(0).expand(B, -1) if h_use.dim()==1 else h_use  # (B, d_hidden)
         lp = torch.zeros(B, device=x.device)
         prev = torch.zeros(B, self.K, device=x.device)
         for k in range(self.K):
@@ -205,6 +207,58 @@ class RecurrentMADE(nn.Module):
 
 # ── main model ────────────────────────────────────────────────────────
 
+
+class ParallelJointScorer(nn.Module):
+    """Parallel joint scorer: one forward pass, gradient-friendly.
+    inp = [h_t, v_1,...,v_K] -> K logits simultaneously.
+    h_t from GRU accumulating monthly context.
+    Gradient: loss->net->h_override->GRU->ctx->HGNN->node_emb. Clean.
+    """
+    def __init__(self, K, d, d_hidden=256):
+        super().__init__()
+        self.K = K; self.d = d; self.d_hidden = d_hidden
+        self.gru = nn.GRUCell(d, d_hidden)
+        # init forget gate bias to 1 to avoid gradient saturation
+        nn.init.ones_(self.gru.bias_ih[d_hidden:2*d_hidden])
+        nn.init.ones_(self.gru.bias_hh[d_hidden:2*d_hidden])
+        # shallow net with direct skip -- avoids vanishing gradient
+        self.layer1 = nn.Linear(d_hidden + K*d, d_hidden)
+        self.layer2 = nn.Linear(d_hidden, K)
+        # skip: direct projection from h and v to output
+        self.skip_h = nn.Linear(d_hidden, K, bias=False)
+        self.skip_v = nn.Linear(K*d, K, bias=False)
+        nn.init.zeros_(self.layer2.weight); nn.init.zeros_(self.layer2.bias)
+        nn.init.zeros_(self.skip_h.weight); nn.init.zeros_(self.skip_v.weight)
+        self.register_buffer('h', torch.zeros(d_hidden))
+
+    def reset(self): self.h.zero_()
+
+    def update(self, ctx):
+        self.h = self.gru(ctx.unsqueeze(0),
+                         self.h.detach().unsqueeze(0)).squeeze(0).detach()
+
+    def log_prob(self, x, ctx=None, node_reprs_core=None, h_override=None):
+        B = x.shape[0]
+        h_use = h_override if h_override is not None else self.h
+        if h_use.dim()==1: h_use = h_use.unsqueeze(0).expand(B,-1)
+        v_flat = node_reprs_core.reshape(1,-1).expand(B,-1)
+        inp = torch.cat([h_use, v_flat], dim=-1)
+        # residual: deep path + skip connections from h and v directly
+        hidden = torch.tanh(self.layer1(inp))
+        logits = self.layer2(hidden) + self.skip_h(h_use) + self.skip_v(v_flat)
+        return -F.binary_cross_entropy_with_logits(logits, x, reduction='none').sum(-1)
+
+    def sample(self, node_reprs_core, n=1):
+        dev = self.h.device
+        h = self.h.unsqueeze(0).expand(n,-1)
+        v_flat = node_reprs_core.reshape(1,-1).expand(n,-1)
+        with torch.no_grad():
+            inp = torch.cat([h,v_flat],-1)
+            hid = torch.tanh(self.layer1(inp))
+            logits = self.layer2(hid) + self.skip_h(h) + self.skip_v(v_flat)
+            return torch.bernoulli(torch.sigmoid(logits))
+
+
 class HGNNMADEModel(nn.Module):
     def __init__(self, V, K_made, d=64, d_hidden=256, mut2idx=None):
         super().__init__()
@@ -229,12 +283,48 @@ class HGNNMADEModel(nn.Module):
         self.register_buffer('last_seen', torch.zeros(V))
         self._current_month = 0
 
+        # interaction update: store co-member mean per mutation
+        # v(t_v^{p+}) = updated embedding after interaction
+        # d_v^h = mean of co-member embeddings at interaction time
+        self.register_buffer('interaction_state', torch.zeros(V, d))
+        self.W_interact = nn.Linear(d, d, bias=False)  # W_0
+        self.W_comember = nn.Linear(d, d, bias=False)  # W_5 (co-member influence)
+
         # temporal projection: combine node repr + time encoding
         self.W_time = nn.Linear(2*d, d)
 
-        # RecurrentMADE: joint distribution with GRU state
-        self.made = RecurrentMADE(K_made, d, d_hidden)
+        # Intensity function f: scores any hyperedge
+        # f(v_1,...,v_k) = softplus(MLP(mean(v_i for i in h)))
+        # trained via TPP loss jointly with node representations
+        self.f_intensity = nn.Sequential(
+            nn.Linear(d, 2*d), nn.Tanh(),
+            nn.Linear(2*d, d), nn.Tanh(),
+            nn.Linear(d, 1), nn.Softplus())
+
+        # ParallelJointScorer: joint over K positions, gradient-friendly
+        self.made = ParallelJointScorer(K_made, d, d_hidden)
         self._mut2idx = mut2idx or {}
+
+    def update_interaction(self, var_mass_ym, mut2idx, node_reprs):
+        """Update interaction state: for each mutation, store mean of co-members.
+        This implements their interaction update term W_0·v(t_v^{p+}).
+        """
+        with torch.no_grad():
+            new_state = self.interaction_state.clone()
+            for v, w in var_mass_ym.items():
+                ms = [mut2idx[m] for m in v if m in mut2idx and mut2idx[m] < self.V]
+                if len(ms) < 2: continue
+                idx = torch.tensor(ms, dtype=torch.long, device=node_reprs.device)
+                for i, mi in enumerate(ms):
+                    # co-members = all others in variant
+                    co = [ms[j] for j in range(len(ms)) if j != i]
+                    if not co: continue
+                    co_t = torch.tensor(co, dtype=torch.long,
+                                       device=node_reprs.device)
+                    co_mean = node_reprs[co_t].mean(0)
+                    # weighted update by variant mass
+                    new_state[mi] = (1-w) * new_state[mi] + w * co_mean
+            self.interaction_state.copy_(new_state)
 
     def update_last_seen(self, var_mass_ym, mut2idx, month_idx):
         """Update last seen month for each mutation."""
@@ -255,6 +345,11 @@ class HGNNMADEModel(nn.Module):
         X = self.node_emb.weight                    # (V, d)
         X_hgnn = self.hgnn(H, X)                   # (V, d)
 
+        # interaction update term: W_0·v(t_v^{p+}) + W_5·d_v^h
+        # interaction_state stores co-member means from last interaction
+        X_interact = self.W_interact(X) + self.W_comember(
+            self.interaction_state)                  # (V, d)
+
         if per_mutation_dt:
             # per-mutation drift: how long since each mutation last appeared
             # dt here is the horizon in months
@@ -269,7 +364,7 @@ class HGNNMADEModel(nn.Module):
             phi_exp = phi.unsqueeze(0).expand(self.V, -1)              # (V, d)
 
         return torch.tanh(self.W_time(
-            torch.cat([X_hgnn, phi_exp], dim=-1)))   # (V, d)
+            torch.cat([X_hgnn + X_interact, phi_exp], dim=-1)))  # (V, d)
 
     def get_context(self, node_reprs, active_muts):
         """Population context = mean of active mutation representations."""
@@ -294,13 +389,18 @@ class HGNNMADEModel(nn.Module):
         # get node representations via HGNN
         node_reprs = self.get_node_reprs(H)  # (V, d)
 
-        # population context -- active is already local indices (0..V-1)
+        # population context -- WITH gradient (no detach here)
         active = list(set(
             k for v, _ in variants_mass
             for m in v
             for k in [self._mut2idx.get(m, -1)]
             if k >= 0 and k < self.V))
-        ctx = self.get_context(node_reprs, active)  # (d,)
+        if active:
+            ctx = torch.tanh(self.ctx_proj(
+                node_reprs[torch.tensor(active, dtype=torch.long,
+                                       device=node_reprs.device)].mean(0)))
+        else:
+            ctx = torch.zeros(self.d, device=node_reprs.device)
 
         # build binary vectors for observed variants over core_muts
         core_set = set(core_muts)
@@ -317,24 +417,49 @@ class HGNNMADEModel(nn.Module):
         core_t = torch.tensor(core_muts, dtype=torch.long, device=dev)
         node_reprs_core = node_reprs[core_t]  # (K_made, d)
 
-        # MADE log-likelihood with per-position node reprs
-        lp = self.made.log_prob(X,
-                                ctx.unsqueeze(0).expand(len(variants_mass), -1),
-                                node_reprs_core=node_reprs_core)
+        # compute h WITH gradient -- allows gradient to flow into GRU + ctx + HGNN
+        h_diff = self.made.gru(ctx.unsqueeze(0),
+                               self.made.h.detach().unsqueeze(0)).squeeze(0)
 
-        # weighted negative log-likelihood
+        # joint scorer log-likelihood with differentiable h
+        lp = self.made.log_prob(X,
+                                node_reprs_core=node_reprs_core,
+                                h_override=h_diff)
+
+        # weighted negative log-likelihood (MADE loss)
         W = W / W.sum().clamp_min(1e-9)
-        loss = -(W * lp).sum()
+        loss_made = -(W * lp).sum()
+
+        # TPP loss: -log lambda_h(t) for observed variants
+        # + positive intensity for random negative variants
+        tpp_loss = torch.tensor(0.0, device=dev)
+        for bi, (v, w) in enumerate(variants_mass):
+            ms = [k for m in v for k in [self._mut2idx.get(m,-1)]
+                  if 0<=k<self.V]
+            if not ms: continue
+            idx = torch.tensor(ms, dtype=torch.long, device=dev)
+            v_mean = node_reprs[idx].mean(0, keepdim=True)  # (1,d)
+            lam = self.f_intensity(v_mean).squeeze()
+            tpp_loss = tpp_loss - w * torch.log(lam.clamp_min(1e-9))
+
+            # negative sample: random combination of same size
+            neg_idx = torch.randperm(self.V, device=dev)[:len(ms)]
+            neg_mean = node_reprs[neg_idx].mean(0, keepdim=True)
+            lam_neg = self.f_intensity(neg_mean).squeeze()
+            tpp_loss = tpp_loss + w * lam_neg
+
+        loss = loss_made + tpp_loss
         return loss
 
-    def generate(self, H, active_muts, core_muts, n_samples=100, node_reprs_core=None):
+    def generate(self, H, active_muts, core_muts, n_samples=100, dt=0.0):
         """Generate candidate variants by sampling from MADE."""
         dev = self.node_emb.weight.device
         with torch.no_grad():
             node_reprs = self.get_node_reprs(H)
             ctx = self.get_context(node_reprs, active_muts)
-            samples = self.made.sample(ctx, n=n_samples,
-                                        node_reprs_core=node_reprs_core if node_reprs_core is not None else None)
+            core_t2 = torch.tensor(core_muts, dtype=torch.long, device=dev)
+            v_core_g = self.node_repr(float(dt))[core_t2] if hasattr(self,'node_repr') else self.get_node_reprs(H, dt=dt)[core_t2]
+            samples = self.made.sample(v_core_g, n=n_samples)
         candidates = []
         for i in range(n_samples):
             muts = frozenset(core_muts[k] for k in range(self.K_made)
@@ -425,6 +550,10 @@ def run(a):
 
             # update last seen times
             model.update_last_seen(var_mass[t_ym], mut2idx, ti)
+            # update interaction state with current node reprs
+            with torch.no_grad():
+                nr_d = model.get_node_reprs(H, dt=0.0).detach()
+                model.update_interaction(var_mass[t_ym], mut2idx, nr_d)
 
             # target: SAME month's variants (like their TPP)
             variants_mass = sorted(var_mass[t_ym].items(),
@@ -493,8 +622,7 @@ def run(a):
         core_t2 = torch.tensor(core_muts, dtype=torch.long, device=device)
         nrc = node_reprs_eval[core_t2]
     candidates = model.generate(H_test, active_muts, core_muts,
-                               n_samples=a.n_samples,
-                               node_reprs_core=nrc)
+                               n_samples=a.n_samples)
     print(f"generated {len(candidates)} candidates")
     print(f"unique candidates: {len(set(candidates))}")
 
@@ -512,12 +640,17 @@ def run(a):
         c2k = {m: k for k, m in enumerate(core_muts)}
 
         def score_variant(v):
-            x = torch.zeros(1, len(core_muts), device=device)
+            core_t_s = torch.tensor(core_muts, dtype=torch.long, device=device)
+            x_s = torch.zeros(1, len(core_muts), device=device)
             for m in v:
                 mi = mut2idx.get(m)
                 if mi is not None and mi in core_set:
-                    x[0, c2k[mi]] = 1.0
-            return model.made.log_prob(x, ctx.unsqueeze(0)).item()
+                    x_s[0, c2k[mi]] = 1.0
+            with torch.no_grad():
+                nr_s = model.get_node_reprs(H_test)
+                vc_s = nr_s[core_t_s]
+                lp_s = model.made.log_prob(x_s, node_reprs_core=vc_s)
+            return lp_s.item()
 
         # score circulating
         circ_scores = {v: np.exp(score_variant(v)) for v in circ}
