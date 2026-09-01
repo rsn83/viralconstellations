@@ -1,28 +1,24 @@
 #!/usr/bin/env python3
 """
-172_full.py -- Full model with all three missing components.
+172_full.py -- HGNN + TPP loss (faithful to HGDHE 2023) + MADE generation.
 
-1. Survival term: MADE log_prob IS log lambda. Negative sampling
-   approximates the survival integral. Pushes probability away
-   from non-occurring combinations.
+Three components:
+1. Node representations via HGNN + exponential decay (eq 5 from HGDHE)
+2. TPP loss: f(v_members) for observed variants + survival via negative sampling
+   f is applied to SPECIFIC member node representations (not pooled)
+   Gradient flows specifically into member mutations' representations
+3. MADE for generation: per-position v_k conditioning + autoregressive joint
+   Skip connections fix vanishing gradient through K sequential steps
 
-2. Per-mutation intensity lambda_i(t): scalar head per mutation,
-   trained via TPP loss. Teaches which mutations are rising vs declining.
-   Gradient flows into node representations v_i(t).
-
-3. Exponential decay gamma^dt: recent co-occurrence dominates old.
-   Node embeddings decayed by gamma^(t - last_seen) before HGNN.
-   Gamma is a learned parameter.
-
-Training: weekly batches within M training months.
-Each week: one gradient update with positive + negative sampling.
+Training: weekly batches, per-variant gradient updates
+Evaluation: project v_i to T+h via decay, sample from MADE
 
 Usage:
   python scripts/172_full.py \
     --events data/processed/events_v3.tsv \
     --train-end 2022-06 --test-month 2022-07 \
-    --M 24 --d 64 --K-made 50 --epochs 5 \
-    --n-neg 20 --n-samples 500 --seed 0
+    --d 64 --d-hidden 128 --K-made 50 \
+    --epochs 5 --n-neg 20 --n-samples 500 --seed 0
 """
 import argparse, os, random
 import numpy as np
@@ -30,11 +26,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from collections import defaultdict
+from datetime import date as dobj
 
 # ── data ──────────────────────────────────────────────────────────────
 
-def load_weekly(path, start_ym, end_ym, test_ym):
-    """Load events aggregated by ISO week."""
+def load_weekly(path, end_ym, test_ym):
     by_week = defaultdict(lambda: defaultdict(float))
     with open(path) as f:
         for ln, line in enumerate(f):
@@ -42,29 +38,23 @@ def load_weekly(path, start_ym, end_ym, test_ym):
             if not line or line.startswith('#'): continue
             parts = line.split('\t')
             if ln == 0 and not parts[0][:4].isdigit(): continue
-            date, muts = parts[0].strip(), parts[1].strip()
+            date_s, muts = parts[0].strip(), parts[1].strip()
             cnt = float(parts[2]) if len(parts) > 2 else 1.0
-            ym = date[:7]
-            if start_ym <= ym <= test_ym:
-                s = frozenset(int(x) for x in muts.split(',') if x)
-                if s:
-                    # week key: YYYY-WW
-                    from datetime import date as dobj
-                    try:
-                        d = dobj.fromisoformat(date)
-                        wk = f"{d.isocalendar()[0]:04d}-{d.isocalendar()[1]:02d}"
-                    except ValueError:
-                        continue
-                    by_week[wk][s] += cnt
+            ym = date_s[:7]
+            if ym > test_ym: continue
+            s = frozenset(int(x) for x in muts.split(',') if x)
+            if not s: continue
+            try:
+                d = dobj.fromisoformat(date_s)
+                wk = f"{d.isocalendar()[0]:04d}-{d.isocalendar()[1]:02d}"
+                by_week[wk][s] += cnt
+            except ValueError:
+                continue
 
     weeks = sorted(by_week.keys())
-    # which weeks belong to which month
     week2ym = {}
-    from datetime import date as dobj
-    import datetime
     for wk in weeks:
         y, w = int(wk[:4]), int(wk[5:])
-        # get date of monday of that week
         monday = dobj.fromisocalendar(y, w, 1)
         week2ym[wk] = monday.strftime('%Y-%m')
 
@@ -77,27 +67,27 @@ def load_weekly(path, start_ym, end_ym, test_ym):
     mut2idx = {m: i for i, m in enumerate(all_muts)}
     V = len(all_muts)
     train_wks = [w for w in weeks if week2ym[w] <= end_ym]
-    print(f"loaded {len(weeks)} weeks  V={V} mutations  train: {week2ym[train_wks[0]]} to {week2ym[train_wks[-1]]}")
+    print(f"loaded {len(weeks)} weeks  V={V}  "
+          f"train: {week2ym[train_wks[0]]} to {week2ym[train_wks[-1]]}")
     return var_mass, weeks, week2ym, mut2idx, V
 
-def month_population(path, test_ym, mut2idx):
-    by_month = defaultdict(lambda: defaultdict(float))
+def month_population(path, test_ym):
+    agg = defaultdict(float)
     with open(path) as f:
         for ln, line in enumerate(f):
             line = line.strip()
             if not line or line.startswith('#'): continue
             parts = line.split('\t')
             if ln == 0 and not parts[0][:4].isdigit(): continue
-            date, muts = parts[0].strip(), parts[1].strip()
+            date_s, muts = parts[0].strip(), parts[1].strip()
             cnt = float(parts[2]) if len(parts) > 2 else 1.0
-            ym = date[:7]
-            if ym == test_ym:
+            if date_s[:7] == test_ym:
                 s = frozenset(int(x) for x in muts.split(',') if x)
-                if s: by_month[ym][s] += cnt
-    tot = sum(by_month[test_ym].values()) or 1.0
-    return {s: v/tot for s, v in by_month[test_ym].items()}
+                if s: agg[s] += cnt
+    tot = sum(agg.values()) or 1.0
+    return {s: v/tot for s, v in agg.items()}
 
-# ── model ─────────────────────────────────────────────────────────────
+# ── modules ───────────────────────────────────────────────────────────
 
 class FourierTime(nn.Module):
     def __init__(self, d):
@@ -107,7 +97,7 @@ class FourierTime(nn.Module):
         self.b = nn.Parameter(torch.zeros(d))
     def forward(self, dt):
         if not torch.is_tensor(dt): dt = torch.tensor(float(dt))
-        if dt.dim()==0: dt = dt.unsqueeze(0)
+        if dt.dim() == 0: dt = dt.unsqueeze(0)
         out = torch.cos(dt.unsqueeze(-1)*self.w + self.b)
         return out.squeeze(0) if out.shape[0]==1 else out
 
@@ -123,8 +113,121 @@ class HGNN(nn.Module):
         X_new = (H @ E) / deg_v.unsqueeze(1)
         return self.norm(F.relu(self.W(X_new)))
 
+class IntensityMLP(nn.Module):
+    """Their f: scores a hyperedge from member node representations.
+    
+    Faithfully implements eq 3 from HGDHE 2023:
+    lambda_h(t) = f(v_1(t), ..., v_k(t))
+    
+    Takes mean of member representations then MLP + softplus.
+    Gradient flows ONLY into member mutations' representations.
+    """
+    def __init__(self, d):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(d, d), nn.Tanh(),
+            nn.Linear(d, 1), nn.Softplus())
+
+    def forward(self, v_members):
+        """v_members: (k, d) representations of variant members.
+        Returns scalar lambda_h.
+        Gradient flows into v_members -- their specific node reprs.
+        """
+        h = v_members.mean(0)  # (d,) -- mean of members
+        return self.net(h).squeeze(-1)  # scalar
+
+class MADE(nn.Module):
+    """Autoregressive joint over K core positions.
+    
+    Each position k conditioned on:
+    - v_k: that mutation's own node representation (per-node signal)
+    - x_{<k}: previously sampled positions (autoregressive joint)
+    - h_gru: accumulated population context
+    
+    Skip connections fix vanishing gradient through K steps.
+    Gradient flows: loss -> made -> v_k -> HGNN -> node_emb
+    """
+    def __init__(self, K, d, d_hidden=128):
+        super().__init__()
+        self.K = K
+        self.d = d
+        self.d_hidden = d_hidden
+        self.gru = nn.GRUCell(d, d_hidden)
+        nn.init.ones_(self.gru.bias_ih[d_hidden:2*d_hidden])
+        nn.init.ones_(self.gru.bias_hh[d_hidden:2*d_hidden])
+
+        # deep path: h_gru + v_k + prev_k
+        self.deep = nn.Sequential(
+            nn.Linear(d_hidden + d + K, d_hidden), nn.Tanh(),
+            nn.Linear(d_hidden, 1))
+        # skip connections -- direct gradient paths
+        self.skip_h = nn.Linear(d_hidden, 1, bias=False)
+        self.skip_v = nn.Linear(d, 1, bias=False)
+        nn.init.zeros_(self.deep[-1].weight)
+        nn.init.zeros_(self.deep[-1].bias)
+        nn.init.zeros_(self.skip_h.weight)
+        nn.init.zeros_(self.skip_v.weight)
+
+        self.register_buffer('h', torch.zeros(d_hidden))
+
+    def reset(self): self.h.zero_()
+
+    def update(self, ctx):
+        """Update GRU state with population context. Detached."""
+        self.h = self.gru(ctx.unsqueeze(0),
+                         self.h.detach().unsqueeze(0)).squeeze(0).detach()
+
+    def log_prob(self, x, v_core, h_diff=None):
+        """Log joint probability of binary vector x.
+
+        x:      (B, K) binary
+        v_core: (K, d) per-position node representations -- NOT pooled
+        h_diff: (d_hidden,) differentiable GRU state for gradient flow
+
+        Each position k sees its OWN v_core[k] -- per-node conditioning.
+        Returns (B,) log probabilities.
+        """
+        B = x.shape[0]
+        h_use = h_diff if h_diff is not None else self.h
+        h_exp = h_use.unsqueeze(0).expand(B, -1)
+
+        lp = torch.zeros(B, device=x.device)
+        prev = torch.zeros(B, self.K, device=x.device)
+
+        for k in range(self.K):
+            # per-position: each step sees mutation k's OWN representation
+            v_k = v_core[k].unsqueeze(0).expand(B, -1)  # (B, d)
+            inp = torch.cat([h_exp, v_k, prev], dim=-1)
+            # deep + skip -- gradient flows through both paths
+            logit = (self.deep(inp).squeeze(-1) +
+                    self.skip_h(h_exp).squeeze(-1) +
+                    self.skip_v(v_k).squeeze(-1))
+            lp = lp - F.binary_cross_entropy_with_logits(
+                logit, x[:, k], reduction='none')
+            prev = prev.clone()
+            prev[:, k] = x[:, k]
+
+        return lp
+
+    def sample(self, v_core, n=500):
+        """Sample n binary vectors using per-position v_core."""
+        dev = self.h.device
+        h_exp = self.h.unsqueeze(0).expand(n, -1)
+        prev = torch.zeros(n, self.K, device=dev)
+        with torch.no_grad():
+            for k in range(self.K):
+                v_k = v_core[k].unsqueeze(0).expand(n, -1)
+                inp = torch.cat([h_exp, v_k, prev], dim=-1)
+                logit = (self.deep(inp).squeeze(-1) +
+                        self.skip_h(h_exp).squeeze(-1) +
+                        self.skip_v(v_k).squeeze(-1))
+                prev[:, k] = torch.bernoulli(torch.sigmoid(logit))
+        return prev
+
+# ── full model ────────────────────────────────────────────────────────
+
 class FullModel(nn.Module):
-    def __init__(self, V, K_made, d=64, d_hidden=256, mut2idx=None):
+    def __init__(self, V, K_made, d=64, d_hidden=128, mut2idx=None):
         super().__init__()
         self.V = V
         self.K_made = K_made
@@ -135,268 +238,215 @@ class FullModel(nn.Module):
         self.node_emb = nn.Embedding(V, d)
         nn.init.normal_(self.node_emb.weight, 0, 0.1)
 
-        # COMPONENT 3: learned exponential decay
-        # gamma in (0.5, 1.0) via sigmoid
+        # exponential decay -- learned
         self.log_gamma = nn.Parameter(torch.tensor(-2.0))
 
-        # Fourier time encoding
+        # Fourier time
         self.psi = FourierTime(d)
 
-        # HGNN for co-occurrence structure
+        # HGNN
         self.hgnn = HGNN(d)
 
-        # COMPONENT 2: per-mutation intensity lambda_i(t)
-        # scalar head: v_i -> lambda_i
-        self.intensity_head = nn.Sequential(
-            nn.Linear(d, d), nn.Tanh(),
-            nn.Linear(d, 1), nn.Softplus())
+        # their f -- intensity MLP for hyperedge scoring
+        self.f_mlp = IntensityMLP(d)
 
-        # context projection
+        # context projection for GRU
         self.ctx_proj = nn.Linear(d, d)
 
-        # COMPONENT 1: ParallelJointScorer as lambda_B
-        # skip connections ensure gradient flows
-        self.d_hidden = d_hidden
-        self.gru = nn.GRUCell(d, d_hidden)
-        # init forget gate to 1 -- avoids vanishing gradient
-        nn.init.ones_(self.gru.bias_ih[d_hidden:2*d_hidden])
-        nn.init.ones_(self.gru.bias_hh[d_hidden:2*d_hidden])
-        # pool v_core (K*d) -> d before scorer -- saves params
-        self.v_pool = nn.Linear(d, d, bias=False)
-        self.scorer_deep = nn.Sequential(
-            nn.Linear(d_hidden + d, d_hidden), nn.Tanh(),
-            nn.Linear(d_hidden, K_made))
-        self.scorer_skip_h = nn.Linear(d_hidden, K_made, bias=False)
-        self.scorer_skip_v = nn.Linear(d, K_made, bias=False)
-        nn.init.zeros_(self.scorer_deep[-1].weight)
-        nn.init.zeros_(self.scorer_deep[-1].bias)
-        nn.init.zeros_(self.scorer_skip_h.weight)
-        nn.init.zeros_(self.scorer_skip_v.weight)
+        # MADE for generation with per-position conditioning
+        self.made = MADE(K_made, d, d_hidden)
 
-        # persistent state
-        self.register_buffer('h_gru', torch.zeros(d_hidden))
+        # state
         self.register_buffer('last_seen_week', torch.zeros(V))
         self._current_week = 0
 
     def reset(self):
-        self.h_gru.zero_()
         self.last_seen_week.zero_()
+        self.made.reset()
         self._current_week = 0
 
     def get_node_reprs(self, H, week_idx=None):
         """Node representations with exponential decay.
-
-        v_i(t) = tanh(HGNN(decay(emb_i), H) + psi(dt_i))
-
-        decay(emb_i) = emb_i * gamma^(t - last_seen_i)
-        dt_i = time since mutation i last appeared
+        v_i(t) = tanh(HGNN(emb_i * gamma^dt, H) + Phi(dt*7))
         """
         dev = self.node_emb.weight.device
-        gamma = torch.sigmoid(self.log_gamma) * 0.5 + 0.5  # in (0.5, 1.0)
-
+        gamma = torch.sigmoid(self.log_gamma)*0.5 + 0.5
         t = float(week_idx if week_idx is not None else self._current_week)
-        dt = (t - self.last_seen_week).clamp_min(0)  # (V,) weeks since last seen
+        dt = (t - self.last_seen_week).clamp_min(0)
+        decay = gamma.pow(dt)
+        X = self.node_emb.weight * decay.unsqueeze(1)
+        X_hgnn = self.hgnn(H, X)
+        phi = self.psi(dt * 7.0)
+        return torch.tanh(X_hgnn + phi)
 
-        # COMPONENT 3: decay node embeddings by gamma^dt
-        decay = gamma.pow(dt)                              # (V,)
-        X_decayed = self.node_emb.weight * decay.unsqueeze(1)  # (V, d)
-
-        # HGNN on decayed embeddings
-        X_hgnn = self.hgnn(H, X_decayed)                 # (V, d)
-
-        # temporal drift via Fourier encoding
-        phi = self.psi(dt * 7.0)                         # (V, d) -- dt in days
-        return torch.tanh(X_hgnn + phi)                  # (V, d)
-
-    def get_context(self, node_reprs, active_muts):
-        if not active_muts:
+    def get_context(self, node_reprs, active_idxs):
+        if not active_idxs:
             return torch.zeros(self.d, device=node_reprs.device)
-        idx = torch.tensor(active_muts, dtype=torch.long,
+        idx = torch.tensor(active_idxs, dtype=torch.long,
                           device=node_reprs.device)
         return torch.tanh(self.ctx_proj(node_reprs[idx].mean(0)))
 
-    def log_lambda_B(self, x, v_core, h):
-        """log lambda_B = log_prob of binary vector x.
+    def forward(self, H, var_mass_week, core_muts, neg_variants, week_idx):
+        """TPP loss for one week.
 
-        COMPONENT 1: MADE/scorer IS the intensity function.
-        x:      (B, K) binary
-        v_core: (K, d) per-position node representations
-        h:      (d_hidden,) GRU state
-        Returns (B,) log intensities.
-        """
-        B = x.shape[0]
-        h_exp = h.unsqueeze(0).expand(B, -1)
-        v_flat = v_core.reshape(1, -1).expand(B, -1)
-        # pool v_core to d dims
-        v_pooled = torch.tanh(self.v_pool(v_core)).mean(0).unsqueeze(0).expand(B,-1)
-        inp = torch.cat([h_exp, v_pooled], dim=-1)
-        logits = (self.scorer_deep(inp) +
-                  self.scorer_skip_h(h_exp) +
-                  self.scorer_skip_v(v_pooled))
-        return -F.binary_cross_entropy_with_logits(
-            logits, x, reduction='none').sum(-1)
+        Positive: f(v_members) for each observed variant -- their exact eq 3
+        Survival: f(v_members) for negative variants -- approximates integral
+        MADE: log_prob(variant | v_core per position) -- joint generation
 
-    def forward(self, H, var_mass_week, core_muts, neg_variants,
-                week_idx, delta_weeks):
-        """Full TPP loss for one week.
-
-        L = -sum_B w_B * log_lambda_B(t)   [positive: observed variants]
-          + sum_neg exp(log_lambda_neg(t))  [survival: random negatives]
-          + lambda_i loss                   [per-mutation intensity]
-
-        All terms flow gradient into node_emb, hgnn, scorer, intensity_head.
+        Gradient:
+        - f_mlp: flows into member v_i specifically (not all mutations)
+        - made: flows into v_core[k] per position k
+        - Both flow into HGNN and node_emb
         """
         dev = self.node_emb.weight.device
         core_set = set(core_muts)
         c2k = {m: k for k, m in enumerate(core_muts)}
+        core_t = torch.tensor(core_muts, dtype=torch.long, device=dev)
 
         # node representations WITH gradient
         node_reprs = self.get_node_reprs(H, week_idx)
+        v_core = node_reprs[core_t]  # (K, d) -- per-position, NOT pooled
 
-        # compute h WITH gradient for this step
-        active = list({m for v in var_mass_week for m in v
-                      if self._mut2idx.get(m,-1) >= 0
-                      and self._mut2idx.get(m,-1) < self.V})
-        ctx = self.get_context(node_reprs, [self._mut2idx[m]
-                               for m in active if m in self._mut2idx])
-        h_diff = self.gru(ctx.unsqueeze(0),
-                         self.h_gru.detach().unsqueeze(0)).squeeze(0)
+        # compute h WITH gradient for MADE
+        active = list({self._mut2idx[m]
+                      for v in var_mass_week for m in v
+                      if m in self._mut2idx and self._mut2idx[m] < self.V})
+        ctx = self.get_context(node_reprs, active)
+        h_diff = self.made.gru(ctx.unsqueeze(0),
+                              self.made.h.detach().unsqueeze(0)).squeeze(0)
 
-        # core node representations
-        core_t = torch.tensor(core_muts, dtype=torch.long, device=dev)
-        v_core = node_reprs[core_t]  # (K, d) -- in gradient graph
+        # ── positive: f on observed variants (their eq 3) ─────────────
+        loss_pos = torch.tensor(0.0, device=dev)
+        loss_made = torch.tensor(0.0, device=dev)
+        total_w = 0.0
 
-        # ── COMPONENT 1: positive log_lambda ──────────────────────────
         variants = list(var_mass_week.items())
         X_pos = torch.zeros(len(variants), self.K_made, device=dev)
         W_pos = torch.zeros(len(variants), device=dev)
+
         for bi, (v, w) in enumerate(variants):
+            # f: applied to SPECIFIC members (their exact formulation)
+            member_idxs = [self._mut2idx[m] for m in v
+                          if m in self._mut2idx and self._mut2idx[m] < self.V]
+            if member_idxs:
+                m_t = torch.tensor(member_idxs, dtype=torch.long, device=dev)
+                v_members = node_reprs[m_t]  # only member representations
+                lam = self.f_mlp(v_members)
+                loss_pos = loss_pos - w * torch.log(lam + 1e-9)
+
+            # MADE binary vector
             for m in v:
-                mi = self._mut2idx.get(m,-1)
+                mi = self._mut2idx.get(m, -1)
                 if mi in core_set: X_pos[bi, c2k[mi]] = 1.0
             W_pos[bi] = w
-        W_pos = W_pos / W_pos.sum().clamp_min(1e-9)
-        lp_pos = self.log_lambda_B(X_pos, v_core, h_diff)
-        loss_pos = -(W_pos * lp_pos).sum()
+            total_w += w
 
-        # ── COMPONENT 1: survival term (negative sampling) ────────────
-        if neg_variants:
-            X_neg = torch.zeros(len(neg_variants), self.K_made, device=dev)
-            for ni, neg in enumerate(neg_variants):
-                for m in neg:
-                    mi = self._mut2idx.get(m,-1)
-                    if mi in core_set: X_neg[ni, c2k[mi]] = 1.0
-            lp_neg = self.log_lambda_B(X_neg, v_core, h_diff)
-            # survival: sum exp(log_lambda) * delta_t (delta in weeks)
-            loss_survival = torch.exp(lp_neg).sum() * float(delta_weeks)
-        else:
-            loss_survival = torch.tensor(0.0, device=dev)
+        if total_w > 0:
+            W_pos = W_pos / total_w
+            # MADE: per-position v_core -- NOT pooled
+            lp_made = self.made.log_prob(X_pos, v_core, h_diff=h_diff)
+            loss_made = -(W_pos * lp_made).sum()
 
-        # ── COMPONENT 2: per-mutation intensity ───────────────────────
-        # observed mutations should have high lambda_i
-        # unobserved (in negatives) should have low lambda_i
-        obs_muts = list({self._mut2idx[m] for v,_ in variants
-                        for m in v if m in self._mut2idx
-                        and self._mut2idx[m] < self.V})
-        neg_muts = list({self._mut2idx[m] for neg in neg_variants
-                        for m in neg if m in self._mut2idx
-                        and self._mut2idx[m] < self.V
-                        and self._mut2idx[m] not in set(obs_muts)})[:50]
+        # ── survival: f on negative variants ──────────────────────────
+        loss_surv = torch.tensor(0.0, device=dev)
+        for neg in neg_variants:
+            member_idxs = [self._mut2idx[m] for m in neg
+                          if m in self._mut2idx and self._mut2idx[m] < self.V]
+            if member_idxs:
+                m_t = torch.tensor(member_idxs, dtype=torch.long, device=dev)
+                v_neg = node_reprs[m_t]
+                lam_neg = self.f_mlp(v_neg)
+                loss_surv = loss_surv + lam_neg  # minimize intensity
 
-        lambda_loss = torch.tensor(0.0, device=dev)
-        if obs_muts:
-            obs_t = torch.tensor(obs_muts, dtype=torch.long, device=dev)
-            lam_obs = self.intensity_head(node_reprs[obs_t]).squeeze(-1)
-            lambda_loss = lambda_loss - torch.log(lam_obs + 1e-9).mean()
-        if neg_muts:
-            neg_t = torch.tensor(neg_muts, dtype=torch.long, device=dev)
-            lam_neg = self.intensity_head(node_reprs[neg_t]).squeeze(-1)
-            lambda_loss = lambda_loss + lam_neg.mean() * float(delta_weeks)
+        loss_surv = loss_surv / max(len(neg_variants), 1)
 
-        total = loss_pos + 0.01 * loss_survival + 0.01 * lambda_loss.clamp(-5, 5)
+        total = loss_pos + loss_made + 0.01 * loss_surv
         return total, float(loss_pos.detach()), \
-               float(loss_survival.detach()), float(lambda_loss.detach())
+               float(loss_made.detach()), float(loss_surv.detach())
 
     def update_state(self, H, var_mass_week, week_idx):
-        """Update GRU state and last_seen after gradient step."""
+        """Update GRU and last_seen after gradient step."""
         with torch.no_grad():
             node_reprs = self.get_node_reprs(H, week_idx)
             active = list({self._mut2idx[m]
-                          for v in var_mass_week
-                          for m in v if m in self._mut2idx
-                          and self._mut2idx[m] < self.V})
+                          for v in var_mass_week for m in v
+                          if m in self._mut2idx and self._mut2idx[m] < self.V})
             if active:
                 ctx = self.get_context(node_reprs, active)
-                self.h_gru = self.gru(
-                    ctx.unsqueeze(0),
-                    self.h_gru.detach().unsqueeze(0)).squeeze(0).detach()
-            # update last seen
+                self.made.update(ctx)
             for v in var_mass_week:
                 for m in v:
-                    mi = self._mut2idx.get(m,-1)
+                    mi = self._mut2idx.get(m, -1)
                     if 0 <= mi < self.V:
                         self.last_seen_week[mi] = float(week_idx)
             self._current_week = week_idx
 
-    def predict(self, H, core_muts, week_idx, h_weeks=4):
-        """Predict at T+h_weeks by projecting node representations."""
+    def generate(self, H, core_muts, week_idx, h_weeks, n_samples):
+        """Project to T+h, sample from MADE with per-position v_core."""
         dev = self.node_emb.weight.device
         core_t = torch.tensor(core_muts, dtype=torch.long, device=dev)
-        with torch.no_grad():
-            # project to T+h: decay by additional h_weeks
-            gamma = torch.sigmoid(self.log_gamma)*0.5 + 0.5
-            future_week = week_idx + h_weeks
-            dt = (future_week - self.last_seen_week).clamp_min(0)
-            decay = gamma.pow(dt)
-            X_proj = self.node_emb.weight * decay.unsqueeze(1)
-            X_hgnn = self.hgnn(H, X_proj)
-            phi = self.psi(dt * 7.0)
-            node_reprs_proj = torch.tanh(X_hgnn + phi)
-            v_core = node_reprs_proj[core_t]
-            # sample
-            B = 1
-            h_exp = self.h_gru.unsqueeze(0)
-            v_flat = v_core.reshape(1,-1)
-            v_pooled2 = torch.tanh(self.v_pool(v_core)).mean(0).unsqueeze(0)
-            inp = torch.cat([h_exp, v_pooled2], dim=-1)
-            logits = (self.scorer_deep(inp) +
-                     self.scorer_skip_h(h_exp) +
-                     self.scorer_skip_v(v_pooled2))
-        return logits.squeeze(0), node_reprs_proj, v_core
-
-    def sample_variants(self, logits, core_muts, n=500):
-        """Sample candidate variants from scorer logits."""
         idx2mut = {v: k for k, v in self._mut2idx.items()}
-        probs = torch.sigmoid(logits)
+
+        with torch.no_grad():
+            gamma = torch.sigmoid(self.log_gamma)*0.5 + 0.5
+            future = week_idx + h_weeks
+            dt = (future - self.last_seen_week[core_t]).clamp_min(0)
+            decay = gamma.pow(dt)
+            X = self.node_emb.weight[core_t] * decay.unsqueeze(1)
+            H_core = H[core_t]
+            # project: use core-only HGNN approximation
+            phi = self.psi(dt * 7.0)
+            # full HGNN needs full V -- use projected embeddings directly
+            v_core_proj = torch.tanh(X + phi)  # (K, d) projected
+
+            samples = self.made.sample(v_core_proj, n=n_samples)
+
         candidates = []
-        for _ in range(n):
-            sample = torch.bernoulli(probs)
+        for i in range(n_samples):
             muts = frozenset(
                 idx2mut[core_muts[k]]
                 for k in range(self.K_made)
-                if sample[k].item() > 0.5
+                if samples[i,k].item() > 0.5
                 and idx2mut.get(core_muts[k]) is not None)
             if muts: candidates.append(muts)
         return candidates
 
-# ── negative sampling ──────────────────────────────────────────────────
+    def score_variant(self, v, node_reprs):
+        """Score a variant using f_mlp on its member representations."""
+        dev = node_reprs.device
+        member_idxs = [self._mut2idx[m] for m in v
+                      if m in self._mut2idx and self._mut2idx[m] < self.V]
+        if not member_idxs: return 0.0
+        m_t = torch.tensor(member_idxs, dtype=torch.long, device=dev)
+        with torch.no_grad():
+            lam = self.f_mlp(node_reprs[m_t])
+        return float(lam.item())
+
+# ── helpers ───────────────────────────────────────────────────────────
 
 def sample_negatives(var_mass_week, all_muts, n_neg):
-    """Sample negative variants by corrupting observed ones."""
     observed = list(var_mass_week.keys())
     negs = []
     for _ in range(n_neg):
-        base = random.choice(observed)
-        members = list(base)
-        # flip 2-4 random positions
+        base = list(random.choice(observed))
         n_flip = random.randint(2, 4)
         for _ in range(n_flip):
-            if random.random() < 0.5 and members:
-                members.pop(random.randint(0, len(members)-1))
+            if random.random() < 0.5 and base:
+                base.pop(random.randint(0, len(base)-1))
             else:
-                members.append(random.choice(all_muts))
-        negs.append(frozenset(members))
+                base.append(random.choice(all_muts))
+        negs.append(frozenset(base))
     return negs
+
+def build_H(var_mass_week, mut2idx, V, device):
+    variants = list(var_mass_week.keys())
+    K = max(len(variants), 1)
+    H = torch.zeros(V, K, device=device)
+    for ki, v in enumerate(variants):
+        w = var_mass_week[v]
+        for m in v:
+            if m in mut2idx: H[mut2idx[m], ki] = w
+    return H
 
 # ── run ───────────────────────────────────────────────────────────────
 
@@ -406,13 +456,13 @@ def run(a):
     print(f"device: {device}")
 
     var_mass, weeks, week2ym, mut2idx, V = load_weekly(
-        a.events, '2000-01', a.train_end, a.test_month)
+        a.events, a.train_end, a.test_month)
     all_muts_list = list(mut2idx.keys())
 
     train_weeks = [w for w in weeks if week2ym[w] <= a.train_end]
-    print(f"train weeks: {len(train_weeks)} ({week2ym[train_weeks[0]]}..{week2ym[train_weeks[-1]]})")
+    print(f"train weeks: {len(train_weeks)}")
 
-    # core mutations: top-K by total mass
+    # core mutations
     freq = defaultdict(float)
     for wk in train_weeks:
         for v, w in var_mass[wk].items():
@@ -429,53 +479,29 @@ def run(a):
     opt = torch.optim.Adam(model.parameters(), lr=a.lr)
     print(f"parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    def build_H(wk):
-        vm = var_mass[wk]
-        variants = list(vm.keys())
-        K = max(len(variants), 1)
-        H = torch.zeros(V, K, device=device)
-        for ki, v in enumerate(variants):
-            w = vm[v]
-            for m in v:
-                if m in mut2idx: H[mut2idx[m], ki] = w
-        return H
-
-    # training -- reset once before training, not between epochs
+    # training
     model.reset()
     for ep in range(a.epochs):
-        total_loss = pos_loss = surv_loss = lam_loss = 0.0
-
+        tot = pos = mad = sur = 0.0
         for wi, wk in enumerate(train_weeks):
-            H = build_H(wk)
+            H = build_H(var_mass[wk], mut2idx, V, device)
             vm = var_mass[wk]
             if not vm: continue
-
-            # negative sampling
             negs = sample_negatives(vm, all_muts_list, a.n_neg)
-
-            # delta_weeks: time gap to next week
-            delta = (float(wi+1)/len(train_weeks)) if wi < len(train_weeks)-1 else 1.0
-
-            loss, lp, ls, ll = model(H, vm, core_muts, negs,
-                                     week_idx=wi,
-                                     delta_weeks=delta)
+            loss, lp, lm, ls = model(H, vm, core_muts, negs, wi)
             if torch.isfinite(loss):
                 opt.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                 opt.step()
-                total_loss += loss.item()
-                pos_loss += lp; surv_loss += ls; lam_loss += ll
-
-            # update state AFTER gradient step
+                tot += loss.item(); pos += lp
+                mad += lm; sur += ls
             model.update_state(H, vm, wi)
 
         n = len(train_weeks)
-        print(f"ep {ep+1}/{a.epochs}  "
-              f"loss {total_loss/n:.3f}  "
-              f"pos {pos_loss/n:.3f}  "
-              f"surv {surv_loss/n:.3f}  "
-              f"lam {lam_loss/n:.3f}  "
+        print(f"ep {ep+1}/{a.epochs}  loss {tot/n:.3f}  "
+              f"pos {pos/n:.3f}  made {mad/n:.3f}  "
+              f"surv {sur/n:.3f}  "
               f"gamma {torch.sigmoid(model.log_gamma).item()*0.5+0.5:.3f}",
               flush=True)
 
@@ -483,44 +509,35 @@ def run(a):
     print("\nevaluating...")
     last_wk = train_weeks[-1]
     last_wi = len(train_weeks) - 1
-    H_last = build_H(last_wk)
-
-    # state already built from training -- no need to rebuild
+    H_last = build_H(var_mass[last_wk], mut2idx, V, device)
 
     # circulating at train_end
-    last_ym = a.train_end
     circ_raw = defaultdict(float)
     for wk in train_weeks:
-        if week2ym[wk] == last_ym:
+        if week2ym[wk] == a.train_end:
             for v, w in var_mass[wk].items(): circ_raw[v] += w
     circ_tot = sum(circ_raw.values()) or 1.0
     circ = {v: w/circ_tot for v, w in circ_raw.items()}
 
-    # observed population at test month
-    obs = month_population(a.events, a.test_month, mut2idx)
+    obs = month_population(a.events, a.test_month)
     obs_tot = sum(obs.values()) or 1.0
     obs_norm = {v: w/obs_tot for v, w in obs.items()}
 
-    # predict at T+h
-    h_weeks = a.horizon * 4  # ~4 weeks per month
-    logits, node_reprs_proj, v_core = model.predict(
-        H_last, core_muts, last_wi, h_weeks)
-    candidates = model.sample_variants(logits, core_muts, n=a.n_samples)
-    print(f"generated {len(candidates)} candidates, "
-          f"unique {len(set(candidates))}")
+    # generate candidates
+    h_weeks = a.horizon * 4
+    candidates = model.generate(H_last, core_muts, last_wi,
+                                h_weeks, a.n_samples)
+    print(f"generated {len(candidates)}, unique {len(set(candidates))}")
 
-    # score candidates
+    # get projected node reprs for scoring
     with torch.no_grad():
-        def score(v):
-            x = torch.zeros(1, len(core_muts), device=device)
-            for m in v:
-                mi = mut2idx.get(m,-1)
-                if mi in core_set: x[0,c2k[mi]] = 1.0
-            lp = model.log_lambda_B(x, v_core,
-                                    model.h_gru)
-            return float(torch.exp(lp).item())
+        node_reprs_eval = model.get_node_reprs(H_last, last_wi)
 
-    new_cands = {v: score(v) for v in set(candidates) if v not in circ}
+    # score and build predicted distribution
+    new_cands = {}
+    for v in set(candidates):
+        if v not in circ:
+            new_cands[v] = model.score_variant(v, node_reprs_eval)
     nc_tot = sum(new_cands.values()) or 1.0
 
     pred = {v: (1-a.budget)*w for v, w in circ.items()}
@@ -536,11 +553,11 @@ def run(a):
     mass_new = sum(pred.get(v,0) for v in new_vars)
 
     print(f"\n{'='*50}")
-    print(f"train {train_weeks[0]}..{a.train_end}  predict {a.test_month}  h={a.horizon}m")
+    print(f"train ..{a.train_end}  predict {a.test_month}  h={a.horizon}m")
     print(f"model       overlap {ov_m:.4f}  mass_new {mass_new:.4f}")
     print(f"persistence overlap {ov_p:.4f}  mass_new 0.0000")
     print(f"gain        {ov_m-ov_p:+.4f}")
-    print(f"gamma (decay): {torch.sigmoid(model.log_gamma).item()*0.5+0.5:.3f}")
+    print(f"gamma: {torch.sigmoid(model.log_gamma).item()*0.5+0.5:.3f}")
 
 def main():
     p = argparse.ArgumentParser()
@@ -548,7 +565,7 @@ def main():
     p.add_argument('--train-end', default='2022-06', dest='train_end')
     p.add_argument('--test-month',default='2022-07', dest='test_month')
     p.add_argument('--d',         type=int, default=64)
-    p.add_argument('--d-hidden',  type=int, default=256, dest='d_hidden')
+    p.add_argument('--d-hidden',  type=int, default=128, dest='d_hidden')
     p.add_argument('--K-made',    type=int, default=50, dest='K_made')
     p.add_argument('--epochs',    type=int, default=5)
     p.add_argument('--lr',        type=float, default=1e-3)
