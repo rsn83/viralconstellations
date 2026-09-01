@@ -106,21 +106,35 @@ class HGNN(nn.Module):
 
 # ── MADE ──────────────────────────────────────────────────────────────
 
-class MADE(nn.Module):
-    """Masked Autoregressive Density Estimator over K positions.
-    
-    Models joint p(x_1,...,x_K | context) autoregressively.
-    Each position x_k ~ Bernoulli(sigmoid(f(context, x_1,...,x_{k-1}))).
-    
-    Fully differentiable. Gradient flows through log_prob into context
-    and into all MADE parameters.
+class RecurrentMADE(nn.Module):
+    """Recurrent MADE: maintains a hidden state that accumulates
+    joint distribution updates over time.
+
+    At each month t, the hidden state h_t encodes the accumulated
+    joint distribution of co-occurring mutations seen so far.
+    h_t is updated via GRU when new variants are observed.
+
+    This means MADE learns HOW the joint evolves over time --
+    not just the most recent month's joint.
+
+    log_prob(x | h_t) = autoregressive joint conditioned on
+    accumulated history state h_t.
     """
     def __init__(self, K, d_ctx, d_hidden=256):
         super().__init__()
         self.K = K
-        # input: context (d_ctx) + previous K positions
+        self.d_ctx = d_ctx
+        self.d_hidden = d_hidden
+
+        # GRU to accumulate joint distribution state over time
+        # input: context vector (population state at each month)
+        # hidden: accumulated joint distribution history
+        self.gru = nn.GRUCell(d_ctx, d_hidden)
+
+        # autoregressive network conditioned on GRU hidden state
+        # input: hidden state (d_hidden) + previous K positions
         self.net = nn.Sequential(
-            nn.Linear(d_ctx + K, d_hidden),
+            nn.Linear(d_hidden + K, d_hidden),
             nn.Tanh(),
             nn.Linear(d_hidden, d_hidden),
             nn.Tanh(),
@@ -128,20 +142,33 @@ class MADE(nn.Module):
         nn.init.zeros_(self.net[-1].weight)
         nn.init.zeros_(self.net[-1].bias)
 
-    def log_prob(self, x, ctx):
-        """Log probability of binary vectors x given context ctx.
+        # hidden state -- persists across months
+        self.register_buffer('h', torch.zeros(d_hidden))
+
+    def reset(self):
+        self.h.zero_()
+
+    def update(self, ctx):
+        """Update hidden state with new population context.
+        Call once per month after observing that month's variants.
+        ctx: (d_ctx,) population context vector
+        Gradient flows through GRU into ctx and all GRU parameters.
+        """
+        self.h = self.gru(ctx.unsqueeze(0), self.h.unsqueeze(0)).squeeze(0)
+
+    def log_prob(self, x, ctx=None):
+        """Log probability of binary vectors x given current hidden state.
         x:   (B, K) binary
-        ctx: (B, d_ctx) or (d_ctx,)
+        ctx: ignored -- uses accumulated hidden state self.h
         Returns (B,) log probabilities.
-        Gradient flows into ctx and all MADE parameters.
+        Gradient flows through net and into self.h.
         """
         B = x.shape[0]
-        if ctx.dim() == 1:
-            ctx = ctx.unsqueeze(0).expand(B, -1)
+        h = self.h.unsqueeze(0).expand(B, -1)  # (B, d_hidden)
         lp = torch.zeros(B, device=x.device)
         prev = torch.zeros(B, self.K, device=x.device)
         for k in range(self.K):
-            inp = torch.cat([ctx, prev], dim=-1)
+            inp = torch.cat([h, prev], dim=-1)
             logit = self.net(inp).squeeze(-1)
             lp = lp - F.binary_cross_entropy_with_logits(
                 logit, x[:, k], reduction='none')
@@ -149,15 +176,14 @@ class MADE(nn.Module):
             prev[:, k] = x[:, k]
         return lp
 
-    def sample(self, ctx, n=1):
-        """Sample n binary vectors given context ctx."""
-        dev = ctx.device
-        if ctx.dim() == 1:
-            ctx = ctx.unsqueeze(0).expand(n, -1)
+    def sample(self, ctx=None, n=1):
+        """Sample n binary vectors given current hidden state."""
+        dev = self.h.device
+        h = self.h.unsqueeze(0).expand(n, -1)
         prev = torch.zeros(n, self.K, device=dev)
         with torch.no_grad():
             for k in range(self.K):
-                inp = torch.cat([ctx, prev], dim=-1)
+                inp = torch.cat([h, prev], dim=-1)
                 logit = self.net(inp).squeeze(-1)
                 prev[:, k] = torch.bernoulli(torch.sigmoid(logit))
         return prev
@@ -188,8 +214,8 @@ class HGNNMADEModel(nn.Module):
         # temporal projection: combine node repr + time encoding
         self.W_time = nn.Linear(2*d, d)
 
-        # MADE: joint distribution over top-K mutation positions
-        self.made = MADE(K_made, d, d_hidden)
+        # RecurrentMADE: joint distribution with GRU state
+        self.made = RecurrentMADE(K_made, d, d_hidden)
         self._mut2idx = mut2idx or {}
 
     def get_node_reprs(self, H, dt=0.0):
@@ -276,16 +302,20 @@ class HGNNMADEModel(nn.Module):
 # ── training ──────────────────────────────────────────────────────────
 
 def build_incidence(var_mass_ym, mut2idx, V):
-    """Build incidence matrix H (V x K) for a month."""
+    """Build WEIGHTED incidence matrix H (V x K) for a month.
+    H[i,k] = mass of variant k if mutation i is in variant k, else 0.
+    Mass-weighting ensures dominant variants drive node representations.
+    """
     variants = list(var_mass_ym.keys())
     K = len(variants)
     if K == 0:
         return torch.zeros(V, 1), variants
     H = torch.zeros(V, K)
     for ki, v in enumerate(variants):
+        w = var_mass_ym[v]  # variant mass
         for m in v:
             if m in mut2idx:
-                H[mut2idx[m], ki] = 1.0
+                H[mut2idx[m], ki] = w  # weighted not binary
     return H, variants
 
 def get_core_muts(var_mass_ym, mut2idx, K_made):
@@ -337,8 +367,9 @@ def run(a):
 
     print(f"parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    # training: one gradient update per consecutive month pair
+    # training: reset MADE state each epoch, update per month
     for ep in range(a.epochs):
+        model.made.reset()
         total_loss = 0.0
         for ti in range(len(train_months) - 1):
             t_ym  = train_months[ti]
@@ -363,10 +394,36 @@ def run(a):
                 opt.step()
                 total_loss += loss.item()
 
+            # update MADE hidden state with current month's context
+            # detached -- don't backprop through state update itself
+            with torch.no_grad():
+                node_reprs_d = model.get_node_reprs(H, dt=30.0).detach()
+                active_d = list(set(
+                    k for v, _ in [(v,w) for v,w in var_mass[t_ym].items()]
+                    for m in v
+                    for k in [mut2idx.get(m,-1)] if k>=0 and k<V))
+                if active_d:
+                    ctx_d = model.get_context(node_reprs_d, active_d)
+                    model.made.update(ctx_d)
+
         print(f"ep {ep+1}/{a.epochs}  loss {total_loss:.4f}", flush=True)
 
-    # evaluation
+    # evaluation: rebuild MADE state by replaying training months
     print("\nevaluating...")
+    model.made.reset()
+    model.eval()
+    with torch.no_grad():
+        for ym in train_months:
+            H_r, _ = build_incidence(var_mass[ym], mut2idx, V)
+            H_r = H_r.to(device)
+            nr = model.get_node_reprs(H_r, dt=30.0)
+            active_r = list(set(
+                k for v in var_mass[ym]
+                for m in v
+                for k in [mut2idx.get(m,-1)] if k>=0 and k<V))
+            if active_r:
+                ctx_r = model.get_context(nr, active_r)
+                model.made.update(ctx_r)
     last_train = train_months[-1]
     H_test, _ = build_incidence(var_mass[last_train], mut2idx, V)
     H_test = H_test.to(device)
