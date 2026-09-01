@@ -308,7 +308,7 @@ class FullModel(nn.Module):
             lam_neg = self.intensity_head(node_reprs[neg_t]).squeeze(-1)
             lambda_loss = lambda_loss + lam_neg.mean() * float(delta_weeks)
 
-        total = loss_pos + 0.1 * loss_survival + 0.1 * lambda_loss
+        total = loss_pos + 0.01 * loss_survival + 0.01 * lambda_loss.clamp(-5, 5)
         return total, float(loss_pos.detach()), \
                float(loss_survival.detach()), float(lambda_loss.detach())
 
@@ -434,9 +434,9 @@ def run(a):
                 if m in mut2idx: H[mut2idx[m], ki] = w
         return H
 
-    # training
+    # training -- reset once before training, not between epochs
+    model.reset()
     for ep in range(a.epochs):
-        model.reset()
         total_loss = pos_loss = surv_loss = lam_loss = 0.0
 
         for wi, wk in enumerate(train_weeks):
@@ -479,11 +479,7 @@ def run(a):
     last_wi = len(train_weeks) - 1
     H_last = build_H(last_wk)
 
-    # rebuild state by replaying
-    model.reset()
-    for wi, wk in enumerate(train_weeks):
-        H_w = build_H(wk)
-        model.update_state(H_w, var_mass[wk], wi)
+    # state already built from training -- no need to rebuild
 
     # circulating at train_end
     last_ym = a.train_end
