@@ -160,11 +160,13 @@ class FullModel(nn.Module):
         # init forget gate to 1 -- avoids vanishing gradient
         nn.init.ones_(self.gru.bias_ih[d_hidden:2*d_hidden])
         nn.init.ones_(self.gru.bias_hh[d_hidden:2*d_hidden])
+        # pool v_core (K*d) -> d before scorer -- saves params
+        self.v_pool = nn.Linear(d, d, bias=False)
         self.scorer_deep = nn.Sequential(
-            nn.Linear(d_hidden + K_made*d, d_hidden), nn.Tanh(),
+            nn.Linear(d_hidden + d, d_hidden), nn.Tanh(),
             nn.Linear(d_hidden, K_made))
         self.scorer_skip_h = nn.Linear(d_hidden, K_made, bias=False)
-        self.scorer_skip_v = nn.Linear(K_made*d, K_made, bias=False)
+        self.scorer_skip_v = nn.Linear(d, K_made, bias=False)
         nn.init.zeros_(self.scorer_deep[-1].weight)
         nn.init.zeros_(self.scorer_deep[-1].bias)
         nn.init.zeros_(self.scorer_skip_h.weight)
@@ -224,10 +226,12 @@ class FullModel(nn.Module):
         B = x.shape[0]
         h_exp = h.unsqueeze(0).expand(B, -1)
         v_flat = v_core.reshape(1, -1).expand(B, -1)
-        inp = torch.cat([h_exp, v_flat], dim=-1)
+        # pool v_core to d dims
+        v_pooled = torch.tanh(self.v_pool(v_core)).mean(0).unsqueeze(0).expand(B,-1)
+        inp = torch.cat([h_exp, v_pooled], dim=-1)
         logits = (self.scorer_deep(inp) +
                   self.scorer_skip_h(h_exp) +
-                  self.scorer_skip_v(v_flat))
+                  self.scorer_skip_v(v_pooled))
         return -F.binary_cross_entropy_with_logits(
             logits, x, reduction='none').sum(-1)
 
@@ -352,10 +356,11 @@ class FullModel(nn.Module):
             B = 1
             h_exp = self.h_gru.unsqueeze(0)
             v_flat = v_core.reshape(1,-1)
-            inp = torch.cat([h_exp, v_flat], dim=-1)
+            v_pooled2 = torch.tanh(self.v_pool(v_core)).mean(0).unsqueeze(0)
+            inp = torch.cat([h_exp, v_pooled2], dim=-1)
             logits = (self.scorer_deep(inp) +
                      self.scorer_skip_h(h_exp) +
-                     self.scorer_skip_v(v_flat))
+                     self.scorer_skip_v(v_pooled2))
         return logits.squeeze(0), node_reprs_proj, v_core
 
     def sample_variants(self, logits, core_muts, n=500):
@@ -404,7 +409,7 @@ def run(a):
     all_muts_list = list(mut2idx.keys())
 
     train_weeks = [w for w in weeks if week2ym[w] <= a.train_end]
-    print(f"train weeks: {len(train_weeks)} ({train_weeks[0]}..{train_weeks[-1]})")
+    print(f"train weeks: {len(train_weeks)} ({week2ym[train_weeks[0]]}..{week2ym[train_weeks[-1]]})")
 
     # core mutations: top-K by total mass
     freq = defaultdict(float)
