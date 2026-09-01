@@ -49,7 +49,7 @@ def cooc_sparse(var_mass_ym):
     for v, w in var_mass_ym.items():
         ml = sorted(v)
         for i in range(len(ml)):
-            for j in range(i+1, min(i+8, len(ml))):
+            for j in range(i+1, len(ml)):  # all pairs within variant
                 cooc[(ml[i], ml[j])] += w
     # normalize to unit Frobenius norm
     norm = np.sqrt(sum(v**2 for v in cooc.values())) or 1.0
