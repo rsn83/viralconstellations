@@ -76,7 +76,8 @@ def load_weekly(path, start_ym, end_ym, test_ym):
     all_muts = sorted({m for wk in weeks for v in var_mass[wk] for m in v})
     mut2idx = {m: i for i, m in enumerate(all_muts)}
     V = len(all_muts)
-    print(f"weeks {len(weeks)}  V {V}  ({weeks[0]}..{weeks[-1]})")
+    train_wks = [w for w in weeks if week2ym[w] <= end_ym]
+    print(f"loaded {len(weeks)} weeks  V={V} mutations  train: {week2ym[train_wks[0]]} to {week2ym[train_wks[-1]]}")
     return var_mass, weeks, week2ym, mut2idx, V
 
 def month_population(path, test_ym, mut2idx):
