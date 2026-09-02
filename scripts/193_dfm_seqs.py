@@ -123,16 +123,19 @@ def build_monthly(events_path, pos_res, months):
 def seq_from_muts(muts, wuhan, all_pos, pos_res, var_ix):
     """Convert a frozenset of mutation IDs to a variable-position sequence.
 
-    Returns array of shape (P,) with residue indices.
+    Returns array of shape (P,) with residue indices 0..20.
+    Unmutated positions get the Wuhan residue index.
     """
-    # start from wuhan
-    seq = {pos: AA_IX.get(wt, 0) for pos, wt in wuhan.items()}
+    # start from wuhan residue index at each position
+    seq = {}
+    for pos, wt in wuhan.items():
+        seq[pos] = AA_IX.get(wt, 0)
     # apply mutations
     for mid in muts:
         if mid in pos_res:
             pos, wt, mt = pos_res[mid]
             seq[pos] = AA_IX.get(mt, 0)
-    # extract variable positions
+    # extract variable positions; default to 0 (Alanine) if position unknown
     return np.array([seq.get(all_pos[i], 0) for i in var_ix], dtype=np.int64)
 
 
@@ -348,7 +351,7 @@ def main():
     print("building individual sequence pools ...")
     monthly_raw = build_monthly(a.events, pos_res, train_months + test_months)
     seq_pool = build_seq_pool(monthly_raw, train_months, pos_res,
-                              wuhan_at_var, all_pos, var_ix,
+                              wuhan, all_pos, var_ix,
                               a.max_per_month)
     pairs = sample_pairs(seq_pool, train_months, a.pairs_per_step, a.seed)
     print(f"  {len(pairs):,} training pairs from individual sequences")
@@ -406,7 +409,7 @@ def main():
         sampled = random.choices(items, weights=weights,
                                  k=min(20, len(items)))
         x0_arr = np.array([
-            seq_from_muts(muts, wuhan_at_var, all_pos, pos_res, var_ix)
+            seq_from_muts(muts, wuhan, all_pos, pos_res, var_ix)
             for muts, _ in sampled
         ])
 
