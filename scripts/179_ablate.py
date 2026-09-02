@@ -154,6 +154,7 @@ class Model:
 
         # background list for the shuffled control
         self._all_bgs = list(self.attach)
+        self._decoy_cache = {}
 
     def decoy(self, S, max_j=0.3, tries=300):
         """A background DISSIMILAR to S, for the rank-matched control.
@@ -169,16 +170,24 @@ class Model:
         background exists, which is itself informative: if dissimilar
         backgrounds are rare, the data does not contain enough diversity to
         test background specificity at all.
+
+        CACHED PER BACKGROUND. The decoy depends only on S, but there are
+        ~670k candidates and only ~300 distinct backgrounds per month, so
+        without the cache this dominates runtime by a factor of ~2000.
         """
-        if not self._all_bgs:
-            return None
-        for _ in range(tries):
-            Sd = self.rng.choice(self._all_bgs)
-            if Sd is S or Sd == S:
-                continue
-            if len(S & Sd) / len(S | Sd) <= max_j:
-                return Sd
-        return None
+        if S in self._decoy_cache:
+            return self._decoy_cache[S]
+        out = None
+        if self._all_bgs:
+            for _ in range(tries):
+                Sd = self.rng.choice(self._all_bgs)
+                if Sd == S:
+                    continue
+                if len(S & Sd) / len(S | Sd) <= max_j:
+                    out = Sd
+                    break
+        self._decoy_cache[S] = out
+        return out
 
     def profile(self, S):
         if S in self._cache:
@@ -315,6 +324,10 @@ def main():
             for K in KS:
                 row[f"{nm}@{K}"] = rk[K]
         rows.append(row)
+        print(f"    {m}  new {len(new):4d}  truth {len(truth):4d}  "
+              f"decoy_found {row['decoy_found']:.2f}  "
+              f"A2@100 {row['A2 background@100']:.3f}  "
+              f"A3@100 {row['A3 shuffled@100']:.3f}")
 
     if not rows:
         print("  NO EVALUABLE MONTHS")
