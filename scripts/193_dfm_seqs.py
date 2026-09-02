@@ -429,7 +429,8 @@ def main():
         print("  NO PAIRS"); return
 
     for ep in range(a.epochs):
-        model.train(); gru.train()
+        model.train()
+        if gru is not None: gru.train()
         random.shuffle(labeled_pairs)
         tot = 0.0
         for x0, x1, m0 in labeled_pairs:
@@ -491,7 +492,8 @@ def main():
                                if x <= m and x in emb]) \
             if any(x in emb for x in train_months) else None
 
-        model.eval(); gru.eval()
+        model.eval()
+        if gru is not None: gru.eval()
         with torch.no_grad():
             h_T_test = gru(E_ctx_test) if (gru is not None and E_ctx_test is not None) else None
 
