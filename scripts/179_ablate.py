@@ -152,11 +152,33 @@ class Model:
             for i in Sbg:
                 self._by_mut[i].add(Sbg)
 
-        # size-bucketed background list, for the shuffled control
-        self._by_size = defaultdict(list)
-        for S in self.attach:
-            self._by_size[len(S)].append(S)
-        self._sizes = sorted(self._by_size)
+        # background list for the shuffled control
+        self._all_bgs = list(self.attach)
+
+    def decoy(self, S, max_j=0.3, tries=300):
+        """A background DISSIMILAR to S, for the rank-matched control.
+
+        Size-matching FAILED as a control on this data: same-size
+        backgrounds have mean Jaccard 0.855 to their target, well above the
+        tau=0.5 pooling threshold, so a size-matched decoy is by the
+        estimator's own criterion a SIMILAR background. Comparing against
+        one is vacuous.
+
+        This version requires Jaccard <= max_j, i.e. a background the
+        estimator would never have pooled. Returns None when no such
+        background exists, which is itself informative: if dissimilar
+        backgrounds are rare, the data does not contain enough diversity to
+        test background specificity at all.
+        """
+        if not self._all_bgs:
+            return None
+        for _ in range(tries):
+            Sd = self.rng.choice(self._all_bgs)
+            if Sd is S or Sd == S:
+                continue
+            if len(S & Sd) / len(S | Sd) <= max_j:
+                return Sd
+        return None
 
     def profile(self, S):
         if S in self._cache:
@@ -174,15 +196,6 @@ class Model:
             den += j * self.bg_seen.get(Sbg, 0)
         self._cache[S] = (num, den)
         return num, den
-
-    def decoy(self, S):
-        """A background of similar size, chosen at random. Preserves profile
-        shape and count scale while destroying the match to S."""
-        if not self._sizes:
-            return None
-        near = min(self._sizes, key=lambda k: abs(k - len(S)))
-        pool = self._by_size[near]
-        return self.rng.choice(pool) if pool else None
 
     # -- the four scorers ---------------------------------------------------
     def a0(self, S, D, w):
@@ -286,11 +299,17 @@ def main():
             continue
 
         decoys = {S: M.decoy(S) for S, _, _ in cands}
+        n_bg = len({S for S, _, _ in cands})
+        n_ok = sum(1 for v in decoys.values() if v is not None)
+        jd = [len(S & decoys[S]) / len(S | decoys[S])
+              for S in decoys if decoys[S] is not None]
         fns = [M.a0, M.a1, M.a2,
                lambda S, D, w: M.a3(S, D, w, decoys)]
 
         row = {"month": m, "n_new": len(new), "n_truth": len(truth),
-               "n_cand": len(cands)}
+               "n_cand": len(cands),
+               "decoy_found": n_ok / max(n_bg, 1),
+               "decoy_jaccard": float(np.mean(jd)) if jd else None}
         for nm, fn in zip(names, fns):
             rk = recall_at_k([fn(S, D, w) for S, D, w in cands], truth, KS)
             for K in KS:
@@ -306,6 +325,12 @@ def main():
 
     print(f"\n  months {len(rows)} | candidates/month "
           f"{int(np.mean([r['n_cand'] for r in rows])):,}")
+    dj = [r["decoy_jaccard"] for r in rows if r["decoy_jaccard"] is not None]
+    print(f"  CONTROL CHECK: dissimilar decoy found for "
+          f"{np.mean([r['decoy_found'] for r in rows]):.3f} of backgrounds"
+          f" | mean jaccard(bg, decoy) = "
+          f"{np.mean(dj) if dj else float('nan'):.3f}")
+    print("  (must be well below tau=0.5, or the control is vacuous)")
     print(f"\n  {'':16s} {'@10':>8s} {'@100':>8s} {'@1000':>8s}")
     print("  " + "-" * 44)
     for nm in names:
