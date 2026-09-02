@@ -179,20 +179,51 @@ def sample_pairs(pool, months, n_pairs_per_step=50, seed=0):
 
 
 # ----------------------------------------------------------------------------
+# GRU TEMPORAL ENCODER
+# ----------------------------------------------------------------------------
+
+class TemporalGRU(nn.Module):
+    """Encodes the sequence of monthly population embeddings into h_T.
+
+    Same as 189's GRU, but returns hidden state for conditioning DFM.
+    Input per month: flattened (P x 21) residue distribution
+    Output: h_T ∈ R^{d_gru}
+    """
+
+    def __init__(self, P, d_gru=32):
+        super().__init__()
+        self.gru = nn.GRU(P * N_AA, d_gru, batch_first=True)
+        self.d_gru = d_gru
+
+    def forward(self, E_seq):
+        """E_seq: (T, P, 21) monthly embeddings
+        Returns h_T: (d_gru,) hidden state after processing all months
+        """
+        x = torch.tensor(E_seq, dtype=torch.float32).view(1, len(E_seq), -1)
+        _, h = self.gru(x)                 # h: (1, 1, d_gru)
+        return h.squeeze()                 # (d_gru,)
+
+
+# ----------------------------------------------------------------------------
 # MODEL: rate network over variable positions
 # ----------------------------------------------------------------------------
 
 class RateNet(nn.Module):
-    """Rate network: given x_t (P variable positions) and t,
+    """Rate network: given x_t, t, and temporal context h_T,
     predict substitution rates at each position.
 
-    Input:  x_t ∈ {0..20}^P, t ∈ [0,1]
+    Input:  x_t ∈ {0..20}^P, t ∈ [0,1], h_T ∈ R^{d_gru}
     Output: logits ∈ R^{P x 21}
+
+    h_T provides temporal trend (which positions have been changing).
+    ctx(x_t) provides within-sequence context (which positions co-occur).
+    Together they capture both temporal dynamics and positional dependencies.
     """
 
-    def __init__(self, P, d=32, hidden=128, n_fourier=4):
+    def __init__(self, P, d=32, hidden=128, n_fourier=4, d_gru=32):
         super().__init__()
         self.P = P
+        self.d_gru = d_gru
         self.emb = nn.Embedding(N_AA, d)
         # positional encoding
         pe = torch.zeros(P, d)
@@ -202,14 +233,14 @@ class RateNet(nn.Module):
         pe[:, 0::2] = torch.sin(pos * div)
         pe[:, 1::2] = torch.cos(pos * div[:d // 2])
         self.register_buffer("pe", pe)
-        # time conditioning via Fourier features
         self.n_fourier = n_fourier
         t_dim = 2 * n_fourier
-        # MLP: per-position, but sees all positions through embedding sum
-        self.context = nn.Linear(P * d, d)   # global context from all positions
+        # global context from all positions in x_t
+        self.context = nn.Linear(P * d, d)
+        # MLP input: per-position emb + global ctx + time + GRU state
         self.mlp = nn.Sequential(
-            nn.Linear(d + d + t_dim, hidden), nn.ReLU(),
-            nn.Linear(hidden, hidden),        nn.ReLU(),
+            nn.Linear(d + d + t_dim + d_gru, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden),                 nn.ReLU(),
             nn.Linear(hidden, N_AA),
         )
 
@@ -219,17 +250,18 @@ class RateNet(nn.Module):
         return torch.cat([torch.sin(freqs * t * np.pi),
                           torch.cos(freqs * t * np.pi)])
 
-    def forward(self, x_t, t_val):
-        """x_t: (P,) int64; t_val: scalar float"""
-        emb = self.emb(x_t)                          # (P, d)
-        emb = emb + self.pe                           # (P, d)
-        ctx = torch.relu(self.context(emb.flatten())) # (d,) global context
-        psi = self.fourier_t(t_val, x_t.device)      # (t_dim,)
+    def forward(self, x_t, t_val, h_T=None):
+        """x_t: (P,) int64; t_val: scalar; h_T: (d_gru,) or None"""
+        emb = self.emb(x_t) + self.pe               # (P, d)
+        ctx = torch.relu(self.context(emb.flatten()))# (d,)
+        psi = self.fourier_t(t_val, x_t.device)     # (t_dim,)
+        if h_T is None:
+            h_T = torch.zeros(self.d_gru, device=x_t.device)
         logits = []
         for i in range(self.P):
-            inp = torch.cat([emb[i], ctx, psi])       # (d + d + t_dim,)
+            inp = torch.cat([emb[i], ctx, psi, h_T]) # (d+d+t_dim+d_gru,)
             logits.append(self.mlp(inp))
-        return torch.stack(logits)                    # (P, 21)
+        return torch.stack(logits)                   # (P, 21)
 
 
 # ----------------------------------------------------------------------------
@@ -242,10 +274,17 @@ def sample_xt(x0, x1, t):
     return torch.where(mask, x1, x0)
 
 
-def dfm_step(model, x0, x1, weight_changed=10.0):
+def dfm_step(model, gru, x0, x1, E_ctx, weight_changed=10.0):
+    """One DFM training step with GRU temporal conditioning.
+
+    E_ctx: monthly embeddings up to current month (T, P, 21)
+    """
     t = random.uniform(0.01, 0.99)
     xt = sample_xt(x0, x1, t)
-    logits = model(xt, t)                            # (P, 21)
+    # get temporal context from GRU
+    with torch.no_grad():
+        h_T = gru(E_ctx) if E_ctx is not None else None
+    logits = model(xt, t, h_T)                      # (P, 21)
     changed = (x0 != x1).float()
     w = changed * weight_changed + 1.0
     loss = F.cross_entropy(logits, x1, reduction="none")
@@ -263,24 +302,19 @@ def recall_at_k(scores, truth, Ks, seed=0):
     return {K: float(np.mean(rank[hits] < K)) for K in Ks}
 
 
-def predict_scores(model, x0_arr, n_t=5):
-    """Score each variable position by mean predicted change probability.
-
-    Average over multiple sampled x_0 sequences from current month
-    and multiple interpolation times t.
-    """
+def predict_scores(model, x0_arr, h_T=None, n_t=5):
+    """Score each variable position by mean predicted change probability."""
     P = x0_arr.shape[1] if x0_arr.ndim == 2 else len(x0_arr)
-    scores = np.zeros(P if x0_arr.ndim == 1 else x0_arr.shape[1])
+    scores = np.zeros(P)
     n = 0
     seqs = x0_arr if x0_arr.ndim == 2 else x0_arr[None]
     with torch.no_grad():
         for x0 in seqs:
             x0t = torch.tensor(x0, dtype=torch.long)
             for t in np.linspace(0.1, 0.9, n_t):
-                logits = model(x0t, float(t))        # (P, 21)
+                logits = model(x0t, float(t), h_T)   # (P, 21)
                 probs = torch.softmax(logits, dim=1).numpy()
-                cur = x0
-                scores += 1.0 - probs[np.arange(P), cur]
+                scores += 1.0 - probs[np.arange(P), x0]
                 n += 1
     return scores / max(n, 1)
 
@@ -359,23 +393,61 @@ def main():
         print("  NO PAIRS -- check vocab and events format"); return
 
     # train
-    model = RateNet(P, a.d, a.hidden)
-    opt   = torch.optim.Adam(model.parameters(), lr=a.lr)
-    print(f"\ntraining DFM  epochs={a.epochs} "
-          f"params={sum(p.numel() for p in model.parameters()):,} ...")
+    gru   = TemporalGRU(P, d_gru=a.d)
+    model = RateNet(P, a.d, a.hidden, d_gru=a.d)
+    params = list(model.parameters()) + list(gru.parameters())
+    opt   = torch.optim.Adam(params, lr=a.lr)
+    n_params = sum(p.numel() for p in params)
+    print(f"\ntraining DFM+GRU  epochs={a.epochs} params={n_params:,} ...")
+
+    # precompute monthly embeddings for GRU context
+    def get_E_ctx(up_to_month):
+        """Return (T, P, 21) array of monthly embeddings up to given month."""
+        ctx = [emb[m][var_ix] for m in train_months
+               if m <= up_to_month and m in emb]
+        return np.stack(ctx) if ctx else None
+
+    # attach month label to each pair
+    # pairs currently have no month info -- rebuild with month labels
+    labeled_pairs = []
+    rng_pair = random.Random(a.seed)
+    for a_idx in range(len(train_months) - 1):
+        m0, m1 = train_months[a_idx], train_months[a_idx + 1]
+        s0 = seq_pool.get(m0, [])
+        s1 = seq_pool.get(m1, [])
+        if not s0 or not s1:
+            continue
+        w0 = [c for _, c in s0]
+        w1 = [c for _, c in s1]
+        for _ in range(a.pairs_per_step):
+            x0 = rng_pair.choices(s0, weights=w0, k=1)[0][0]
+            x1 = rng_pair.choices(s1, weights=w1, k=1)[0][0]
+            if not np.array_equal(x0, x1):
+                labeled_pairs.append((x0.copy(), x1.copy(), m0))
+    print(f"  {len(labeled_pairs):,} labeled training pairs")
+    if not labeled_pairs:
+        print("  NO PAIRS"); return
 
     for ep in range(a.epochs):
-        model.train()
-        random.shuffle(pairs)
+        model.train(); gru.train()
+        random.shuffle(labeled_pairs)
         tot = 0.0
-        for x0, x1 in pairs:
+        for x0, x1, m0 in labeled_pairs:
             x0t = torch.tensor(x0, dtype=torch.long)
             x1t = torch.tensor(x1, dtype=torch.long)
-            loss = dfm_step(model, x0t, x1t, a.weight_changed)
+            E_ctx = get_E_ctx(m0)
+            h_T = gru(E_ctx) if E_ctx is not None else None
+            t = random.uniform(0.01, 0.99)
+            xt = sample_xt(x0t, x1t, t)
+            logits = model(xt, t, h_T)
+            changed = (x0t != x1t).float()
+            w = changed * a.weight_changed + 1.0
+            loss = (F.cross_entropy(logits, x1t, reduction="none") * w
+                    ).sum() / w.sum()
             opt.zero_grad(); loss.backward(); opt.step()
             tot += loss.item()
         if (ep + 1) % 20 == 0:
-            print(f"  ep {ep+1:3d}  loss {tot/len(pairs):.4f}")
+            print(f"  ep {ep+1:3d}  loss {tot/len(labeled_pairs):.4f}")
 
     # evaluate: same protocol as 191 (CTMC)
     model.eval()
@@ -413,7 +485,17 @@ def main():
             for muts, _ in sampled
         ])
 
-        dfm_scores = predict_scores(model, x0_arr)
+        # temporal context up to this test month
+        E_ctx_test = np.stack([emb[x][var_ix] for x in
+                               train_months + test_months[:test_months.index(m)+1]
+                               if x <= m and x in emb]) \
+            if any(x in emb for x in train_months) else None
+
+        model.eval(); gru.eval()
+        with torch.no_grad():
+            h_T_test = gru(E_ctx_test) if E_ctx_test is not None else None
+
+        dfm_scores = predict_scores(model, x0_arr, h_T=h_T_test)
         r_null = recall_at_k(hist_change, truth, KS)
         r_dfm  = recall_at_k(dfm_scores,  truth, KS)
 
