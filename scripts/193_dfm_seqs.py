@@ -238,7 +238,7 @@ class RateNet(nn.Module):
         self.context = nn.Linear(P * d, d)
         # MLP input: per-position emb + global ctx + time + GRU state
         self.mlp = nn.Sequential(
-            nn.Linear(d + d + t_dim + d_gru, hidden), nn.ReLU(),
+            nn.Linear(d + d + t_dim + max(d_gru, 0), hidden), nn.ReLU(),
             nn.Linear(hidden, hidden),                 nn.ReLU(),
             nn.Linear(hidden, N_AA),
         )
@@ -336,6 +336,7 @@ def main():
                     dest="weight_changed")
     ap.add_argument("--test-end",       default="2025-02")
     ap.add_argument("--seed",           type=int,   default=0)
+    ap.add_argument("--no-gru",         action="store_true", dest="no_gru")
     ap.add_argument("--out",            default=None)
     a = ap.parse_args()
 
@@ -392,9 +393,9 @@ def main():
         print("  NO PAIRS -- check vocab and events format"); return
 
     # train
-    gru   = TemporalGRU(P, d_gru=a.d)
-    model = RateNet(P, a.d, a.hidden, d_gru=a.d)
-    params = list(model.parameters()) + list(gru.parameters())
+    gru   = TemporalGRU(P, d_gru=a.d) if not a.no_gru else None
+    model = RateNet(P, a.d, a.hidden, d_gru=a.d if not a.no_gru else 0)
+    params = list(model.parameters()) + (list(gru.parameters()) if gru else [])
     opt   = torch.optim.Adam(params, lr=a.lr)
     n_params = sum(p.numel() for p in params)
     print(f"\ntraining DFM+GRU  epochs={a.epochs} params={n_params:,} ...")
@@ -435,7 +436,7 @@ def main():
             x0t = torch.tensor(x0, dtype=torch.long)
             x1t = torch.tensor(x1, dtype=torch.long)
             E_ctx = get_E_ctx(m0)
-            h_T = gru(E_ctx) if E_ctx is not None else None
+            h_T = gru(E_ctx) if (gru is not None and E_ctx is not None) else None
             t = random.uniform(0.01, 0.99)
             xt = sample_xt(x0t, x1t, t)
             logits = model(xt, t, h_T)
@@ -492,7 +493,7 @@ def main():
 
         model.eval(); gru.eval()
         with torch.no_grad():
-            h_T_test = gru(E_ctx_test) if E_ctx_test is not None else None
+            h_T_test = gru(E_ctx_test) if (gru is not None and E_ctx_test is not None) else None
 
         dfm_scores = predict_scores(model, x0_arr, h_T=h_T_test)
         r_null = recall_at_k(hist_change, truth, KS)
