@@ -148,9 +148,8 @@ def build_seq_pool(monthly_raw, months, pos_res, wuhan, all_pos, var_ix,
         for muts, cnt in monthly_raw.get(m, {}).items():
             if not any(mid in pos_res for mid in muts) and len(muts) > 1:
                 continue
-            s = seq_from_muts(muts, {all_pos[i]: AA[np.argmax(
-                np.zeros(N_AA))] for i in var_ix}, wuhan, all_pos, var_ix)
-            seqs.append((s, cnt))
+            seq = seq_from_muts(muts, wuhan, all_pos, pos_res, var_ix)
+            seqs.append((seq, cnt))
         if len(seqs) > max_per_month:
             seqs = random.choices(seqs, weights=[c for _, c in seqs],
                                   k=max_per_month)
