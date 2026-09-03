@@ -206,7 +206,12 @@ class Rungs:
         self.pair = Counter()          # co-occurrence(D, i)
         self.attach = defaultdict(Counter)   # background -> Counter(D added)
         self.bg_seen = Counter()       # how often each background was a parent
+        self._bg_by_mut = defaultdict(set)   # mutation -> backgrounds containing it
+        self._profile_cache = {}       # background -> (Counter(D), denominator)
         self._fit(pops, train_months)
+        for Sbg in self.attach:
+            for i in Sbg:
+                self._bg_by_mut[i].add(Sbg)
 
     def _fit(self, pops, train_months):
         n = max(len(train_months), 1)
@@ -256,27 +261,43 @@ class Rungs:
         return math.log(w + 1e-12) + math.log(pD) + ll
 
     # -- rung 2 : + background-specific attachment ---------------------------
-    def score2(self, S, D, w, tau=JACCARD_TAU):
-        """Attachment rate of D to backgrounds SIMILAR to S.
+    def attach_profile(self, S, tau=JACCARD_TAU):
+        """Aggregate attachment counts over training backgrounds SIMILAR to S.
 
-        Backoff by Jaccard similarity, because most test backgrounds were
+        The Jaccard search depends only on S, never on the candidate addition
+        D, so it is computed ONCE per background and cached. Returns
+        (numerator Counter over D, denominator float).
+
+        Backoff by similarity is needed because most test backgrounds were
         never seen in training. If this rung does not beat rung 1, background
         identity carries no information beyond its members' marginals -- which
         is the hypothesis failing.
         """
-        num = den = 0.0
-        for Sbg, cnts in self.attach.items():
-            inter = len(S & Sbg)
-            if inter == 0:
-                continue
-            j = inter / len(S | Sbg)
+        if S in self._profile_cache:
+            return self._profile_cache[S]
+
+        num = Counter()
+        den = 0.0
+        # only backgrounds sharing at least one mutation can clear tau
+        cand_bgs = set()
+        for i in S:
+            cand_bgs |= self._bg_by_mut.get(i, set())
+        for Sbg in cand_bgs:
+            j = len(S & Sbg) / len(S | Sbg)
             if j < tau:
                 continue
-            num += j * cnts.get(D, 0)
+            for D, c in self.attach[Sbg].items():
+                num[D] += j * c
             den += j * self.bg_seen.get(Sbg, 0)
+
+        self._profile_cache[S] = (num, den)
+        return num, den
+
+    def score2(self, S, D, w, tau=JACCARD_TAU):
+        num, den = self.attach_profile(S, tau)
         if den < 1.0:
             return self.score1(S, D, w)     # back off cleanly
-        rate = (num + ALPHA) / (den + ALPHA * len(self.marg))
+        rate = (num.get(D, 0.0) + ALPHA) / (den + ALPHA * len(self.marg))
         return math.log(w + 1e-12) + math.log(rate + 1e-12)
 
 
