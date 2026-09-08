@@ -1,0 +1,7 @@
+model	seed	held_out_nll
+marginal	0	11.5941
+marginal	1	11.5941
+marginal	2	11.5941
+attention	0	11.6018
+attention	1	11.6017
+attention	2	11.6019

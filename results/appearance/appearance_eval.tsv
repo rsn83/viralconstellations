@@ -1,0 +1,13 @@
+method	k	recall_mean	recall_sd	n
+freq	20	0.0000	0.0000	8
+freq	100	0.0000	0.0000	8
+freq	500	0.0080	0.0108	8
+freq_x_pred	20	0.0210	0.0242	8
+freq_x_pred	100	0.0276	0.0249	8
+freq_x_pred	500	0.0511	0.0410	8
+model	20	0.0043	0.0121	40
+model	100	0.0385	0.0345	40
+model	500	0.0957	0.0822	40
+CEILING	20	0.0000	0.0000	39
+CEILING	100	0.0000	0.0000	39
+CEILING	500	0.0072	0.0192	39
